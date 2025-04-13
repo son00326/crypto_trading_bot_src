@@ -26,7 +26,10 @@ from src.exchange_api import ExchangeAPI
 from src.data_manager import DataManager
 from src.data_collector import DataCollector
 from src.data_analyzer import DataAnalyzer
-from src.indicators import TechnicalIndicators
+from src.indicators import (
+    simple_moving_average, exponential_moving_average, moving_average_convergence_divergence,
+    relative_strength_index, bollinger_bands, stochastic_oscillator
+)
 from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy,
     BollingerBandsStrategy, CombinedStrategy

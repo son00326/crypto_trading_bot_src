@@ -11,9 +11,9 @@ import time
 import logging
 import os
 from datetime import datetime, timedelta
-from exchange_api import ExchangeAPI
-from data_manager import DataManager
-from config import DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
+from src.exchange_api import ExchangeAPI
+from src.data_manager import DataManager
+from src.config import DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
 
 # 로깅 설정
 logging.basicConfig(

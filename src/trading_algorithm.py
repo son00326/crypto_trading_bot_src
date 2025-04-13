@@ -13,15 +13,15 @@ from datetime import datetime, timedelta
 import threading
 import json
 
-from exchange_api import ExchangeAPI
-from data_manager import DataManager
-from data_collector import DataCollector
-from data_analyzer import DataAnalyzer
-from strategies import (
+from src.exchange_api import ExchangeAPI
+from src.data_manager import DataManager
+from src.data_collector import DataCollector
+from src.data_analyzer import DataAnalyzer
+from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, CombinedStrategy
 )
-from config import (
+from src.config import (
     DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME,
     RISK_MANAGEMENT
 )

@@ -8,7 +8,7 @@
 import pandas as pd
 import numpy as np
 import logging
-from indicators import (
+from src.indicators import (
     simple_moving_average, exponential_moving_average, 
     moving_average_convergence_divergence, relative_strength_index,
     bollinger_bands, stochastic_oscillator

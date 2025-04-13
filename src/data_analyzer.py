@@ -13,13 +13,13 @@ import seaborn as sns
 import logging
 import os
 from datetime import datetime, timedelta
-from indicators import (
+from src.indicators import (
     simple_moving_average, exponential_moving_average, 
     moving_average_convergence_divergence, relative_strength_index,
     bollinger_bands, stochastic_oscillator
 )
-from data_manager import DataManager
-from config import DATA_DIR
+from src.data_manager import DataManager
+from src.config import DATA_DIR
 
 # 로깅 설정
 logging.basicConfig(

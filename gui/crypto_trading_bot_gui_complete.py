@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 QHBoxLayout,
 QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit,
 QCheckBox, QGroupBox, QFormLayout, QDoubleSpinBox,
-QSpinBox,
+QSpinBox, QScrollArea,
 QTabWidget, QFileDialog, QMessageBox)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt
 from PyQt5.QtGui import QFont, QIcon
@@ -560,6 +560,10 @@ class CryptoTradingBotApp(QMainWindow):
         # 설정 탭
         settings_tab = QWidget()
         settings_layout = QVBoxLayout()
+        settings_scroll = QScrollArea()
+        settings_scroll.setWidgetResizable(True)
+        settings_content = QWidget()
+        settings_content_layout = QVBoxLayout(settings_content)
         
         # API 설정 그룹
         api_group = QGroupBox("API 설정")
@@ -774,22 +778,29 @@ class CryptoTradingBotApp(QMainWindow):
         risk_group.setLayout(risk_layout)
         
         # 설정 탭에 그룹 추가
-        settings_layout.addWidget(api_group)
-        settings_layout.addWidget(trade_group)
-        settings_layout.addWidget(risk_group)
-        settings_layout.addWidget(strategy_group)
+        settings_content_layout.addWidget(api_group)
+        settings_content_layout.addWidget(trade_group)
+        settings_content_layout.addWidget(risk_group)
+        settings_content_layout.addWidget(strategy_group)
         
+        settings_scroll.setWidget(settings_content)
+        settings_layout.addWidget(settings_scroll)
         settings_tab.setLayout(settings_layout)
         
         # 로그 탭
         log_tab = QWidget()
         log_layout = QVBoxLayout()
+        log_scroll = QScrollArea()
+        log_scroll.setWidgetResizable(True)
+        log_content = QWidget()
+        log_content_layout = QVBoxLayout(log_content)
         
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         
-        log_layout.addWidget(self.log_text)
-        
+        log_content_layout.addWidget(self.log_text)
+        log_scroll.setWidget(log_content)
+        log_layout.addWidget(log_scroll)
         log_tab.setLayout(log_layout)
         
         # 탭 추가

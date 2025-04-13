@@ -11,7 +11,7 @@ import json
 import pickle
 from datetime import datetime
 import logging
-from config import DATA_DIR, LOG_DIR
+from src.config import DATA_DIR, LOG_DIR
 
 # 로깅 설정
 logging.basicConfig(

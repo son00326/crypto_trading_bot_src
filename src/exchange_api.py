@@ -10,7 +10,7 @@ import pandas as pd
 from datetime import datetime
 import time
 import logging
-from config import (
+from src.config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     UPBIT_API_KEY, UPBIT_API_SECRET,
     BITHUMB_API_KEY, BITHUMB_API_SECRET,

@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-from config import (
+from src.config import (
     RISK_MANAGEMENT, DATA_DIR, 
     EMAIL_CONFIG, TELEGRAM_CONFIG
 )

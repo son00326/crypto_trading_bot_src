@@ -48,10 +48,37 @@ STRATEGY_PARAMS = {
 
 # 위험 관리 설정
 RISK_MANAGEMENT = {
-    'max_position_size': 0.1,  # 계좌 자산의 최대 포지션 크기 (10%)
-    'stop_loss_pct': 0.02,     # 손절매 비율 (2%)
-    'take_profit_pct': 0.05,   # 이익실현 비율 (5%)
-    'max_daily_trades': 5,     # 일일 최대 거래 횟수
+    'max_position_size': 0.1,    # 계좌 자산의 최대 포지션 크기 (10%)
+    'stop_loss_pct': 0.02,      # 손절매 비율 (2%)
+    'take_profit_pct': 0.05,    # 이익실현 비율 (5%)
+    'max_daily_trades': 5,      # 일일 최대 거래 횟수
+}
+
+# 백테스트 설정
+BACKTEST_PARAMS = {
+    'initial_capital': 10000,    # 초기 자본금 (USDT)
+    'commission': 0.001,         # 수수료 (0.1%)
+    'start_date': '2023-01-01',  # 백테스트 시작일
+    'end_date': '2023-12-31'     # 백테스트 종료일
+}
+
+# 알림 설정
+# 이메일 알림 설정
+EMAIL_CONFIG = {
+    'enabled': False,           # 이메일 알림 사용 여부
+    'smtp_server': 'smtp.gmail.com',
+    'smtp_port': 587,
+    'sender_email': os.getenv('EMAIL_SENDER', ''),
+    'sender_password': os.getenv('EMAIL_PASSWORD', ''),
+    'recipient_email': os.getenv('EMAIL_RECIPIENT', ''),
+    'subject_prefix': '[Crypto Bot] '
+}
+
+# 텔레그램 알림 설정
+TELEGRAM_CONFIG = {
+    'enabled': False,           # 텔레그램 알림 사용 여부
+    'token': os.getenv('TELEGRAM_BOT_TOKEN', ''),
+    'chat_id': os.getenv('TELEGRAM_CHAT_ID', '')
 }
 
 # 백테스팅 설정

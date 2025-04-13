@@ -15,14 +15,14 @@ import json
 from datetime import datetime, timedelta
 from tqdm import tqdm
 
-from data_manager import DataManager
-from data_collector import DataCollector
-from strategies import (
+from src.data_manager import DataManager
+from src.data_collector import DataCollector
+from src.strategies import (
     Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, StochasticStrategy, BreakoutStrategy,
     VolatilityBreakoutStrategy, CombinedStrategy
 )
-from config import DATA_DIR, BACKTEST_PARAMS
+from src.config import DATA_DIR, BACKTEST_PARAMS
 
 # 로깅 설정
 logging.basicConfig(
