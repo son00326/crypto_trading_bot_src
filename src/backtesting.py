@@ -83,6 +83,104 @@ class BacktestResult:
             snapshot (dict): 포트폴리오 스냅샷
         """
         self.portfolio_history.append(snapshot)
+        
+    # GUI에서 사용하는 속성들을 property로 정의
+    @property
+    def total_return(self):
+        """총 수익률 (%)"""
+        return self.metrics.get('percent_return', 0.0)
+        
+    @property
+    def annual_return(self):
+        """연간 수익률 (%)"""
+        return self.metrics.get('annual_return', 0.0)
+        
+    @property
+    def max_drawdown(self):
+        """최대 낙폭 (%)"""
+        return self.metrics.get('max_drawdown', 0.0)
+        
+    @property
+    def win_rate(self):
+        """승률 (%)"""
+        return self.metrics.get('win_rate', 0.0)
+        
+    @property
+    def total_trades(self):
+        """총 거래 횟수"""
+        return self.metrics.get('total_trades', 0)
+        
+    @property
+    def average_holding_period(self):
+        """평균 보유 기간 (일)"""
+        return self.metrics.get('avg_holding_period', 0.0)
+        
+    @property
+    def sharpe_ratio(self):
+        """샤프 비율"""
+        return self.metrics.get('sharpe_ratio', 0.0)
+        
+    @property
+    def profit_factor(self):
+        """손익비"""
+        return self.metrics.get('profit_factor', 0.0)
+        
+    @property
+    def max_consecutive_losses(self):
+        """최대 연속 손실"""
+        return self.metrics.get('max_consecutive_losses', 0)
+        
+    @property
+    def max_consecutive_wins(self):
+        """최대 연속 이익"""
+        return self.metrics.get('max_consecutive_wins', 0)
+        
+    @property
+    def equity_curve(self):
+        """수익률 곡선 데이터프레임"""
+        if hasattr(self, '_equity_curve') and self._equity_curve is not None:
+            return self._equity_curve
+        # 포트폴리오 히스토리가 있는 경우 수익률 곡선 만들기
+        if self.portfolio_history:
+            df = pd.DataFrame(self.portfolio_history)
+            # 수익률 곡선 계산
+            df['equity_curve'] = df['total_balance'] / self.initial_balance - 1
+            
+            # buy & hold 전략과 비교를 위한 계산
+            # 'close' 컬럼이 있는지 확인하고 없으면 대안 사용
+            if 'close' in df.columns:
+                df['buy_hold_return'] = df['close'] / df['close'].iloc[0] - 1
+            elif 'price' in df.columns:
+                df['buy_hold_return'] = df['price'] / df['price'].iloc[0] - 1
+            else:
+                # close나 price 컬럼이 없을 경우, buy_hold_return은 계산하지 않음
+                df['buy_hold_return'] = 0.0
+                logger.warning("포트폴리오 데이터에 가격 정보가 없어 Buy & Hold 수익률을 계산할 수 없습니다.")
+            
+            self._equity_curve = df
+            return df
+        # 빈 데이터프레임 반환
+        return pd.DataFrame(columns=['timestamp', 'equity_curve', 'buy_hold_return'])
+        
+    @property
+    def trade_records(self):
+        """거래 기록 데이터프레임"""
+        if hasattr(self, '_trade_records') and self._trade_records is not None:
+            return self._trade_records
+        # 트레이드 기록이 있는 경우 데이터프레임 만들기
+        if self.trades:
+            df = pd.DataFrame(self.trades)
+            # 수익률 계산
+            df['return'] = df['profit'] / df['entry_amount']
+            self._trade_records = df
+            return df
+        # 빈 데이터프레임 반환
+        return pd.DataFrame(columns=['timestamp', 'type', 'entry_price', 'exit_price', 'amount', 'profit', 'return'])
+        
+    @property
+    def final_balance(self):
+        """최종 자산"""
+        return self.metrics.get('final_balance', self.initial_balance)
     
     def calculate_metrics(self):
         """성과 지표 계산"""
@@ -124,11 +222,34 @@ class BacktestResult:
             if len(df) > 1:
                 self.metrics['volatility'] = df['daily_return'].std() * (252 ** 0.5) * 100  # 연간 변동성
                 
-                # 최대 낙폭 (MDD)
-                df['cumulative_return'] = (1 + df['daily_return']).cumprod()
-                df['cumulative_max'] = df['cumulative_return'].cummax()
-                df['drawdown'] = (df['cumulative_max'] - df['cumulative_return']) / df['cumulative_max'] * 100
-                self.metrics['max_drawdown'] = df['drawdown'].max()
+                # 최대 낙폭 (MDD) - NumPy 배열 기반으로 수정
+                daily_return_values = df['daily_return'].values
+                
+                # cumulative return 계산
+                cumulative_return = np.zeros_like(daily_return_values, dtype=float)
+                cumulative_return[0] = 1.0  # 초기값 1.0
+                for i in range(1, len(daily_return_values)):
+                    cumulative_return[i] = cumulative_return[i-1] * (1 + daily_return_values[i])
+                
+                # cumulative max 계산
+                cumulative_max = np.zeros_like(cumulative_return)
+                cumulative_max[0] = cumulative_return[0]
+                for i in range(1, len(cumulative_return)):
+                    cumulative_max[i] = max(cumulative_max[i-1], cumulative_return[i])
+                
+                # drawdown 계산
+                drawdown = np.zeros_like(cumulative_return)
+                for i in range(len(cumulative_return)):
+                    if cumulative_max[i] > 0:
+                        drawdown[i] = (cumulative_max[i] - cumulative_return[i]) / cumulative_max[i] * 100
+                
+                # 결과를 데이터프레임에 할당
+                df['cumulative_return'] = cumulative_return
+                df['cumulative_max'] = cumulative_max
+                df['drawdown'] = drawdown
+                
+                # 최대 낙폭 계산
+                self.metrics['max_drawdown'] = np.max(drawdown) if len(drawdown) > 0 else 0
                 
                 # 샤프 비율
                 risk_free_rate = 0.02  # 2% 무위험 수익률 가정
@@ -418,17 +539,28 @@ class Backtester:
             logger.info(f"{start_date}부터 {end_date}까지의 백테스트 데이터를 준비합니다.")
             
             # 데이터 로드
+            # start_date와 end_date를 datetime 형식으로 변환
+            start_date_dt = pd.to_datetime(start_date)
+            end_date_dt = pd.to_datetime(end_date)
+            
+            logger.info(f"백테스트 기간: {start_date} ~ {end_date}")
+            
             df = self.data_manager.load_ohlcv_data(timeframe=self.timeframe)
             
             if df is None or df.empty:
                 logger.info("저장된 데이터가 없습니다. 과거 데이터를 가져옵니다.")
                 df = self.data_collector.fetch_historical_data(start_date=start_date, end_date=end_date)
             else:
-                # 날짜 필터링
-                df = df[(df.index >= start_date) & (df.index <= end_date)]
+                # 날짜 형식이 일치하는지 확인
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    logger.info("인덱스를 datetime 형식으로 변환합니다.")
+                    df.index = pd.to_datetime(df.index)
+                
+                # 날짜 필터링 - datetime 객체로 비교
+                df = df[(df.index >= start_date_dt) & (df.index <= end_date_dt)]
                 
                 # 데이터가 부족하면 추가 데이터 가져오기
-                if df.empty or df.index.min() > start_date or df.index.max() < end_date:
+                if df.empty or df.index.min() > start_date_dt or df.index.max() < end_date_dt:
                     logger.info("저장된 데이터가 부족합니다. 과거 데이터를 가져옵니다.")
                     df = self.data_collector.fetch_historical_data(start_date=start_date, end_date=end_date)
             
@@ -570,18 +702,30 @@ class Backtester:
                         
                         position = 0
                 
-                # 포트폴리오 가치 업데이트
-                position_value = position * current_price
-                total_balance = balance + position_value
+                # 포트폴리오 가치 업데이트 (NumPy 배열 기반으로 계산)
+                # 변수들이 pandas 시리즈인 경우를 대비하여 NumPy 값으로 변환
+                position_float = float(position) if hasattr(position, '__iter__') else position
+                current_price_float = float(current_price) if hasattr(current_price, '__iter__') else current_price
+                balance_float = float(balance) if hasattr(balance, '__iter__') else balance
+                
+                position_value = position_float * current_price_float
+                total_balance = balance_float + position_value
                 
                 # 포트폴리오 스냅샷 저장
                 portfolio_snapshot = {
                     'timestamp': current_candle.name.isoformat(),
-                    'price': current_price,
+                    'open': current_candle['open'],
+                    'high': current_candle['high'],
+                    'low': current_candle['low'],
+                    'close': current_price,  # 'close'로 정확히 저장
+                    'volume': current_candle['volume'] if 'volume' in current_candle else 0,
+                    'price': current_price,  # 후방 호환성을 위해 'price'도 유지
                     'balance': balance,
                     'position': position,
                     'position_value': position_value,
-                    'total_balance': total_balance
+                    'total_balance': total_balance,
+                    'signal': current_candle['signal'] if 'signal' in current_candle else 0,
+                    'position_change': position_change
                 }
                 
                 portfolio_history.append(portfolio_snapshot)
