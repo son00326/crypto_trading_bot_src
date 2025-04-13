@@ -89,45 +89,84 @@ class DataCollector:
             logger.info(f"{self.symbol}의 {start_date}부터 {end_date}까지의 과거 데이터를 가져오는 중...")
             
             # 날짜를 datetime 객체로 변환
-            start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-            end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            try:
+                start_dt = pd.to_datetime(start_date)
+                end_dt = pd.to_datetime(end_date)
+            except Exception as e:
+                logger.error(f"날짜 변환 오류: {e}")
+                start_dt = pd.to_datetime(start_date, format='%Y-%m-%d')
+                end_dt = pd.to_datetime(end_date, format='%Y-%m-%d')
+                
+            logger.info(f"변환된 날짜: {start_dt} ~ {end_dt}")
             
-            # 타임프레임에 따른 데이터 분할 수집
-            # 거래소 API는 한 번에 가져올 수 있는 데이터 양에 제한이 있으므로
-            # 긴 기간의 데이터는 여러 번 나누어 가져와야 함
+            # 가져온 데이터를 저장할 리스트
             all_data = []
             current_start = start_dt
             
+            # Binance인 경우 다른 기간 계산 방식 사용
+            is_binance = self.exchange_id.lower() == 'binance'
+            
             while current_start < end_dt:
-                # 타임프레임에 따라 적절한 기간 계산
-                if self.timeframe == '1m':
-                    current_end = min(current_start + timedelta(days=1), end_dt)
-                elif self.timeframe == '5m' or self.timeframe == '15m':
-                    current_end = min(current_start + timedelta(days=5), end_dt)
-                elif self.timeframe == '1h':
-                    current_end = min(current_start + timedelta(days=30), end_dt)
-                else:  # 1d 이상
-                    current_end = min(current_start + timedelta(days=365), end_dt)
+                # 타임프레임과 거래소에 따라 적절한 기간 계산
+                if is_binance:
+                    # Binance는 더 짧은 기간으로 분할하여 개선
+                    if self.timeframe == '1m':
+                        current_end = min(current_start + timedelta(hours=12), end_dt)  # 12시간만
+                    elif self.timeframe in ['5m', '15m', '30m']:
+                        current_end = min(current_start + timedelta(days=2), end_dt)   # 2일만
+                    elif self.timeframe == '1h':
+                        current_end = min(current_start + timedelta(days=7), end_dt)   # 7일만
+                    elif self.timeframe == '4h':
+                        current_end = min(current_start + timedelta(days=15), end_dt)  # 15일만
+                    else:  # 1d 이상
+                        current_end = min(current_start + timedelta(days=100), end_dt) # 100일만
+                else:
+                    # 다른 거래소는 기존 방식 유지
+                    if self.timeframe == '1m':
+                        current_end = min(current_start + timedelta(days=1), end_dt)
+                    elif self.timeframe in ['5m', '15m']:
+                        current_end = min(current_start + timedelta(days=5), end_dt)
+                    elif self.timeframe == '1h':
+                        current_end = min(current_start + timedelta(days=30), end_dt)
+                    else:  # 1d 이상
+                        current_end = min(current_start + timedelta(days=365), end_dt)
                 
                 # 시작 시간과 종료 시간을 밀리초로 변환
                 since = int(current_start.timestamp() * 1000)
                 until = int(current_end.timestamp() * 1000)
                 
-                # CCXT를 통해 OHLCV 데이터 가져오기
-                ohlcv = self.exchange_api.exchange.fetch_ohlcv(
-                    symbol=self.symbol,
-                    timeframe=self.timeframe,
-                    since=since,
-                    limit=1000  # 대부분의 거래소에서 지원하는 최대 제한
-                )
+                # 여러 번 시도
+                retry_count = 0
+                max_retries = 3
+                success = False
                 
-                if ohlcv and len(ohlcv) > 0:
+                while retry_count < max_retries and not success:
+                    try:
+                        # CCXT를 통해 OHLCV 데이터 가져오기
+                        ohlcv = self.exchange_api.exchange.fetch_ohlcv(
+                            symbol=self.symbol,
+                            timeframe=self.timeframe,
+                            since=since,
+                            limit=1000  # 대부분의 거래소에서 지원하는 최대 제한
+                        )
+                        success = True
+                    except Exception as e:
+                        retry_count += 1
+                        logger.warning(f"OHLCV 데이터 가져오기 실패 ({retry_count}/{max_retries}): {e}")
+                        time.sleep(2)  # 재시도 전 대기 시간 증가
+                
+                if success and ohlcv and len(ohlcv) > 0:
                     # 데이터프레임으로 변환
                     df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                    all_data.append(df)
                     
-                    logger.info(f"{current_start.strftime('%Y-%m-%d')}부터 {current_end.strftime('%Y-%m-%d')}까지 {len(df)}개의 데이터를 가져왔습니다.")
+                    # 시간스탬프를 인덱스로 설정
+                    df.set_index('timestamp', inplace=True)
+                    
+                    all_data.append(df)
+                    logger.info(f"{current_start.strftime('%Y-%m-%d %H:%M')}부터 {current_end.strftime('%Y-%m-%d %H:%M')}까지 {len(df)}개의 데이터를 가져왔습니다.")
+                elif not success:
+                    logger.error(f"{current_start.strftime('%Y-%m-%d %H:%M')}부터 {current_end.strftime('%Y-%m-%d %H:%M')}까지 데이터 가져오기 실패")
                 
                 # 다음 기간으로 이동
                 current_start = current_end
@@ -140,10 +179,16 @@ class DataCollector:
                 result_df = pd.concat(all_data)
                 
                 # 중복 제거 및 정렬
-                result_df = result_df.drop_duplicates(subset=['timestamp']).sort_values('timestamp')
+                result_df = result_df[~result_df.index.duplicated(keep='first')].sort_index()
                 
-                # 인덱스 재설정
-                result_df = result_df.reset_index(drop=True)
+                # 데이터 업샘플링 검사 (1분 데이터에서 더 긴 타임프레임으로 분석하는 경우를 위해)
+                if self.timeframe != '1m' and len(result_df) > 0:
+                    logger.info(f"데이터 업샘플링 여부 확인: {self.timeframe} 타임프레임")
+                    # 파입된 시간보다 더 짧은 시간의 데이터가 있는지 확인
+                    if result_df.index.to_series().diff().min().total_seconds() < self.timeframe_to_seconds(self.timeframe):
+                        logger.info("데이터 업샘플링 필요")
+                        # 타임프레임에 맞게 다시 폴링
+                        result_df = self.resample_data(result_df, self.timeframe)
                 
                 logger.info(f"총 {len(result_df)}개의 과거 데이터를 성공적으로 가져왔습니다.")
                 
@@ -160,6 +205,75 @@ class DataCollector:
         except Exception as e:
             logger.error(f"과거 데이터 가져오기 중 오류 발생: {e}")
             return None
+    
+    def timeframe_to_seconds(self, timeframe):
+        """
+        타임프레임 문자열을 초 단위로 변환
+        
+        Args:
+            timeframe (str): 타임프레임 문자열 (1m, 5m, 1h, 1d 등)
+            
+        Returns:
+            int: 초 단위 값
+        """
+        # 숫자와 단위 분리
+        value = int(''.join(filter(str.isdigit, timeframe)))
+        unit = ''.join(filter(str.isalpha, timeframe))
+        
+        if unit == 'm':
+            return value * 60  # 분 
+        elif unit == 'h':
+            return value * 60 * 60  # 시간
+        elif unit == 'd':
+            return value * 60 * 60 * 24  # 일
+        elif unit == 'w':
+            return value * 60 * 60 * 24 * 7  # 주
+        else:
+            raise ValueError(f"알 수 없는 타임프레임 형식: {timeframe}")
+    
+    def resample_data(self, df, timeframe):
+        """
+        데이터를 지정된 타임프레임으로 리샘플링
+        
+        Args:
+            df (DataFrame): OHLCV 데이터프레임
+            timeframe (str): 변환할 타임프레임 (1m, 5m, 1h, 1d 등)
+            
+        Returns:
+            DataFrame: 리샘플링된 데이터프레임
+        """
+        # 타임프레임 문자열을 pandas 리샘플링 규칙으로 변환
+        if timeframe == '1m':
+            rule = '1min'
+        elif timeframe == '5m':
+            rule = '5min'
+        elif timeframe == '15m':
+            rule = '15min'
+        elif timeframe == '30m':
+            rule = '30min'
+        elif timeframe == '1h':
+            rule = '1H'
+        elif timeframe == '4h':
+            rule = '4H'
+        elif timeframe == '1d':
+            rule = '1D'
+        else:
+            raise ValueError(f"지원되지 않는 타임프레임: {timeframe}")
+        
+        # OHLCV 리샘플링
+        resampled = df.resample(rule).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum'
+        })
+        
+        # NaN 값 제거
+        resampled = resampled.dropna()
+        
+        logger.info(f"데이터 리샘플링 완료: {len(df)} -> {len(resampled)} 레코드")
+        return resampled
     
     def fetch_realtime_data(self, interval=60, callback=None):
         """

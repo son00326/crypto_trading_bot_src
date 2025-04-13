@@ -34,7 +34,7 @@ logger = logging.getLogger('backtesting')
 class BacktestResult:
     """백테스트 결과를 저장하고 분석하는 클래스"""
     
-    def __init__(self, strategy_name, symbol, timeframe, start_date, end_date, initial_balance):
+    def __init__(self, strategy_name, symbol, timeframe, start_date, end_date, initial_balance, market_type='spot', leverage=1):
         """
         백테스트 결과 초기화
         
@@ -45,6 +45,8 @@ class BacktestResult:
             start_date (str): 시작 날짜
             end_date (str): 종료 날짜
             initial_balance (float): 초기 자산
+            market_type (str): 시장 유형 ('spot' 또는 'futures')
+            leverage (int): 레버리지 배수 (선물 거래에만 적용)
         """
         self.strategy_name = strategy_name
         self.symbol = symbol
@@ -52,6 +54,8 @@ class BacktestResult:
         self.start_date = start_date
         self.end_date = end_date
         self.initial_balance = initial_balance
+        self.market_type = market_type
+        self.leverage = leverage if market_type == 'futures' else 1
         
         # 거래 기록
         self.trades = []
@@ -222,34 +226,11 @@ class BacktestResult:
             if len(df) > 1:
                 self.metrics['volatility'] = df['daily_return'].std() * (252 ** 0.5) * 100  # 연간 변동성
                 
-                # 최대 낙폭 (MDD) - NumPy 배열 기반으로 수정
-                daily_return_values = df['daily_return'].values
-                
-                # cumulative return 계산
-                cumulative_return = np.zeros_like(daily_return_values, dtype=float)
-                cumulative_return[0] = 1.0  # 초기값 1.0
-                for i in range(1, len(daily_return_values)):
-                    cumulative_return[i] = cumulative_return[i-1] * (1 + daily_return_values[i])
-                
-                # cumulative max 계산
-                cumulative_max = np.zeros_like(cumulative_return)
-                cumulative_max[0] = cumulative_return[0]
-                for i in range(1, len(cumulative_return)):
-                    cumulative_max[i] = max(cumulative_max[i-1], cumulative_return[i])
-                
-                # drawdown 계산
-                drawdown = np.zeros_like(cumulative_return)
-                for i in range(len(cumulative_return)):
-                    if cumulative_max[i] > 0:
-                        drawdown[i] = (cumulative_max[i] - cumulative_return[i]) / cumulative_max[i] * 100
-                
-                # 결과를 데이터프레임에 할당
-                df['cumulative_return'] = cumulative_return
-                df['cumulative_max'] = cumulative_max
-                df['drawdown'] = drawdown
-                
-                # 최대 낙폭 계산
-                self.metrics['max_drawdown'] = np.max(drawdown) if len(drawdown) > 0 else 0
+                # 최대 낙폭 (MDD)
+                df['cumulative_return'] = (1 + df['daily_return']).cumprod()
+                df['cumulative_max'] = df['cumulative_return'].cummax()
+                df['drawdown'] = (df['cumulative_max'] - df['cumulative_return']) / df['cumulative_max'] * 100
+                self.metrics['max_drawdown'] = df['drawdown'].max()
                 
                 # 샤프 비율
                 risk_free_rate = 0.02  # 2% 무위험 수익률 가정
@@ -505,7 +486,7 @@ class BacktestResult:
 class Backtester:
     """거래 전략 백테스팅을 위한 클래스"""
     
-    def __init__(self, exchange_id='binance', symbol='BTC/USDT', timeframe='1h'):
+    def __init__(self, exchange_id='binance', symbol='BTC/USDT', timeframe='1h', market_type='spot', leverage=1):
         """
         백테스터 초기화
         
@@ -513,16 +494,20 @@ class Backtester:
             exchange_id (str): 거래소 ID
             symbol (str): 거래 심볼
             timeframe (str): 타임프레임
+            market_type (str): 시장 유형 ('spot' 또는 'futures')
+            leverage (int): 레버리지 배수 (선물 거래에만 적용)
         """
         self.exchange_id = exchange_id
         self.symbol = symbol
         self.timeframe = timeframe
+        self.market_type = market_type
+        self.leverage = leverage if market_type == 'futures' else 1
         
         # 데이터 관련 객체 초기화
         self.data_manager = DataManager(exchange_id=exchange_id, symbol=symbol)
         self.data_collector = DataCollector(exchange_id=exchange_id, symbol=symbol, timeframe=timeframe)
         
-        logger.info(f"{exchange_id} 거래소의 {symbol} 백테스터가 초기화되었습니다.")
+        logger.info(f"{exchange_id} 거래소의 {symbol} 백테스터가 초기화되었습니다. 시장 유형: {market_type}{', 레버리지: ' + str(leverage) + '배' if market_type == 'futures' else ''}")
     
     def prepare_data(self, start_date, end_date):
         """
@@ -575,7 +560,7 @@ class Backtester:
             logger.error(f"백테스트용 데이터 준비 중 오류 발생: {e}")
             return None
     
-    def run_backtest(self, strategy, start_date, end_date, initial_balance=10000, commission=0.001):
+    def run_backtest(self, strategy, start_date, end_date, initial_balance=10000, commission=0.001, market_type=None, leverage=None):
         """
         백테스트 실행
         
@@ -585,12 +570,18 @@ class Backtester:
             end_date (str): 종료 날짜 (YYYY-MM-DD 형식)
             initial_balance (float): 초기 자산
             commission (float): 수수료율
+            market_type (str): 시장 유형 ('spot' 또는 'futures'), None이면 백테스터 초기화 값 사용
+            leverage (int): 레버리지 배수, None이면 백테스터 초기화 값 사용
         
         Returns:
             BacktestResult: 백테스트 결과
         """
         try:
-            logger.info(f"{strategy.name} 전략의 백테스트를 시작합니다.")
+            # market_type과 leverage 값 처리
+            actual_market_type = market_type if market_type is not None else self.market_type
+            actual_leverage = leverage if leverage is not None else self.leverage
+            
+            logger.info(f"{strategy.name} 전략의 백테스트를 시작합니다. 시장 유형: {actual_market_type}{', 레버리지: ' + str(actual_leverage) + '배' if actual_market_type == 'futures' else ''}")
             
             # 데이터 준비
             df = self.prepare_data(start_date, end_date)
@@ -606,7 +597,9 @@ class Backtester:
                 timeframe=self.timeframe,
                 start_date=start_date,
                 end_date=end_date,
-                initial_balance=initial_balance
+                initial_balance=initial_balance,
+                market_type=actual_market_type,
+                leverage=actual_leverage
             )
             
             # 전략에 따른 신호 생성
@@ -640,14 +633,23 @@ class Backtester:
                 # 포지션 변경 확인
                 position_change = current_candle['position']
                 
+                # 시장 유형과 레버리지 확인
+                is_futures = actual_market_type == 'futures'
+                leverage_multiplier = actual_leverage if is_futures else 1
+                
                 # 매수 신호
                 if position_change > 0:
                     # 이미 포지션이 있는 경우 무시
                     if position > 0:
                         pass
                     else:
-                        # 매수 가능한 수량 계산
-                        buy_amount = balance / current_price
+                        # 매수 가능한 수량 계산 (선물일 경우 레버리지 고려)
+                        if is_futures:
+                            # 선물일 경우 레버리지를 적용하여 더 큰 포지션 가능
+                            buy_amount = (balance * leverage_multiplier) / current_price
+                        else:
+                            buy_amount = balance / current_price
+                            
                         buy_value = buy_amount * current_price
                         fee = buy_value * commission
                         
@@ -693,7 +695,18 @@ class Backtester:
                             current_trade['status'] = 'closed'
                             current_trade['exit_balance'] = balance
                             current_trade['profit'] = balance - current_trade['entry_balance']
-                            current_trade['profit_percent'] = (balance / current_trade['entry_balance'] - 1) * 100
+                            
+                            # 기본 수익률 계산
+                            base_profit_percent = (balance / current_trade['entry_balance'] - 1) * 100
+                            
+                            # 선물 거래의 경우 레버리지를 고려한 수익률 표시
+                            if is_futures:
+                                current_trade['leverage'] = leverage_multiplier
+                                current_trade['market_type'] = 'futures'
+                            else:
+                                current_trade['market_type'] = 'spot'
+                                
+                            current_trade['profit_percent'] = base_profit_percent
                             
                             trades.append(current_trade)
                             result.add_trade(current_trade)
@@ -725,7 +738,9 @@ class Backtester:
                     'position_value': position_value,
                     'total_balance': total_balance,
                     'signal': current_candle['signal'] if 'signal' in current_candle else 0,
-                    'position_change': position_change
+                    'position_change': position_change,
+                    'market_type': actual_market_type,
+                    'leverage': leverage_multiplier
                 }
                 
                 portfolio_history.append(portfolio_snapshot)

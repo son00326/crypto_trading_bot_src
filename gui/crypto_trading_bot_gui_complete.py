@@ -3,20 +3,34 @@
 # 암호화폐 자동 매매 봇 GUI 버전
 import sys
 import os
+
+# 모듈 검색 경로에 상위 디렉토리 추가
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
 import numpy as np
 import ccxt
 import time
 import logging
+import matplotlib.pyplot as plt
 from datetime import datetime
 from dotenv import load_dotenv
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+
+# 백테스팅 모듈 임포트
+from src.backtesting import Backtester
+from src.strategies import (
+    Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
+    BollingerBandsStrategy, StochasticStrategy, BreakoutStrategy,
+    VolatilityBreakoutStrategy, CombinedStrategy
+)
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 QHBoxLayout,
 QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit,
 QCheckBox, QGroupBox, QFormLayout, QDoubleSpinBox,
-QSpinBox, QScrollArea,
-QTabWidget, QFileDialog, QMessageBox)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
+QSpinBox, QScrollArea, QTableWidget, QTableWidgetItem,
+QTabWidget, QFileDialog, QMessageBox, QDateEdit, QHeaderView, QSizePolicy)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, QDate
 from PyQt5.QtGui import QFont, QIcon
 
 # 로깅 설정
@@ -286,7 +300,7 @@ class TradingBot:
     """자동 매매 봇 클래스"""
     def __init__(self, exchange='binance', api_key=None, api_secret=None,
                  strategy=None, symbol='BTC/USDT', timeframe='1h',
-                 risk_manager=None, test_mode=True):
+                 risk_manager=None, test_mode=True, market_type='spot', leverage=1):
         """
         자동 매매 봇 초기화
         Args:
@@ -298,6 +312,8 @@ class TradingBot:
             timeframe (str): 타임프레임
             risk_manager (RiskManager): 위험 관리 객체
             test_mode (bool): 테스트 모드 여부
+            market_type (str): 시장 유형 ('spot' 또는 'futures')
+            leverage (int): 레버리지 (선물 거래에만 적용)
         """
         self.exchange_id = exchange
         self.exchange = getattr(ccxt, exchange)({
@@ -309,6 +325,8 @@ class TradingBot:
         self.symbol = symbol
         self.timeframe = timeframe
         self.test_mode = test_mode
+        self.market_type = market_type
+        self.leverage = leverage
         
         if risk_manager is None:
             self.risk_manager = RiskManager()
@@ -324,7 +342,7 @@ class TradingBot:
             'take_profit': 0
         }
         
-        logger.info(f"자동 매매 봇 초기화 완료: {exchange}, {symbol}, {timeframe}, 테스트 모드: {test_mode}")
+        logger.info(f"자동 매매 봇 초기화 완료: {exchange}, {symbol}, {timeframe}, 테스트 모드: {test_mode}, 시장 유형: {market_type}, 레버리지: {leverage}")
     
     def get_account_balance(self):
         """계좌 잔고 조회"""
@@ -352,13 +370,18 @@ class TradingBot:
         """주문 실행"""
         try:
             if self.test_mode:
-                logger.info(f"[테스트 모드] {order_type} 주문 실행: {self.symbol}, 수량: {size}")
+                logger.info(f"[테스트 모드] {order_type} 주문 실행: {self.symbol}, 수량: {size}, 시장 유형: {self.market_type}, 레버리지: {self.leverage}")
                 return {'id': 'test_order', 'price': self.get_current_price()}
             
+            # 선물 거래일 경우 레버리지 파라미터 추가
+            params = {}
+            if self.market_type == 'futures':
+                params['leverage'] = self.leverage
+            
             if order_type == 'buy':
-                order = self.exchange.create_market_buy_order(self.symbol, size)
+                order = self.exchange.create_market_buy_order(self.symbol, size, params=params)
             elif order_type == 'sell':
-                order = self.exchange.create_market_sell_order(self.symbol, size)
+                order = self.exchange.create_market_sell_order(self.symbol, size, params=params)
             else:
                 raise ValueError(f"지원하지 않는 주문 유형입니다: {order_type}")
             
@@ -602,8 +625,23 @@ class CryptoTradingBotApp(QMainWindow):
         self.test_mode_check = QCheckBox("테스트 모드 (실제 거래 없음)")
         self.test_mode_check.setChecked(True)
         
+        # 거래 타입 선택 (현물/선물)
+        self.market_type_combo = QComboBox()
+        self.market_type_combo.addItems(['spot', 'futures'])
+        self.market_type_combo.setCurrentText('spot')
+        self.market_type_combo.currentTextChanged.connect(self.toggle_leverage_settings)
+        
+        # 레버리지 설정
+        self.leverage_spin = QSpinBox()
+        self.leverage_spin.setRange(1, 20)
+        self.leverage_spin.setValue(2)
+        self.leverage_spin.setSuffix("x")
+        self.leverage_spin.setVisible(False)  # 기본적으로 숨김 (현물 거래 선택시)
+        
         trade_layout.addRow("거래 쌍:", self.symbol_input)
         trade_layout.addRow("타임프레임:", self.timeframe_combo)
+        trade_layout.addRow("거래 타입:", self.market_type_combo)
+        trade_layout.addRow("레버리지:", self.leverage_spin)
         trade_layout.addRow("실행 간격:", self.interval_spin)
         trade_layout.addRow(self.test_mode_check)
         
@@ -803,8 +841,154 @@ class CryptoTradingBotApp(QMainWindow):
         log_layout.addWidget(log_scroll)
         log_tab.setLayout(log_layout)
         
+        # 백테스트 탭
+        backtest_tab = QWidget()
+        backtest_layout = QVBoxLayout()
+        backtest_scroll = QScrollArea()
+        backtest_scroll.setWidgetResizable(True)
+        backtest_content = QWidget()
+        backtest_content_layout = QVBoxLayout(backtest_content)
+        
+        # 백테스트 설정 그룹
+        backtest_settings_group = QGroupBox("백테스트 설정")
+        backtest_settings_layout = QFormLayout()
+        
+        # 거래소 및 심볼 설정
+        self.backtest_exchange_combo = QComboBox()
+        self.backtest_exchange_combo.addItems(['binance', 'upbit', 'bithumb'])
+        self.backtest_symbol_edit = QLineEdit('BTC/USDT')
+        self.backtest_timeframe_combo = QComboBox()
+        self.backtest_timeframe_combo.addItems(['1m', '5m', '15m', '30m', '1h', '4h', '1d'])
+        
+        # 날짜 설정
+        self.backtest_start_date = QDateEdit()
+        self.backtest_start_date.setDate(QDate.currentDate().addMonths(-3))
+        self.backtest_start_date.setCalendarPopup(True)
+        self.backtest_end_date = QDateEdit()
+        self.backtest_end_date.setDate(QDate.currentDate())
+        self.backtest_end_date.setCalendarPopup(True)
+        
+        # 초기 자본 및 수수료 설정
+        self.backtest_initial_balance = QDoubleSpinBox()
+        self.backtest_initial_balance.setRange(100, 1000000)
+        self.backtest_initial_balance.setValue(10000)
+        self.backtest_initial_balance.setSingleStep(100)
+        self.backtest_commission = QDoubleSpinBox()
+        self.backtest_commission.setRange(0, 0.01)
+        self.backtest_commission.setValue(0.001)
+        self.backtest_commission.setSingleStep(0.0001)
+        self.backtest_commission.setDecimals(5)
+        
+        # 전략 설정
+        self.backtest_strategy_combo = QComboBox()
+        self.backtest_strategy_combo.addItems([
+            'moving_average', 'rsi', 'macd', 'bollinger_bands', 
+            'stochastic', 'breakout', 'volatility_breakout', 'combined'
+        ])
+        
+        # 시장 타입 및 레버리지 설정
+        self.backtest_market_type_combo = QComboBox()
+        self.backtest_market_type_combo.addItems(['spot', 'futures'])
+        self.backtest_market_type_combo.setCurrentText('spot')
+        self.backtest_market_type_combo.currentTextChanged.connect(self.toggle_backtest_leverage_settings)
+        
+        self.backtest_leverage_widget = QWidget()
+        leverage_layout = QHBoxLayout(self.backtest_leverage_widget)
+        leverage_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.backtest_leverage_spin = QSpinBox()
+        self.backtest_leverage_spin.setRange(1, 20)
+        self.backtest_leverage_spin.setValue(1)
+        self.backtest_leverage_label = QLabel("배")
+        
+        leverage_layout.addWidget(self.backtest_leverage_spin)
+        leverage_layout.addWidget(self.backtest_leverage_label)
+        
+        # 폼 레이아웃에 위젯 추가
+        backtest_settings_layout.addRow("거래소:", self.backtest_exchange_combo)
+        backtest_settings_layout.addRow("심볼:", self.backtest_symbol_edit)
+        backtest_settings_layout.addRow("타임프레임:", self.backtest_timeframe_combo)
+        backtest_settings_layout.addRow("시장 타입:", self.backtest_market_type_combo)
+        backtest_settings_layout.addRow("레버리지:", self.backtest_leverage_widget)
+        backtest_settings_layout.addRow("시작일:", self.backtest_start_date)
+        backtest_settings_layout.addRow("종료일:", self.backtest_end_date)
+        backtest_settings_layout.addRow("초기 자본:", self.backtest_initial_balance)
+        backtest_settings_layout.addRow("수수료 (%):", self.backtest_commission)
+        backtest_settings_layout.addRow("전략:", self.backtest_strategy_combo)
+        
+        # 전략 파라미터 그룹 (초기값: 이동평균 전략)
+        self.backtest_params_group = QGroupBox("전략 파라미터")
+        self.backtest_params_layout = QFormLayout()
+        
+        # 이동평균 전략 파라미터
+        self.backtest_ma_short = QSpinBox()
+        self.backtest_ma_short.setRange(1, 50)
+        self.backtest_ma_short.setValue(9)
+        self.backtest_ma_long = QSpinBox()
+        self.backtest_ma_long.setRange(10, 200)
+        self.backtest_ma_long.setValue(26)
+        
+        self.backtest_params_layout.addRow("단기 이동평균선:", self.backtest_ma_short)
+        self.backtest_params_layout.addRow("장기 이동평균선:", self.backtest_ma_long)
+        self.backtest_params_group.setLayout(self.backtest_params_layout)
+        
+        # 전략 변경 시 파라미터 업데이트
+        self.backtest_strategy_combo.currentTextChanged.connect(self.update_backtest_params)
+        
+        # 백테스트 실행 버튼
+        self.run_backtest_button = QPushButton("백테스트 실행")
+        self.run_backtest_button.clicked.connect(self.run_backtest)
+        
+        # 결과 표시 영역
+        backtest_result_group = QGroupBox("백테스트 결과")
+        backtest_result_layout = QVBoxLayout()
+        
+        # 결과 요약 테이블
+        self.backtest_result_table = QTableWidget()
+        self.backtest_result_table.setColumnCount(2)
+        self.backtest_result_table.setHorizontalHeaderLabels(["항목", "값"])
+        self.backtest_result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.backtest_result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.backtest_result_table.setRowCount(10)
+        metrics = [
+            "총 수익률 (%)", "연간 수익률 (%)", "최대 낙폭 (%)", "승률 (%)", 
+            "총 거래 횟수", "평균 보유 기간", "샤프 비율", "손익비", "최대 연속 손실", "최대 연속 이익"
+        ]
+        for i, metric in enumerate(metrics):
+            self.backtest_result_table.setItem(i, 0, QTableWidgetItem(metric))
+            self.backtest_result_table.setItem(i, 1, QTableWidgetItem(""))
+        
+        # 차트 영역
+        self.backtest_figure = Figure(figsize=(10, 8))
+        self.backtest_canvas = FigureCanvas(self.backtest_figure)
+        self.backtest_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # 결과 저장 버튼
+        self.save_backtest_button = QPushButton("결과 저장")
+        self.save_backtest_button.clicked.connect(self.save_backtest_result)
+        
+        # 레이아웃에 추가
+        backtest_result_layout.addWidget(self.backtest_result_table)
+        backtest_result_layout.addWidget(self.backtest_canvas)
+        backtest_result_layout.addWidget(self.save_backtest_button)
+        backtest_result_group.setLayout(backtest_result_layout)
+        
+        # 백테스트 설정 그룹 완성
+        backtest_settings_group.setLayout(backtest_settings_layout)
+        
+        # 모든 위젯 추가
+        backtest_content_layout.addWidget(backtest_settings_group)
+        backtest_content_layout.addWidget(self.backtest_params_group)
+        backtest_content_layout.addWidget(self.run_backtest_button)
+        backtest_content_layout.addWidget(backtest_result_group)
+        
+        backtest_scroll.setWidget(backtest_content)
+        backtest_layout.addWidget(backtest_scroll)
+        backtest_tab.setLayout(backtest_layout)
+        
         # 탭 추가
         tabs.addTab(settings_tab, "설정")
+        tabs.addTab(backtest_tab, "백테스트")
         tabs.addTab(log_tab, "로그")
         
         # 버튼 레이아웃
@@ -831,6 +1015,16 @@ class CryptoTradingBotApp(QMainWindow):
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
     
+    def toggle_leverage_settings(self):
+        """거래 타입에 따라 레버리지 설정 표시 여부 토글"""
+        market_type = self.market_type_combo.currentText()
+        self.leverage_spin.setVisible(market_type == 'futures')
+        
+    def toggle_backtest_leverage_settings(self):
+        """백테스트 시장 타입에 따라 레버리지 설정 표시 여부 토글"""
+        market_type = self.backtest_market_type_combo.currentText()
+        self.backtest_leverage_widget.setVisible(market_type == 'futures')
+    
     def start_bot(self):
         # API 키 저장
         api_key = self.api_key_input.text()
@@ -851,6 +1045,8 @@ class CryptoTradingBotApp(QMainWindow):
         timeframe = self.timeframe_combo.currentText()
         interval = self.interval_spin.value()
         test_mode = self.test_mode_check.isChecked()
+        market_type = self.market_type_combo.currentText()
+        leverage = self.leverage_spin.value() if market_type == 'futures' else 1
         
         # 전략 생성
         strategies = []
@@ -919,7 +1115,9 @@ class CryptoTradingBotApp(QMainWindow):
             symbol=symbol,
             timeframe=timeframe,
             risk_manager=risk_manager,
-            test_mode=test_mode
+            test_mode=test_mode,
+            market_type=market_type,
+            leverage=leverage
         )
         
         # 봇 스레드 시작
@@ -979,6 +1177,8 @@ class CryptoTradingBotApp(QMainWindow):
             "stop_loss_pct": self.stop_loss_spin.value(),
             "take_profit_pct": self.take_profit_spin.value(),
             "max_position_size": self.max_position_spin.value(),
+            "market_type": self.market_type_combo.currentText(),
+            "leverage": self.leverage_spin.value(),
         }
         
         # 설정 파일 저장
@@ -994,6 +1194,412 @@ class CryptoTradingBotApp(QMainWindow):
             self.bot_thread.stop()
             self.bot_thread.wait()
         event.accept()
+    
+    def update_backtest_params(self, strategy_name):
+        """선택한 전략에 따라 파라미터 입력 영역을 업데이트합니다."""
+        # 기존 파라미터 위젯 제거
+        while self.backtest_params_layout.count():
+            item = self.backtest_params_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
+        # 전략별 파라미터 위젯 추가
+        if strategy_name == 'moving_average':
+            # 이동평균 전략 파라미터
+            self.backtest_ma_short = QSpinBox()
+            self.backtest_ma_short.setRange(1, 50)
+            self.backtest_ma_short.setValue(9)
+            self.backtest_ma_long = QSpinBox()
+            self.backtest_ma_long.setRange(10, 200)
+            self.backtest_ma_long.setValue(26)
+            self.backtest_ma_type = QComboBox()
+            self.backtest_ma_type.addItems(['sma', 'ema'])
+            
+            self.backtest_params_layout.addRow("단기 이동평균선:", self.backtest_ma_short)
+            self.backtest_params_layout.addRow("장기 이동평균선:", self.backtest_ma_long)
+            self.backtest_params_layout.addRow("이동평균 유형:", self.backtest_ma_type)
+            
+        elif strategy_name == 'rsi':
+            # RSI 전략 파라미터
+            self.backtest_rsi_period = QSpinBox()
+            self.backtest_rsi_period.setRange(1, 50)
+            self.backtest_rsi_period.setValue(14)
+            self.backtest_rsi_overbought = QSpinBox()
+            self.backtest_rsi_overbought.setRange(50, 100)
+            self.backtest_rsi_overbought.setValue(70)
+            self.backtest_rsi_oversold = QSpinBox()
+            self.backtest_rsi_oversold.setRange(0, 50)
+            self.backtest_rsi_oversold.setValue(30)
+            
+            self.backtest_params_layout.addRow("RSI 기간:", self.backtest_rsi_period)
+            self.backtest_params_layout.addRow("과매수 기준:", self.backtest_rsi_overbought)
+            self.backtest_params_layout.addRow("과매도 기준:", self.backtest_rsi_oversold)
+            
+        elif strategy_name == 'macd':
+            # MACD 전략 파라미터
+            self.backtest_macd_fast = QSpinBox()
+            self.backtest_macd_fast.setRange(1, 50)
+            self.backtest_macd_fast.setValue(12)
+            self.backtest_macd_slow = QSpinBox()
+            self.backtest_macd_slow.setRange(10, 100)
+            self.backtest_macd_slow.setValue(26)
+            self.backtest_macd_signal = QSpinBox()
+            self.backtest_macd_signal.setRange(1, 50)
+            self.backtest_macd_signal.setValue(9)
+            
+            self.backtest_params_layout.addRow("빠른 EMA 기간:", self.backtest_macd_fast)
+            self.backtest_params_layout.addRow("느린 EMA 기간:", self.backtest_macd_slow)
+            self.backtest_params_layout.addRow("시그널 기간:", self.backtest_macd_signal)
+            
+        elif strategy_name == 'bollinger_bands':
+            # 볼린저 밴드 전략 파라미터
+            self.backtest_bb_period = QSpinBox()
+            self.backtest_bb_period.setRange(1, 100)
+            self.backtest_bb_period.setValue(20)
+            self.backtest_bb_std = QDoubleSpinBox()
+            self.backtest_bb_std.setRange(0.1, 5.0)
+            self.backtest_bb_std.setValue(2.0)
+            self.backtest_bb_std.setSingleStep(0.1)
+            
+            self.backtest_params_layout.addRow("기간:", self.backtest_bb_period)
+            self.backtest_params_layout.addRow("표준편차 배수:", self.backtest_bb_std)
+            
+        elif strategy_name == 'stochastic':
+            # 스토캐스틱 전략 파라미터
+            self.backtest_stoch_k = QSpinBox()
+            self.backtest_stoch_k.setRange(1, 30)
+            self.backtest_stoch_k.setValue(14)
+            self.backtest_stoch_d = QSpinBox()
+            self.backtest_stoch_d.setRange(1, 30)
+            self.backtest_stoch_d.setValue(3)
+            self.backtest_stoch_overbought = QSpinBox()
+            self.backtest_stoch_overbought.setRange(50, 100)
+            self.backtest_stoch_overbought.setValue(80)
+            self.backtest_stoch_oversold = QSpinBox()
+            self.backtest_stoch_oversold.setRange(0, 50)
+            self.backtest_stoch_oversold.setValue(20)
+            
+            self.backtest_params_layout.addRow("%K 기간:", self.backtest_stoch_k)
+            self.backtest_params_layout.addRow("%D 기간:", self.backtest_stoch_d)
+            self.backtest_params_layout.addRow("과매수 기준:", self.backtest_stoch_overbought)
+            self.backtest_params_layout.addRow("과매도 기준:", self.backtest_stoch_oversold)
+            
+        elif strategy_name == 'breakout':
+            # 브레이크아웃 전략 파라미터
+            self.backtest_breakout_period = QSpinBox()
+            self.backtest_breakout_period.setRange(5, 100)
+            self.backtest_breakout_period.setValue(20)
+            
+            self.backtest_params_layout.addRow("기간:", self.backtest_breakout_period)
+            
+        elif strategy_name == 'volatility_breakout':
+            # 변동성 돌파 전략 파라미터
+            self.backtest_vb_period = QSpinBox()
+            self.backtest_vb_period.setRange(1, 20)
+            self.backtest_vb_period.setValue(1)
+            self.backtest_vb_k = QDoubleSpinBox()
+            self.backtest_vb_k.setRange(0.1, 2.0)
+            self.backtest_vb_k.setValue(0.5)
+            self.backtest_vb_k.setSingleStep(0.1)
+            
+            self.backtest_params_layout.addRow("기간:", self.backtest_vb_period)
+            self.backtest_params_layout.addRow("K 값:", self.backtest_vb_k)
+            
+        elif strategy_name == 'combined':
+            # 복합 전략 파라미터 (각 전략의 사용 여부)
+            self.backtest_use_ma = QCheckBox("이동평균 사용")
+            self.backtest_use_ma.setChecked(True)
+            self.backtest_use_rsi = QCheckBox("RSI 사용")
+            self.backtest_use_rsi.setChecked(True)
+            self.backtest_use_macd = QCheckBox("MACD 사용")
+            self.backtest_use_macd.setChecked(True)
+            self.backtest_use_bb = QCheckBox("볼린저 밴드 사용")
+            self.backtest_use_bb.setChecked(False)
+            
+            self.backtest_params_layout.addRow("", self.backtest_use_ma)
+            self.backtest_params_layout.addRow("", self.backtest_use_rsi)
+            self.backtest_params_layout.addRow("", self.backtest_use_macd)
+            self.backtest_params_layout.addRow("", self.backtest_use_bb)
+    
+    def run_backtest(self):
+        """백테스트를 실행하고 결과를 표시합니다."""
+        try:
+            # 사용자 입력 값 가져오기
+            exchange = self.backtest_exchange_combo.currentText()
+            symbol = self.backtest_symbol_edit.text()
+            timeframe = self.backtest_timeframe_combo.currentText()
+            start_date = self.backtest_start_date.date().toString("yyyy-MM-dd")
+            end_date = self.backtest_end_date.date().toString("yyyy-MM-dd")
+            initial_balance = self.backtest_initial_balance.value()
+            commission = self.backtest_commission.value()
+            strategy_name = self.backtest_strategy_combo.currentText()
+            
+            # 시장 타입 및 레버리지 가져오기
+            market_type = self.backtest_market_type_combo.currentText()
+            leverage = 1  # 기본값
+            if market_type == 'futures':
+                leverage = self.backtest_leverage_spin.value()
+            
+            self.log_text.append(f"백테스트 시작: {strategy_name} 전략, {symbol}, {start_date}~{end_date}, 시장 타입: {market_type}{', 레버리지: ' + str(leverage) + '배' if market_type == 'futures' else ''}")
+            
+            # 백테스터 초기화
+            backtester = Backtester(exchange_id=exchange, symbol=symbol, timeframe=timeframe, 
+                                market_type=market_type, leverage=leverage)
+            
+            # 전략 생성
+            strategy = None
+            if strategy_name == 'moving_average':
+                # backtest_ma_type이 존재하는지 확인하고 존재하면 사용, 존재하지 않으면 기본값 'sma' 사용
+                ma_type = 'sma'
+                try:
+                    if hasattr(self, 'backtest_ma_type'):
+                        ma_type = self.backtest_ma_type.currentText()
+                except Exception as e:
+                    logger.warning(f"이동평균 유형 설정 오류, 기본값 'sma' 사용: {e}")
+                
+                strategy = MovingAverageCrossover(
+                    short_period=self.backtest_ma_short.value(),
+                    long_period=self.backtest_ma_long.value(),
+                    ma_type=ma_type
+                )
+            elif strategy_name == 'rsi':
+                strategy = RSIStrategy(
+                    period=self.backtest_rsi_period.value(),
+                    overbought=self.backtest_rsi_overbought.value(),
+                    oversold=self.backtest_rsi_oversold.value()
+                )
+            elif strategy_name == 'macd':
+                strategy = MACDStrategy(
+                    fast_period=self.backtest_macd_fast.value(),
+                    slow_period=self.backtest_macd_slow.value(),
+                    signal_period=self.backtest_macd_signal.value()
+                )
+            elif strategy_name == 'bollinger_bands':
+                strategy = BollingerBandsStrategy(
+                    period=self.backtest_bb_period.value(),
+                    std_dev=self.backtest_bb_std.value()
+                )
+            elif strategy_name == 'stochastic':
+                strategy = StochasticStrategy(
+                    k_period=self.backtest_stoch_k.value(),
+                    d_period=self.backtest_stoch_d.value(),
+                    overbought=self.backtest_stoch_overbought.value(),
+                    oversold=self.backtest_stoch_oversold.value()
+                )
+            elif strategy_name == 'breakout':
+                strategy = BreakoutStrategy(
+                    period=self.backtest_breakout_period.value()
+                )
+            elif strategy_name == 'volatility_breakout':
+                strategy = VolatilityBreakoutStrategy(
+                    period=self.backtest_vb_period.value(),
+                    k=self.backtest_vb_k.value()
+                )
+            elif strategy_name == 'combined':
+                # 선택한 전략들을 조합
+                strategies = []
+                if self.backtest_use_ma.isChecked():
+                    # 이동평균 전략 추가 - 기본값으로 'ema' 사용 (최신 암호화폐에 더 적합)
+                    strategies.append(MovingAverageCrossover(short_period=9, long_period=26, ma_type='ema'))
+                if self.backtest_use_rsi.isChecked():
+                    strategies.append(RSIStrategy(period=14, overbought=70, oversold=30))
+                if self.backtest_use_macd.isChecked():
+                    strategies.append(MACDStrategy(fast_period=12, slow_period=26, signal_period=9))
+                if self.backtest_use_bb.isChecked():
+                    strategies.append(BollingerBandsStrategy(period=20, std_dev=2.0))
+                
+                if not strategies:
+                    QMessageBox.warning(self, "경고", "적어도 하나 이상의 전략을 선택해야 합니다.")
+                    return
+                
+                # 동일한 가중치 부여
+                weights = [1/len(strategies)] * len(strategies)
+                strategy = CombinedStrategy(strategies, weights)
+            
+            # 백테스트 실행
+            result = backtester.run_backtest(
+                strategy=strategy,
+                start_date=start_date,
+                end_date=end_date,
+                initial_balance=initial_balance,
+                commission=commission
+            )
+            
+            # 결과가 None인지 확인
+            if result is None:
+                QMessageBox.warning(self, "경고", "백테스트 데이터를 가져오는 데 실패했습니다. \n다른 기간이나 심볼을 선택해보세요.")
+                self.log_text.append("백테스트 실패: 데이터를 가져오는 데 실패했습니다.")
+                return
+            
+            # 결과 표시
+            self.update_backtest_results(result)
+            
+            self.log_text.append(f"백테스트 완료: 총 수익률 {result.total_return:.2f}%")
+            
+            # 결과 저장을 위한 현재 백테스트 결과 저장
+            self.current_backtest_result = result
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"백테스트 실행 중 오류 발생: {str(e)}")
+            logger.error(f"백테스트 오류: {str(e)}")
+    
+    def update_backtest_results(self, result):
+        """백테스트 결과를 UI에 표시합니다."""
+        # result가 None인지 확인
+        if result is None:
+            # 결과가 없을 경우 테이블 초기화
+            for i in range(10):
+                self.backtest_result_table.setItem(i, 0, QTableWidgetItem(""))
+                self.backtest_result_table.setItem(i, 1, QTableWidgetItem(""))
+            return
+            
+        # 결과 테이블 업데이트
+        metrics = [
+            ("총 수익률 (%)", f"{result.total_return:.2f}"),
+            ("연간 수익률 (%)", f"{result.annual_return:.2f}"),
+            ("최대 낙폭 (%)", f"{result.max_drawdown:.2f}"),
+            ("승률 (%)", f"{result.win_rate:.2f}"),
+            ("총 거래 횟수", f"{result.total_trades}"),
+            ("평균 보유 기간", f"{result.average_holding_period:.1f} 일"),
+            ("샤프 비율", f"{result.sharpe_ratio:.2f}"),
+            ("손익비", f"{result.profit_factor:.2f}"),
+            ("최대 연속 손실", f"{result.max_consecutive_losses}"),
+            ("최대 연속 이익", f"{result.max_consecutive_wins}")
+        ]
+        
+        for i, (metric, value) in enumerate(metrics):
+            self.backtest_result_table.setItem(i, 0, QTableWidgetItem(metric))
+            self.backtest_result_table.setItem(i, 1, QTableWidgetItem(value))
+        
+        # 차트 업데이트
+        self.backtest_figure.clear()
+        
+        # result가 None인지 확인
+        if result is None:
+            # 결과가 없을 경우 빈 차트 표시
+            ax = self.backtest_figure.add_subplot(111)
+            ax.text(0.5, 0.5, '백테스트 결과가 없습니다', 
+                    horizontalalignment='center', verticalalignment='center',
+                    transform=ax.transAxes, fontsize=12)
+            ax.axis('off')
+            self.backtest_figure.tight_layout()
+            self.backtest_canvas.draw()
+            return
+        
+        # 수익률 곡선 그래프
+        ax1 = self.backtest_figure.add_subplot(211)
+        ax1.plot(result.equity_curve.index, result.equity_curve['equity_curve'] * 100, label='전략')
+        ax1.plot(result.equity_curve.index, result.equity_curve['buy_hold_return'] * 100, 'g--', label='Buy & Hold')
+        ax1.set_title('수익률 곡선')
+        ax1.set_ylabel('수익률 (%)')
+        ax1.legend()
+        ax1.grid(True)
+        
+        # 손익 분포 히스토그램
+        ax2 = self.backtest_figure.add_subplot(212)
+        ax2.hist(result.trade_records['return'] * 100, bins=20, alpha=0.7)
+        ax2.set_title('거래별 손익 분포')
+        ax2.set_xlabel('수익률 (%)')
+        ax2.set_ylabel('빈도')
+        ax2.grid(True)
+        
+        self.backtest_figure.tight_layout()
+        self.backtest_canvas.draw()
+    
+    def save_backtest_result(self):
+        """백테스트 결과를 파일로 저장합니다."""
+        if not hasattr(self, 'current_backtest_result') or self.current_backtest_result is None:
+            QMessageBox.warning(self, "경고", "저장할 백테스트 결과가 없습니다.")
+            return
+        
+        try:
+            # 저장 경로 선택 대화상자
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "백테스트 결과 저장", "", "CSV 파일 (*.csv);;JSON 파일 (*.json);;모든 파일 (*.*)"
+            )
+            
+            if not save_path:
+                return  # 사용자가 취소함
+            
+            result = self.current_backtest_result
+            
+            # 파일 확장자에 따라 저장 형식 선택
+            if save_path.endswith('.csv'):
+                # CSV 형식으로 저장
+                # 기본 결과 정보 저장
+                with open(save_path, 'w') as f:
+                    f.write("항목,값\n")
+                    f.write(f"전략,{result.strategy_name}\n")
+                    f.write(f"심볼,{result.symbol}\n")
+                    f.write(f"타임프레임,{result.timeframe}\n")
+                    f.write(f"시작 날짜,{result.start_date}\n")
+                    f.write(f"종료 날짜,{result.end_date}\n")
+                    f.write(f"초기 자본,{result.initial_balance}\n")
+                    f.write(f"최종 자본,{result.final_balance}\n")
+                    f.write(f"총 수익률,{result.total_return:.4f}\n")
+                    f.write(f"연간 수익률,{result.annual_return:.4f}\n")
+                    f.write(f"최대 낙폭,{result.max_drawdown:.4f}\n")
+                    f.write(f"승률,{result.win_rate:.4f}\n")
+                    f.write(f"총 거래 횟수,{result.total_trades}\n")
+                    f.write(f"평균 보유 기간,{result.average_holding_period:.2f}\n")
+                    f.write(f"샤프 비율,{result.sharpe_ratio:.4f}\n")
+                    f.write(f"손익비,{result.profit_factor:.4f}\n")
+                    f.write(f"최대 연속 손실,{result.max_consecutive_losses}\n")
+                    f.write(f"최대 연속 이익,{result.max_consecutive_wins}\n")
+                
+                # 거래 기록 저장
+                trade_csv_path = save_path.replace('.csv', '_trades.csv')
+                result.trade_records.to_csv(trade_csv_path, index=False)
+                
+                # 수익률 곡선 저장
+                equity_csv_path = save_path.replace('.csv', '_equity.csv')
+                result.equity_curve.to_csv(equity_csv_path)
+                
+            elif save_path.endswith('.json'):
+                # JSON 형식으로 저장
+                import json
+                
+                # 기본 결과 정보
+                result_dict = {
+                    "strategy_name": result.strategy_name,
+                    "symbol": result.symbol,
+                    "timeframe": result.timeframe,
+                    "start_date": result.start_date,
+                    "end_date": result.end_date,
+                    "initial_balance": result.initial_balance,
+                    "final_balance": result.final_balance,
+                    "total_return": result.total_return,
+                    "annual_return": result.annual_return,
+                    "max_drawdown": result.max_drawdown,
+                    "win_rate": result.win_rate,
+                    "total_trades": result.total_trades,
+                    "average_holding_period": result.average_holding_period,
+                    "sharpe_ratio": result.sharpe_ratio,
+                    "profit_factor": result.profit_factor,
+                    "max_consecutive_losses": result.max_consecutive_losses,
+                    "max_consecutive_wins": result.max_consecutive_wins,
+                    # 거래 기록과 수익률 곡선은 별도 파일로 저장
+                }
+                
+                with open(save_path, 'w') as f:
+                    json.dump(result_dict, f, indent=4)
+                
+                # 거래 기록과 수익률 곡선은 CSV로 별도 저장
+                trade_csv_path = save_path.replace('.json', '_trades.csv')
+                result.trade_records.to_csv(trade_csv_path, index=False)
+                
+                equity_csv_path = save_path.replace('.json', '_equity.csv')
+                result.equity_curve.to_csv(equity_csv_path)
+            
+            # 그래프 이미지 저장
+            fig_path = save_path.replace('.csv', '.png').replace('.json', '.png')
+            self.backtest_figure.savefig(fig_path, dpi=300, bbox_inches='tight')
+            
+            QMessageBox.information(self, "알림", f"백테스트 결과가 성공적으로 저장되었습니다.\n{save_path}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"백테스트 결과 저장 중 오류 발생: {str(e)}")
+            logger.error(f"백테스트 결과 저장 오류: {str(e)}")
 
 # 메인 함수
 def main():
