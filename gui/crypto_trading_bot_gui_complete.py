@@ -33,6 +33,9 @@ QTabWidget, QFileDialog, QMessageBox, QDateEdit, QHeaderView, QSizePolicy)
 from PyQt5.QtCore import QThread, pyqtSignal, Qt, QDate
 from PyQt5.QtGui import QFont, QIcon
 
+# 지갑 잔액 위젯 임포트
+from gui.wallet_balance_widget import WalletBalanceWidget
+
 # 로깅 설정
 logging.basicConfig(
 level=logging.INFO,
@@ -557,6 +560,10 @@ class CryptoTradingBotApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.bot_thread = None
+        
+        # 지갑 위젯 인스턴스 생성
+        self.wallet_widget = WalletBalanceWidget()
+        
         self.initUI()
         
         # 환경 변수 로드
@@ -568,6 +575,14 @@ class CryptoTradingBotApp(QMainWindow):
         if api_key and api_secret:
             self.api_key_input.setText(api_key)
             self.api_secret_input.setText(api_secret)
+            
+            # API 키 설정 후 지갑 위젯 초기화
+            self.wallet_widget.set_api(
+                exchange_id=self.exchange_combo.currentText(),
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=self.symbol_input.text()
+            )
     
     def initUI(self):
         self.setWindowTitle('암호화폐 자동 매매 봇')
@@ -817,6 +832,7 @@ class CryptoTradingBotApp(QMainWindow):
         
         # 설정 탭에 그룹 추가
         settings_content_layout.addWidget(api_group)
+        settings_content_layout.addWidget(self.wallet_widget)
         settings_content_layout.addWidget(trade_group)
         settings_content_layout.addWidget(risk_group)
         settings_content_layout.addWidget(strategy_group)
@@ -1147,6 +1163,32 @@ class CryptoTradingBotApp(QMainWindow):
         # 스크롤을 항상 아래로 유지
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
     
+    def check_api_connection(self):
+        # API 키 가져오기
+        api_key = self.api_key_input.text()
+        api_secret = self.api_secret_input.text()
+        exchange = self.exchange_combo.currentText()
+        
+        # 지갑 API 설정 및 테스트
+        connection_result = self.wallet_widget.set_api(
+            exchange_id=exchange,
+            api_key=api_key,
+            api_secret=api_secret,
+            symbol=self.symbol_input.text()
+        )
+        
+        # 연결 결과 메시지
+        msg = QMessageBox()
+        if connection_result:
+            msg.setIcon(QMessageBox.Information)
+            msg.setText("API 연결에 성공했습니다.")
+        else:
+            msg.setIcon(QMessageBox.Warning)
+            msg.setText("API 연결에 실패했습니다. API 키를 확인하세요.")
+        
+        msg.setWindowTitle("API 연결 테스트")
+        msg.exec_()
+        
     def save_settings(self):
         # 설정 저장
         settings = {
@@ -1186,7 +1228,34 @@ class CryptoTradingBotApp(QMainWindow):
             for key, value in settings.items():
                 f.write(f"{key}={value}\n")
         
-        QMessageBox.information(self, "알림", "설정이 저장되었습니다.")
+        # API 키 가져오기
+        api_key = self.api_key_input.text()
+        api_secret = self.api_secret_input.text()
+        exchange = self.exchange_combo.currentText()
+        
+        # 환경 변수 저장
+        os.environ['BINANCE_API_KEY'] = api_key
+        os.environ['BINANCE_API_SECRET'] = api_secret
+        
+        # 지갑 API 설정 및 테스트
+        connection_result = self.wallet_widget.set_api(
+            exchange_id=exchange,
+            api_key=api_key,
+            api_secret=api_secret,
+            symbol=self.symbol_input.text()
+        )
+        
+        # 설정 저장 완료 메시지
+        msg = QMessageBox()
+        if connection_result:
+            msg.setIcon(QMessageBox.Information)
+            msg.setText("설정이 저장되었으며 API 연결에 성공했습니다.")
+        else:
+            msg.setIcon(QMessageBox.Warning)
+            msg.setText("설정이 저장되었으나 API 연결에 실패했습니다. API 키를 확인하세요.")
+        
+        msg.setWindowTitle("설정 저장")
+        msg.exec_()
     
     def closeEvent(self, event):
         # 프로그램 종료 시 봇 중지
