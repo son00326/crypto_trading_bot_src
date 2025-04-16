@@ -50,9 +50,11 @@ class WalletBalanceWidget(QWidget):
         self.status_layout.addStretch()
         self.status_layout.addWidget(self.refresh_button)
         
-        # 잔액 테이블
-        self.balance_table = QTableWidget(0, 4)  # 행, 열 (4열로 변경)
-        self.balance_table.setHorizontalHeaderLabels(["코인", "사용 가능", "총 잔액", "레버리지/유형"])
+        # 잔액 테이블 - 포지션 정보 추가
+        self.balance_table = QTableWidget(0, 7)  # 행, 열 (7열로 변경)
+        self.balance_table.setHorizontalHeaderLabels([
+            "코인", "사용 가능", "총 잔액", "포지션 금액", "PNL %", "포지션 타입", "레버리지/유형"
+        ])
         self.balance_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         
         # 테이블 높이 설정 - 코인 리스트를 더 많이 표시하기 위해 높이 증가
@@ -135,7 +137,7 @@ class WalletBalanceWidget(QWidget):
             return False
     
     def refresh_balance(self):
-        """잔액 새로고침"""
+        """잔액 및 포지션 정보 새로고침"""
         try:
             if not self.api:
                 self.connection_status.setText("연결 상태: API 설정 필요")
@@ -147,6 +149,20 @@ class WalletBalanceWidget(QWidget):
                 self.connection_status.setText("연결 상태: 잔액 조회 실패")
                 self.connection_status.setStyleSheet("color: red;")
                 return
+            
+            # 선물 시장일 경우 포지션 정보 가져오기
+            positions = []
+            position_map = {}
+            
+            if self.api.market_type == 'futures':
+                positions = self.api.get_positions()
+                # 심볼별 포지션 맵 만들기
+                for position in positions:
+                    if 'symbol' in position and position.get('contracts', 0) > 0:
+                        # 심볼 형식 처리 - 예: BTCUSDT -> BTC
+                        symbol = position['symbol']
+                        base_currency = symbol.replace('USDT', '').replace('USD', '')
+                        position_map[base_currency] = position
             
             # 테이블 초기화
             self.balance_table.setRowCount(0)
@@ -174,6 +190,47 @@ class WalletBalanceWidget(QWidget):
                     total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                     self.balance_table.setItem(row, 2, total_item)
                     
+                    # 포지션 정보 표시 (선물 시장일 경우)
+                    position_value_item = QTableWidgetItem("-")
+                    pnl_item = QTableWidgetItem("-")
+                    position_type_item = QTableWidgetItem("-")
+                    
+                    # 포지션 정보가 있는 경우
+                    if currency in position_map:
+                        position = position_map[currency]
+                        
+                        # 포지션 금액
+                        position_value = position.get('position_value', 0)
+                        position_value_item = QTableWidgetItem(f"{position_value:.2f}")
+                        position_value_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        
+                        # PNL 표시
+                        pnl_percent = position.get('pnl_percent', 0)
+                        pnl_item = QTableWidgetItem(f"{pnl_percent:.2f}%")
+                        pnl_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                        
+                        # PNL 값에 따라 색상 적용
+                        if pnl_percent > 0:
+                            pnl_item.setForeground(QColor('green'))
+                        elif pnl_percent < 0:
+                            pnl_item.setForeground(QColor('red'))
+                        
+                        # 포지션 타입 (Long/Short)
+                        side = position.get('side', '-')
+                        position_type_item = QTableWidgetItem(side.capitalize())
+                        position_type_item.setTextAlignment(Qt.AlignCenter)
+                        
+                        # 포지션 타입에 따른 색상 적용
+                        if side.lower() == 'long':
+                            position_type_item.setForeground(QColor('green'))
+                        elif side.lower() == 'short':
+                            position_type_item.setForeground(QColor('red'))
+                    
+                    # 테이블에 항목 추가
+                    self.balance_table.setItem(row, 3, position_value_item)
+                    self.balance_table.setItem(row, 4, pnl_item)
+                    self.balance_table.setItem(row, 5, position_type_item)
+                    
                     # 레버리지/마켓 유형 정보
                     market_type = self.api.market_type
                     leverage = self.api.leverage if market_type == 'futures' else 1
@@ -183,7 +240,7 @@ class WalletBalanceWidget(QWidget):
                     else:
                         info_item = QTableWidgetItem("Spot")
                     info_item.setTextAlignment(Qt.AlignCenter)
-                    self.balance_table.setItem(row, 3, info_item)
+                    self.balance_table.setItem(row, 6, info_item)
                     
                     row += 1
             

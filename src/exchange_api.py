@@ -175,6 +175,57 @@ class ExchangeAPI:
         except Exception as e:
             logger.error(f"잔고 조회 중 오류 발생: {e}")
             return None
+            
+    def get_positions(self, symbol=None):
+        """현재 포지션 정보 조회
+        
+        Args:
+            symbol (str, optional): 거래 심볼. 기본값은 인스턴스의 symbol
+            
+        Returns:
+            list: 포지션 정보 리스트. 현물 계좌 또는 오류 발생 시 빈 리스트 반환
+        """
+        try:
+            if self.market_type != 'futures':
+                # 현물 계좌에서는 포지션을 반환하지 않음
+                return []
+            
+            # 심볼 처리
+            if symbol:
+                symbol = self._convert_symbol_format(symbol)
+            else:
+                symbol = self._convert_symbol_format(self.symbol)
+                
+            positions = self.exchange.fetch_positions(symbol)
+            
+            # 포지션 정보 없을 경우 빈 리스트 반환
+            if not positions:
+                return []
+                
+            # 필요한 추가 계산 수행
+            for position in positions:
+                # 포지션 정보에 없는 경우 추가 계산
+                if 'entryPrice' in position and 'markPrice' in position and position['entryPrice'] != 0:
+                    entry_price = float(position['entryPrice'])
+                    mark_price = float(position['markPrice'])
+                    size = float(position['size']) if 'size' in position else float(position['contracts']) if 'contracts' in position else 0
+                    side = position['side']
+                    leverage = float(position['leverage']) if 'leverage' in position else self.leverage
+                    
+                    # PNL 계산
+                    if side == 'long':
+                        pnl_percent = ((mark_price - entry_price) / entry_price) * 100 * leverage
+                    else:  # short
+                        pnl_percent = ((entry_price - mark_price) / entry_price) * 100 * leverage
+                        
+                    position['pnl_percent'] = pnl_percent
+                    position['position_value'] = size * mark_price
+                    
+            return positions
+            
+        except Exception as e:
+            logger.error(f"포지션 정보 조회 중 오류 발생: {e}")
+            return []
     
     def create_market_buy_order(self, symbol=None, amount=None):
         """시장가 매수 주문
