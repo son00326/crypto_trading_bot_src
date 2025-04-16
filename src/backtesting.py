@@ -666,6 +666,7 @@ class Backtester:
                             'entry_time': current_candle.name.isoformat(),
                             'entry_price': current_price,
                             'quantity': position,
+                            'entry_amount': buy_value,  # 매수 금액 추가 (수익률 계산에 필요)
                             'side': 'long',
                             'status': 'open',
                             'entry_balance': total_balance

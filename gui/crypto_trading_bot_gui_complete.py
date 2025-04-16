@@ -1164,17 +1164,23 @@ class CryptoTradingBotApp(QMainWindow):
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
     
     def check_api_connection(self):
+        """API 연결 테스트"""
         # API 키 가져오기
         api_key = self.api_key_input.text()
         api_secret = self.api_secret_input.text()
         exchange = self.exchange_combo.currentText()
+        
+        # 마켓 타입 가져오기
+        market_type = self.market_type_combo.currentText()
+        leverage = self.leverage_spin.value() if market_type == 'futures' else 1
         
         # 지갑 API 설정 및 테스트
         connection_result = self.wallet_widget.set_api(
             exchange_id=exchange,
             api_key=api_key,
             api_secret=api_secret,
-            symbol=self.symbol_input.text()
+            symbol=self.symbol_input.text(),
+            market_type=market_type
         )
         
         # 연결 결과 메시지
