@@ -581,7 +581,7 @@ class CryptoTradingBotApp(QMainWindow):
                 exchange_id=self.exchange_combo.currentText(),
                 api_key=api_key,
                 api_secret=api_secret,
-                symbol=self.symbol_input.text()
+                symbol=self.symbol_combo.currentText()
             )
     
     def initUI(self):
@@ -626,7 +626,13 @@ class CryptoTradingBotApp(QMainWindow):
         trade_group = QGroupBox("거래 설정")
         trade_layout = QFormLayout()
         
-        self.symbol_input = QLineEdit("BTC/USDT")
+        # 거래 쌍 드롭다운 메뉴 생성
+        self.symbol_combo = QComboBox()
+        # 초기 거래 타입에 맞는 심볼 목록 로딩
+        market_type = 'spot'  # 기본값
+        symbol_list = self.get_symbol_list(market_type)
+        self.symbol_combo.addItems(symbol_list)
+        self.symbol_combo.setCurrentText("BTC/USDT")  # 기본값 설정
         
         self.timeframe_combo = QComboBox()
         self.timeframe_combo.addItems(['1m', '5m', '15m', '30m', '1h', '4h', '1d'])
@@ -644,7 +650,7 @@ class CryptoTradingBotApp(QMainWindow):
         self.market_type_combo = QComboBox()
         self.market_type_combo.addItems(['spot', 'futures'])
         self.market_type_combo.setCurrentText('spot')
-        self.market_type_combo.currentTextChanged.connect(self.toggle_leverage_settings)
+        self.market_type_combo.currentTextChanged.connect(self.on_market_type_changed)
         
         # 레버리지 설정
         self.leverage_spin = QSpinBox()
@@ -653,7 +659,7 @@ class CryptoTradingBotApp(QMainWindow):
         self.leverage_spin.setSuffix("x")
         self.leverage_spin.setVisible(False)  # 기본적으로 숨김 (현물 거래 선택시)
         
-        trade_layout.addRow("거래 쌍:", self.symbol_input)
+        trade_layout.addRow("거래 쌍:", self.symbol_combo)
         trade_layout.addRow("타임프레임:", self.timeframe_combo)
         trade_layout.addRow("거래 타입:", self.market_type_combo)
         trade_layout.addRow("레버리지:", self.leverage_spin)
@@ -1036,10 +1042,33 @@ class CryptoTradingBotApp(QMainWindow):
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
     
+    def on_market_type_changed(self, market_type):
+        """거래 타입 변경 시 거래 쌍 목록 업데이트"""
+        # 현재 선택된 심볼 저장 (있다면)
+        current_symbol = self.symbol_combo.currentText() if self.symbol_combo.count() > 0 else ""
+        
+        # 심볼 목록 업데이트
+        self.symbol_combo.clear()
+        symbol_list = self.get_symbol_list(market_type)
+        self.symbol_combo.addItems(symbol_list)
+        
+        # 현재 심볼을 새 형식으로 변환하여 선택 (이전에 선택된 심볼이 있었다면)
+        if current_symbol:
+            converted_symbol = self.convert_symbol_format(current_symbol, market_type)
+            index = self.symbol_combo.findText(converted_symbol)
+            if index >= 0:
+                self.symbol_combo.setCurrentIndex(index)
+        
+        # 레버리지 설정 토글
+        self.toggle_leverage_settings()
+        
+        logger.info(f"거래 타입 변경: {market_type}, 심볼 목록 업데이트")
+        
     def toggle_leverage_settings(self):
-        """거래 타입에 따라 레버리지 설정 표시 여부 토글"""
+        """선물거래 시 레버리지 설정 화면 표시"""
         market_type = self.market_type_combo.currentText()
-        self.leverage_spin.setVisible(market_type == 'futures')
+        is_futures = market_type.lower() == 'futures'
+        self.leverage_spin.setVisible(is_futures)
         
     def toggle_backtest_leverage_settings(self):
         """백테스트 시장 타입에 따라 레버리지 설정 표시 여부 토글"""
@@ -1062,7 +1091,7 @@ class CryptoTradingBotApp(QMainWindow):
         
         # 설정 가져오기
         exchange = self.exchange_combo.currentText()
-        symbol = self.symbol_input.text()
+        symbol = self.symbol_combo.currentText()
         timeframe = self.timeframe_combo.currentText()
         interval = self.interval_spin.value()
         test_mode = self.test_mode_check.isChecked()
@@ -1168,6 +1197,55 @@ class CryptoTradingBotApp(QMainWindow):
         # 스크롤을 항상 아래로 유지
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
     
+    def get_symbol_list(self, market_type='spot'):
+        """거래 타입에 따른 기본 거래 쌍 목록 반환"""
+        spot_symbols = [
+            "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", 
+            "ADA/USDT", "DOT/USDT", "DOGE/USDT", "LINK/USDT",
+            "MATIC/USDT", "LTC/USDT", "UNI/USDT", "AVAX/USDT"
+        ]
+        
+        futures_symbols = [
+            "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", 
+            "ADAUSDT", "DOTUSDT", "DOGEUSDT", "LINKUSDT",
+            "MATICUSDT", "LTCUSDT", "UNIUSDT", "AVAXUSDT"
+        ]
+        
+        return spot_symbols if market_type.lower() == 'spot' else futures_symbols
+    
+    def fetch_available_symbols(self, market_type='spot'):
+        """거래소에서 실제 거래 가능한 심볼 목록 가져오기"""
+        try:
+            exchange_id = self.exchange_combo.currentText().lower()
+            exchange = getattr(ccxt, exchange_id)({'enableRateLimit': True})
+            
+            if market_type.lower() == 'spot':
+                markets = exchange.load_markets()
+                return [symbol for symbol in markets.keys() if '/USDT' in symbol]
+            else:  # futures
+                if exchange_id == 'binance':
+                    markets = exchange.fetch_derivatives_markets()
+                    return [market['id'] for market in markets if 'USDT' in market['id']]
+                return self.get_symbol_list('futures')  # 기본값 반환
+        except Exception as e:
+            logger.error(f"심볼 목록 조회 중 오류: {e}")
+            return self.get_symbol_list(market_type)  # 오류 시 기본값 반환
+    
+    def convert_symbol_format(self, symbol, target_market_type):
+        """심볼 형식을 대상 마켓 타입에 맞게 변환"""
+        if target_market_type.lower() == 'spot':
+            # Futures -> Spot (BTCUSDT -> BTC/USDT)
+            if '/' not in symbol:
+                base = symbol.replace('USDT', '')
+                return f"{base}/USDT"
+            return symbol
+        else:
+            # Spot -> Futures (BTC/USDT -> BTCUSDT)
+            if '/' in symbol:
+                base, quote = symbol.split('/')
+                return f"{base}{quote}"
+            return symbol
+            
     def update_spin_suffix(self):
         """스핀박스의 값에 따라 괄호 안의 퍼센트 값을 업데이트"""
         # 손절매 스핀박스 업데이트
@@ -1188,7 +1266,7 @@ class CryptoTradingBotApp(QMainWindow):
             exchange_id = self.exchange_combo.currentText()
             api_key = self.api_key_input.text()
             api_secret = self.api_secret_input.text()
-            symbol = self.symbol_input.text()
+            symbol = self.symbol_combo.currentText()
             
             # 마켓 타입 및 레버리지 정보 가져오기
             market_type = self.market_type_combo.currentText().lower()
@@ -1204,7 +1282,7 @@ class CryptoTradingBotApp(QMainWindow):
                 exchange_id=exchange_id,
                 api_key=api_key,
                 api_secret=api_secret,
-                symbol=self.symbol_input.text(),
+                symbol=self.symbol_combo.currentText(),
                 market_type=market_type
             )
             
@@ -1229,7 +1307,7 @@ class CryptoTradingBotApp(QMainWindow):
         # 설정 저장
         settings = {
             "exchange": self.exchange_combo.currentText(),
-            "symbol": self.symbol_input.text(),
+            "symbol": self.symbol_combo.currentText(),
             "timeframe": self.timeframe_combo.currentText(),
             "interval": self.interval_spin.value(),
             "test_mode": self.test_mode_check.isChecked(),
@@ -1278,7 +1356,7 @@ class CryptoTradingBotApp(QMainWindow):
             exchange_id=exchange,
             api_key=api_key,
             api_secret=api_secret,
-            symbol=self.symbol_input.text()
+            symbol=self.symbol_combo.currentText()
         )
         
         # 설정 저장 완료 메시지
