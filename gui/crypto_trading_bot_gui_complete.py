@@ -810,19 +810,24 @@ class CryptoTradingBotApp(QMainWindow):
         self.stop_loss_spin.setRange(0.01, 0.5)
         self.stop_loss_spin.setValue(0.05)
         self.stop_loss_spin.setSingleStep(0.01)
-        self.stop_loss_spin.setSuffix(" (5%)")
         
         self.take_profit_spin = QDoubleSpinBox()
         self.take_profit_spin.setRange(0.01, 0.5)
         self.take_profit_spin.setValue(0.1)
         self.take_profit_spin.setSingleStep(0.01)
-        self.take_profit_spin.setSuffix(" (10%)")
         
         self.max_position_spin = QDoubleSpinBox()
         self.max_position_spin.setRange(0.01, 1)
         self.max_position_spin.setValue(0.2)
         self.max_position_spin.setSingleStep(0.05)
-        self.max_position_spin.setSuffix(" (20%)")
+        
+        # 스핀박스 값 변경시 괄호 안의 퍼센트 값도 업데이트되도록 연결
+        self.stop_loss_spin.valueChanged.connect(self.update_spin_suffix)
+        self.take_profit_spin.valueChanged.connect(self.update_spin_suffix)
+        self.max_position_spin.valueChanged.connect(self.update_spin_suffix)
+        
+        # 초기화 시 접미사 설정
+        self.update_spin_suffix()
         
         risk_layout.addRow("손절매 비율:", self.stop_loss_spin)
         risk_layout.addRow("이익실현 비율:", self.take_profit_spin)
@@ -1163,37 +1168,62 @@ class CryptoTradingBotApp(QMainWindow):
         # 스크롤을 항상 아래로 유지
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
     
+    def update_spin_suffix(self):
+        """스핀박스의 값에 따라 괄호 안의 퍼센트 값을 업데이트"""
+        # 손절매 스핀박스 업데이트
+        loss_value = self.stop_loss_spin.value()
+        self.stop_loss_spin.setSuffix(f" ({int(loss_value*100)}%)")
+        
+        # 이익실현 스핀박스 업데이트
+        profit_value = self.take_profit_spin.value()
+        self.take_profit_spin.setSuffix(f" ({int(profit_value*100)}%)")
+        
+        # 최대 포지션 스핀박스 업데이트
+        position_value = self.max_position_spin.value()
+        self.max_position_spin.setSuffix(f" ({int(position_value*100)}%)")
+    
     def check_api_connection(self):
-        """API 연결 테스트"""
-        # API 키 가져오기
-        api_key = self.api_key_input.text()
-        api_secret = self.api_secret_input.text()
-        exchange = self.exchange_combo.currentText()
+        """거래소 API 연결 테스트"""
+        try:
+            exchange_id = self.exchange_combo.currentText()
+            api_key = self.api_key_input.text()
+            api_secret = self.api_secret_input.text()
+            symbol = self.symbol_input.text()
+            
+            # 마켓 타입 및 레버리지 정보 가져오기
+            market_type = self.market_type_combo.currentText().lower()
+            leverage = self.leverage_spin.value() if market_type == 'futures' else 1
+            
+            if not (api_key and api_secret):
+                self.status_label.setText("상태: API 키와 시크릿을 입력해주세요.")
+                self.status_label.setStyleSheet("color: red;")
+                return
+            
+            # 지갑 API 설정 및 테스트
+            connection_result = self.wallet_widget.set_api(
+                exchange_id=exchange_id,
+                api_key=api_key,
+                api_secret=api_secret,
+                symbol=self.symbol_input.text(),
+                market_type=market_type
+            )
+            
+            # 연결 결과 메시지
+            msg = QMessageBox()
+            if connection_result:
+                msg.setIcon(QMessageBox.Information)
+                msg.setText("API 연결에 성공했습니다.")
+            else:
+                msg.setIcon(QMessageBox.Warning)
+                msg.setText("API 연결에 실패했습니다. API 키를 확인하세요.")
+            
+            msg.setWindowTitle("API 연결 테스트")
+            msg.exec_()
         
-        # 마켓 타입 가져오기
-        market_type = self.market_type_combo.currentText()
-        leverage = self.leverage_spin.value() if market_type == 'futures' else 1
-        
-        # 지갑 API 설정 및 테스트
-        connection_result = self.wallet_widget.set_api(
-            exchange_id=exchange,
-            api_key=api_key,
-            api_secret=api_secret,
-            symbol=self.symbol_input.text(),
-            market_type=market_type
-        )
-        
-        # 연결 결과 메시지
-        msg = QMessageBox()
-        if connection_result:
-            msg.setIcon(QMessageBox.Information)
-            msg.setText("API 연결에 성공했습니다.")
-        else:
-            msg.setIcon(QMessageBox.Warning)
-            msg.setText("API 연결에 실패했습니다. API 키를 확인하세요.")
-        
-        msg.setWindowTitle("API 연결 테스트")
-        msg.exec_()
+        except Exception as e:
+            self.status_label.setText("상태: 오류 발생")
+            self.status_label.setStyleSheet("color: red;")
+            print(f"오류 발생: {e}")
         
     def save_settings(self):
         # 설정 저장
