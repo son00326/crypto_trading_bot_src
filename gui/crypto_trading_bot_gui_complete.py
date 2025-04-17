@@ -22,7 +22,7 @@ from src.backtesting import Backtester
 from src.strategies import (
     Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, StochasticStrategy, BreakoutStrategy,
-    VolatilityBreakoutStrategy, CombinedStrategy
+    VolatilityBreakoutStrategy, CombinedStrategy, BollingerBandFuturesStrategy
 )
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 QHBoxLayout,
@@ -805,8 +805,56 @@ class CryptoTradingBotApp(QMainWindow):
         strategy_layout.addWidget(macd_widget)
         strategy_layout.addWidget(bb_check)
         strategy_layout.addWidget(bb_widget)
-        
+
         strategy_group.setLayout(strategy_layout)
+
+        # --- 선물 전략 그룹(별도) ---
+        futures_group = QGroupBox("선물 전략 (Bollinger Band Futures)")
+        futures_layout = QVBoxLayout()
+        self.bbfutures_check = QCheckBox("Bollinger Band Futures 전략 사용")
+        self.bbfutures_check.setChecked(False)
+        futures_layout.addWidget(self.bbfutures_check)
+        # 파라미터 입력 위젯
+        futures_form = QFormLayout()
+        self.bbfutures_bb_period_spin = QSpinBox()
+        self.bbfutures_bb_period_spin.setRange(5, 100)
+        self.bbfutures_bb_period_spin.setValue(20)
+        self.bbfutures_bb_std_spin = QDoubleSpinBox()
+        self.bbfutures_bb_std_spin.setRange(1.0, 5.0)
+        self.bbfutures_bb_std_spin.setValue(2.0)
+        self.bbfutures_bb_std_spin.setSingleStep(0.1)
+        self.bbfutures_rsi_period_spin = QSpinBox()
+        self.bbfutures_rsi_period_spin.setRange(5, 50)
+        self.bbfutures_rsi_period_spin.setValue(14)
+        self.bbfutures_rsi_overbought_spin = QSpinBox()
+        self.bbfutures_rsi_overbought_spin.setRange(50, 100)
+        self.bbfutures_rsi_overbought_spin.setValue(70)
+        self.bbfutures_rsi_oversold_spin = QSpinBox()
+        self.bbfutures_rsi_oversold_spin.setRange(0, 50)
+        self.bbfutures_rsi_oversold_spin.setValue(30)
+        self.bbfutures_macd_fast_spin = QSpinBox()
+        self.bbfutures_macd_fast_spin.setRange(1, 50)
+        self.bbfutures_macd_fast_spin.setValue(12)
+        self.bbfutures_macd_slow_spin = QSpinBox()
+        self.bbfutures_macd_slow_spin.setRange(10, 100)
+        self.bbfutures_macd_slow_spin.setValue(26)
+        self.bbfutures_macd_signal_spin = QSpinBox()
+        self.bbfutures_macd_signal_spin.setRange(1, 50)
+        self.bbfutures_macd_signal_spin.setValue(9)
+        self.bbfutures_leverage_spin = QSpinBox()
+        self.bbfutures_leverage_spin.setRange(1, 20)
+        self.bbfutures_leverage_spin.setValue(3)
+        futures_form.addRow("BB 기간:", self.bbfutures_bb_period_spin)
+        futures_form.addRow("BB 표준편차:", self.bbfutures_bb_std_spin)
+        futures_form.addRow("RSI 기간:", self.bbfutures_rsi_period_spin)
+        futures_form.addRow("RSI 과매수:", self.bbfutures_rsi_overbought_spin)
+        futures_form.addRow("RSI 과매도:", self.bbfutures_rsi_oversold_spin)
+        futures_form.addRow("MACD Fast:", self.bbfutures_macd_fast_spin)
+        futures_form.addRow("MACD Slow:", self.bbfutures_macd_slow_spin)
+        futures_form.addRow("MACD Signal:", self.bbfutures_macd_signal_spin)
+        futures_form.addRow("레버리지:", self.bbfutures_leverage_spin)
+        futures_layout.addLayout(futures_form)
+        futures_group.setLayout(futures_layout)
         
         # 위험 관리 설정 그룹
         risk_group = QGroupBox("위험 관리 설정")
@@ -847,6 +895,7 @@ class CryptoTradingBotApp(QMainWindow):
         settings_content_layout.addWidget(trade_group)
         settings_content_layout.addWidget(risk_group)
         settings_content_layout.addWidget(strategy_group)
+        settings_content_layout.addWidget(futures_group)
         
         settings_scroll.setWidget(settings_content)
         settings_layout.addWidget(settings_scroll)
@@ -910,7 +959,8 @@ class CryptoTradingBotApp(QMainWindow):
         self.backtest_strategy_combo = QComboBox()
         self.backtest_strategy_combo.addItems([
             'moving_average', 'rsi', 'macd', 'bollinger_bands', 
-            'stochastic', 'breakout', 'volatility_breakout', 'combined'
+            'stochastic', 'breakout', 'volatility_breakout', 'combined',
+            'bollinger_band_futures'  # 선물 전략
         ])
         
         # 시장 타입 및 레버리지 설정
@@ -977,6 +1027,7 @@ class CryptoTradingBotApp(QMainWindow):
         self.backtest_result_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.backtest_result_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.backtest_result_table.setRowCount(10)
+        self.backtest_result_table.setMinimumHeight(300)  # 표 전체 높이 300px로 설정
         metrics = [
             "총 수익률 (%)", "연간 수익률 (%)", "최대 낙폭 (%)", "승률 (%)", 
             "총 거래 횟수", "평균 보유 기간", "샤프 비율", "손익비", "최대 연속 손실", "최대 연속 이익"
@@ -984,6 +1035,7 @@ class CryptoTradingBotApp(QMainWindow):
         for i, metric in enumerate(metrics):
             self.backtest_result_table.setItem(i, 0, QTableWidgetItem(metric))
             self.backtest_result_table.setItem(i, 1, QTableWidgetItem(""))
+            self.backtest_result_table.setRowHeight(i, 48)  # 각 행 높이 48px로 설정
         
         # 차트 영역
         self.backtest_figure = Figure(figsize=(10, 8))
@@ -1098,70 +1150,89 @@ class CryptoTradingBotApp(QMainWindow):
         market_type = self.market_type_combo.currentText()
         leverage = self.leverage_spin.value() if market_type == 'futures' else 1
         
-        # 전략 생성
-        strategies = []
-        weights = []
-        
+        # spot 전략 생성
+        spot_strategies = []
+        spot_weights = []
         if self.ma_check.isChecked():
             ma_strategy = MovingAverageCrossover(
                 short_period=self.ma_short_spin.value(),
                 long_period=self.ma_long_spin.value(),
                 ma_type=self.ma_type_combo.currentText()
             )
-            strategies.append(ma_strategy)
-            weights.append(self.ma_weight_spin.value())
-        
+            spot_strategies.append(ma_strategy)
+            spot_weights.append(self.ma_weight_spin.value())
         if self.rsi_check.isChecked():
             rsi_strategy = RSIStrategy(
                 period=self.rsi_period_spin.value(),
                 overbought=self.rsi_overbought_spin.value(),
                 oversold=self.rsi_oversold_spin.value()
             )
-            strategies.append(rsi_strategy)
-            weights.append(self.rsi_weight_spin.value())
-        
+            spot_strategies.append(rsi_strategy)
+            spot_weights.append(self.rsi_weight_spin.value())
         if self.macd_check.isChecked():
             macd_strategy = MACDStrategy(
                 fast_period=self.macd_fast_spin.value(),
                 slow_period=self.macd_slow_spin.value(),
                 signal_period=self.macd_signal_spin.value()
             )
-            strategies.append(macd_strategy)
-            weights.append(self.macd_weight_spin.value())
-        
+            spot_strategies.append(macd_strategy)
+            spot_weights.append(self.macd_weight_spin.value())
         if self.bb_check.isChecked():
             bb_strategy = BollingerBandsStrategy(
                 period=self.bb_period_spin.value(),
                 std_dev=self.bb_std_spin.value()
             )
-            strategies.append(bb_strategy)
-            weights.append(self.bb_weight_spin.value())
-        
-        if not strategies:
+            spot_strategies.append(bb_strategy)
+            spot_weights.append(self.bb_weight_spin.value())
+
+        # futures 전략 생성
+        use_futures = self.bbfutures_check.isChecked()
+        if use_futures:
+            futures_strategy = BollingerBandFuturesStrategy(
+                bb_period=self.bbfutures_bb_period_spin.value(),
+                bb_std=self.bbfutures_bb_std_spin.value(),
+                rsi_period=self.bbfutures_rsi_period_spin.value(),
+                rsi_overbought=self.bbfutures_rsi_overbought_spin.value(),
+                rsi_oversold=self.bbfutures_rsi_oversold_spin.value(),
+                macd_fast=self.bbfutures_macd_fast_spin.value(),
+                macd_slow=self.bbfutures_macd_slow_spin.value(),
+                macd_signal=self.bbfutures_macd_signal_spin.value(),
+                leverage=self.bbfutures_leverage_spin.value(),
+                timeframe=timeframe
+            )
+
+        # spot/futures 동시 선택 방지
+        if spot_strategies and use_futures:
+            QMessageBox.warning(self, "경고", "현물(spot) 전략과 선물(futures) 전략은 동시에 사용할 수 없습니다. 하나만 선택하세요.")
+            return
+        # spot만 선택
+        if spot_strategies:
+            weight_sum = sum(spot_weights)
+            if weight_sum > 0:
+                spot_weights = [w / weight_sum for w in spot_weights]
+            strategy = CombinedStrategy(strategies=spot_strategies, weights=spot_weights)
+            market_type = 'spot'
+            leverage = 1
+        # futures만 선택
+        elif use_futures:
+            strategy = futures_strategy
+            market_type = 'futures'
+            leverage = self.bbfutures_leverage_spin.value()
+        else:
             QMessageBox.warning(self, "경고", "최소한 하나 이상의 전략을 선택해주세요.")
             return
-        
-        # 가중치 정규화
-        weight_sum = sum(weights)
-        if weight_sum > 0:
-            weights = [w / weight_sum for w in weights]
-        
-        # 복합 전략 생성
-        combined_strategy = CombinedStrategy(strategies=strategies, weights=weights)
-        
         # 위험 관리 설정
         risk_manager = RiskManager(
             stop_loss_pct=self.stop_loss_spin.value(),
             take_profit_pct=self.take_profit_spin.value(),
             max_position_size=self.max_position_spin.value()
         )
-        
         # 봇 생성
         bot = TradingBot(
             exchange=exchange,
             api_key=api_key,
             api_secret=api_secret,
-            strategy=combined_strategy,
+            strategy=strategy,
             symbol=symbol,
             timeframe=timeframe,
             risk_manager=risk_manager,
@@ -1169,16 +1240,13 @@ class CryptoTradingBotApp(QMainWindow):
             market_type=market_type,
             leverage=leverage
         )
-        
         # 봇 스레드 시작
         self.bot_thread = BotThread(bot, interval)
         self.bot_thread.update_signal.connect(self.update_log)
         self.bot_thread.start()
-        
         # 버튼 상태 변경
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        
         self.log_text.append("자동 매매 봇이 시작되었습니다.")
     
     def stop_bot(self):
@@ -1488,6 +1556,45 @@ class CryptoTradingBotApp(QMainWindow):
             self.backtest_params_layout.addRow("기간:", self.backtest_vb_period)
             self.backtest_params_layout.addRow("K 값:", self.backtest_vb_k)
             
+        elif strategy_name == 'bollinger_band_futures':
+            # 볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 파라미터
+            self.backtest_bbf_bb_period = QSpinBox()
+            self.backtest_bbf_bb_period.setRange(5, 100)
+            self.backtest_bbf_bb_period.setValue(20)
+            self.backtest_bbf_bb_std = QDoubleSpinBox()
+            self.backtest_bbf_bb_std.setRange(1.0, 5.0)
+            self.backtest_bbf_bb_std.setValue(2.0)
+            self.backtest_bbf_bb_std.setSingleStep(0.1)
+            self.backtest_bbf_rsi_period = QSpinBox()
+            self.backtest_bbf_rsi_period.setRange(5, 50)
+            self.backtest_bbf_rsi_period.setValue(14)
+            self.backtest_bbf_rsi_overbought = QSpinBox()
+            self.backtest_bbf_rsi_overbought.setRange(50, 100)
+            self.backtest_bbf_rsi_overbought.setValue(70)
+            self.backtest_bbf_rsi_oversold = QSpinBox()
+            self.backtest_bbf_rsi_oversold.setRange(0, 50)
+            self.backtest_bbf_rsi_oversold.setValue(30)
+            self.backtest_bbf_macd_fast = QSpinBox()
+            self.backtest_bbf_macd_fast.setRange(1, 50)
+            self.backtest_bbf_macd_fast.setValue(12)
+            self.backtest_bbf_macd_slow = QSpinBox()
+            self.backtest_bbf_macd_slow.setRange(10, 100)
+            self.backtest_bbf_macd_slow.setValue(26)
+            self.backtest_bbf_macd_signal = QSpinBox()
+            self.backtest_bbf_macd_signal.setRange(1, 50)
+            self.backtest_bbf_macd_signal.setValue(9)
+            self.backtest_bbf_leverage = QSpinBox()
+            self.backtest_bbf_leverage.setRange(1, 20)
+            self.backtest_bbf_leverage.setValue(3)
+            self.backtest_params_layout.addRow("BB 기간:", self.backtest_bbf_bb_period)
+            self.backtest_params_layout.addRow("BB 표준편차:", self.backtest_bbf_bb_std)
+            self.backtest_params_layout.addRow("RSI 기간:", self.backtest_bbf_rsi_period)
+            self.backtest_params_layout.addRow("RSI 과매수:", self.backtest_bbf_rsi_overbought)
+            self.backtest_params_layout.addRow("RSI 과매도:", self.backtest_bbf_rsi_oversold)
+            self.backtest_params_layout.addRow("MACD Fast:", self.backtest_bbf_macd_fast)
+            self.backtest_params_layout.addRow("MACD Slow:", self.backtest_bbf_macd_slow)
+            self.backtest_params_layout.addRow("MACD Signal:", self.backtest_bbf_macd_signal)
+            self.backtest_params_layout.addRow("레버리지:", self.backtest_bbf_leverage)
         elif strategy_name == 'combined':
             # 복합 전략 파라미터 (각 전략의 사용 여부)
             self.backtest_use_ma = QCheckBox("이동평균 사용")
@@ -1577,6 +1684,20 @@ class CryptoTradingBotApp(QMainWindow):
                 strategy = VolatilityBreakoutStrategy(
                     period=self.backtest_vb_period.value(),
                     k=self.backtest_vb_k.value()
+                )
+            elif strategy_name == 'bollinger_band_futures':
+                # 볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 실제 객체 생성
+                strategy = BollingerBandFuturesStrategy(
+                    bb_period=self.backtest_bbf_bb_period.value(),
+                    bb_std=self.backtest_bbf_bb_std.value(),
+                    rsi_period=self.backtest_bbf_rsi_period.value(),
+                    rsi_overbought=self.backtest_bbf_rsi_overbought.value(),
+                    rsi_oversold=self.backtest_bbf_rsi_oversold.value(),
+                    macd_fast=self.backtest_bbf_macd_fast.value(),
+                    macd_slow=self.backtest_bbf_macd_slow.value(),
+                    macd_signal=self.backtest_bbf_macd_signal.value(),
+                    leverage=self.backtest_bbf_leverage.value(),
+                    timeframe=timeframe
                 )
             elif strategy_name == 'combined':
                 # 선택한 전략들을 조합

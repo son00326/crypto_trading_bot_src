@@ -46,7 +46,6 @@ class Strategy:
         """
         raise NotImplementedError("자식 클래스에서 구현해야 합니다.")
     
-class MovingAverageCrossover(Strategy):
     def calculate_positions(self, df):
         """
         포지션 계산
@@ -57,26 +56,15 @@ class MovingAverageCrossover(Strategy):
         Returns:
             DataFrame: 포지션이 추가된 데이터프레임
         """
-        try:
-            if 'signal' not in df.columns:
-                df = self.generate_signals(df)
-            
-            # NumPy 배열로 변환하여 포지션 계산 (다차원 인덱싱 방지)
-            signal_values = df['signal'].values
-            position_values = np.zeros_like(signal_values)
-            
-            # diff 연산을 수동으로 처리: 현재 값에서 이전 값을 빼기
-            if len(signal_values) > 1:
-                position_values[1:] = signal_values[1:] - signal_values[:-1]
-            
-            # 결과를 데이터프레임에 할당
-            df['position'] = position_values
-            
-            return df
-        except Exception as e:
-            logger.error(f"포지션 계산 중 오류 발생: {e}")
-            df['position'] = 0
-            return df
+        if 'signal' not in df.columns:
+            df = self.generate_signals(df)
+        
+        # 포지션 계산 (1: 롱, -1: 숏, 0: 포지션 없음)
+        df['position'] = df['signal'].diff()
+        
+        return df
+
+class MovingAverageCrossover(Strategy):
     """이동평균 교차 전략"""
     
     def __init__(self, short_period=9, long_period=26, ma_type='sma'):
@@ -356,37 +344,6 @@ class StochasticStrategy(Strategy):
         self.slowing = slowing
         self.overbought = overbought
         self.oversold = oversold
-        
-    def calculate_positions(self, df):
-        """
-        포지션 계산
-        
-        Args:
-            df (DataFrame): 거래 신호가 포함된 데이터프레임
-        
-        Returns:
-            DataFrame: 포지션이 추가된 데이터프레임
-        """
-        try:
-            if 'signal' not in df.columns:
-                df = self.generate_signals(df)
-            
-            # NumPy 배열로 변환하여 포지션 계산 (다차원 인덱싱 방지)
-            signal_values = df['signal'].values
-            position_values = np.zeros_like(signal_values)
-            
-            # diff 연산을 수동으로 처리: 현재 값에서 이전 값을 빼기
-            if len(signal_values) > 1:
-                position_values[1:] = signal_values[1:] - signal_values[:-1]
-            
-            # 결과를 데이터프레임에 할당
-            df['position'] = position_values
-            
-            return df
-        except Exception as e:
-            logger.error(f"포지션 계산 중 오류 발생: {e}")
-            df['position'] = 0
-            return df
     def generate_signals(self, df):
         """
         스토캐스틱 오실레이터 기반 거래 신호 생성
@@ -495,21 +452,10 @@ class CombinedStrategy(Strategy):
         # 신호 결합
         df['combined_signal'] = pd.concat(signals, axis=1).sum(axis=1)
         
-        # 최종 신호 생성 (1: 매수, 0: 홀드, -1: 매도) - NumPy 배열 기반으로 변환
-        
-        # 필요한 값들을 NumPy 배열로 변환
-        combined_signal_values = df['combined_signal'].values
-        
-        # np.where를 사용한 벡터화된 조건부 할당
-        signals = np.zeros(len(df))
-        signals = np.where(combined_signal_values > 0.3, 1, signals)  # 매수 신호
-        signals = np.where(combined_signal_values < -0.3, -1, signals)  # 매도 신호
-        
-        # NaN 처리
-        np.nan_to_num(signals, copy=False, nan=0)
-        
-        # 결과를 데이터프레임에 할당
-        df['signal'] = signals
+        # 최종 신호 생성 (1: 매수, 0: 홀드, -1: 매도)
+        df['signal'] = 0
+        df.loc[df['combined_signal'] > 0.3, 'signal'] = 1
+        df.loc[df['combined_signal'] < -0.3, 'signal'] = -1
         
         return df
 
@@ -543,23 +489,14 @@ class BreakoutStrategy(Strategy):
         df['resistance'] = df['high'].rolling(window=self.period).max()
         df['support'] = df['low'].rolling(window=self.period).min()
         
-        # 신호 생성 (1: 매수, 0: 홀드, -1: 매도) - NumPy 배열 기반으로 변환
+        # 신호 생성 (1: 매수, 0: 홀드, -1: 매도)
+        df['signal'] = 0
         
-        # 필요한 값들을 NumPy 배열로 변환
-        close_values = df['close'].values
-        resistance_values = df['resistance'].shift(1).values
-        support_values = df['support'].shift(1).values
+        # 저항 레벨 돌파: 매수 신호
+        df.loc[df['close'] > df['resistance'].shift(1), 'signal'] = 1
         
-        # np.where를 사용한 벡터화된 조건부 할당
-        signals = np.zeros(len(df))
-        signals = np.where(close_values > resistance_values, 1, signals)  # 저항 레벨 돌파: 매수
-        signals = np.where(close_values < support_values, -1, signals)   # 지지 레벨 하향 돌파: 매도
-        
-        # NaN 처리
-        np.nan_to_num(signals, copy=False, nan=0)
-        
-        # 결과를 데이터프레임에 할당
-        df['signal'] = signals
+        # 지지 레벨 하향 돌파: 매도 신호
+        df.loc[df['close'] < df['support'].shift(1), 'signal'] = -1
         
         return df
 
@@ -597,118 +534,17 @@ class VolatilityBreakoutStrategy(Strategy):
         # 목표가 계산 (시가 + 변동성 * k)
         df['target'] = df['open'] + df['volatility'] * self.k
         
-        # 신호 생성 (1: 매수, 0: 홀드, -1: 매도) - NumPy 배열 기반으로 변환
-        
-        # 필요한 값들을 NumPy 배열로 변환
-        high_values = df['high'].values
-        target_values = df['target'].values
+        # 신호 생성 (1: 매수, 0: 홀드, -1: 매도)
+        df['signal'] = 0
         
         # 가격이 목표가를 돌파하면 매수 신호
-        signals = np.zeros(len(df))
-        signals = np.where(high_values > target_values, 1, 0)
+        df.loc[df['high'] > df['target'], 'signal'] = 1
         
-        # 다음 날 시가에 청산 (시프트 처리)
-        shifted_signals = np.zeros_like(signals)
-        if len(signals) > 1:
-            shifted_signals[1:] = signals[:-1]
-        
-        # 매수 신호가 있던 날 다음 날에는 매도(-1)
-        final_signals = np.where(shifted_signals == 1, -1, 0)
-        
-        # NaN 처리
-        np.nan_to_num(final_signals, copy=False, nan=0)
-        
-        # 결과를 데이터프레임에 할당
-        df['signal'] = final_signals
+        # 다음 날 시가에 청산
+        df['signal'] = df['signal'].shift(1)
+        df.loc[df['signal'] == 1, 'signal'] = -1
         
         return df
-
-class BollingerBandFuturesStrategy(Strategy):
-    """
-    볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 (복합 신호)
-    """
-    def __init__(self, bb_period=20, bb_std=2.0, rsi_period=14, rsi_overbought=70, rsi_oversold=30,
-                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=2.0, take_profit_pct=5.0,
-                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=3, timeframe='4h'):
-        super().__init__(name=f"BollingerBandFutures_{bb_period}_{bb_std}_{rsi_period}_{macd_fast}_{macd_slow}_{macd_signal}")
-        self.bb_period = bb_period
-        self.bb_std = bb_std
-        self.rsi_period = rsi_period
-        self.rsi_overbought = rsi_overbought
-        self.rsi_oversold = rsi_oversold
-        self.macd_fast = macd_fast
-        self.macd_slow = macd_slow
-        self.macd_signal = macd_signal
-        self.stop_loss_pct = stop_loss_pct
-        self.take_profit_pct = take_profit_pct
-        self.trailing_stop_pct = trailing_stop_pct
-        self.risk_per_trade = risk_per_trade
-        self.leverage = leverage
-        self.timeframe = timeframe
-
-    def generate_signals(self, df):
-        try:
-            data = df.copy()
-            # 볼린저 밴드
-            mid, upper, lower = bollinger_bands(data, period=self.bb_period, std_dev=self.bb_std)
-            data['bb_middle'] = mid
-            data['bb_upper'] = upper
-            data['bb_lower'] = lower
-            # RSI
-            data['rsi'] = relative_strength_index(data, period=self.rsi_period)
-            # MACD
-            macd_line, signal_line, hist = moving_average_convergence_divergence(
-                data, fast_period=self.macd_fast, slow_period=self.macd_slow, signal_period=self.macd_signal)
-            data['macd'] = macd_line
-            data['macd_signal'] = signal_line
-            data['macd_hist'] = hist
-            # 헤이킨 아시 캔들
-            data['ha_close'] = (data['open'] + data['high'] + data['low'] + data['close']) / 4
-            data['ha_open'] = data['ha_close'].shift(1)
-            if not data.empty:
-                data.loc[data.index[0], 'ha_open'] = (data.loc[data.index[0], 'open'] + data.loc[data.index[0], 'close']) / 2
-            data['ha_high'] = data[['high', 'ha_open', 'ha_close']].max(axis=1)
-            data['ha_low'] = data[['low', 'ha_open', 'ha_close']].min(axis=1)
-            # 신호 생성
-            data['signal'] = 0
-            long_cond1 = (data['close'] < data['bb_lower']) & (data['rsi'] < self.rsi_oversold)
-            long_cond2 = (data['macd_hist'] > 0) & (data['macd_hist'].shift(1) <= 0)
-            long_cond3 = (data['ha_close'] > data['ha_open']) & (data['close'] > data['bb_middle'])
-            short_cond1 = (data['close'] > data['bb_upper']) & (data['rsi'] > self.rsi_overbought)
-            short_cond2 = (data['macd_hist'] < 0) & (data['macd_hist'].shift(1) >= 0)
-            short_cond3 = (data['ha_close'] < data['ha_open']) & (data['close'] < data['bb_middle'])
-            data.loc[long_cond1 | long_cond2 | long_cond3, 'signal'] = 1
-            data.loc[short_cond1 | short_cond2 | short_cond3, 'signal'] = -1
-            # 연속 신호 제거
-            data['signal'] = data['signal'].mask(data['signal'] == data['signal'].shift(1), 0)
-            return data
-        except Exception as e:
-            logger.error(f"BollingerBandFutures 신호 생성 중 오류 발생: {e}")
-            df['signal'] = 0
-            return df
-
-    def calculate_positions(self, df):
-        """
-        포지션 계산
-        Args:
-            df (DataFrame): 거래 신호가 포함된 데이터프레임
-        Returns:
-            DataFrame: 포지션이 추가된 데이터프레임
-        """
-        try:
-            if 'signal' not in df.columns:
-                df = self.generate_signals(df)
-            signal_values = df['signal'].values
-            position_values = np.zeros_like(signal_values)
-            if len(signal_values) > 1:
-                position_values[1:] = signal_values[1:] - signal_values[:-1]
-            df['position'] = position_values
-            return df
-        except Exception as e:
-            logger.error(f"포지션 계산 중 오류 발생: {e}")
-            df['position'] = 0
-            return df
-
 
 # 테스트 코드
 if __name__ == "__main__":
