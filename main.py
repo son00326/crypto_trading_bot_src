@@ -79,8 +79,8 @@ def parse_arguments():
     
     # 모드 선택
     parser.add_argument('--mode', type=str, required=True, 
-                        choices=['collect', 'analyze', 'backtest', 'trade', 'optimize', 'gui'],
-                        help='실행 모드 (collect: 데이터 수집, analyze: 데이터 분석, backtest: 백테스팅, trade: 거래, optimize: 최적화, gui: GUI 인터페이스)')
+                        choices=['collect', 'analyze', 'backtest', 'trade', 'optimize', 'gui', 'web', 'both'],
+                        help='실행 모드 (collect: 데이터 수집, analyze: 데이터 분석, backtest: 백테스팅, trade: 거래, optimize: 최적화, gui: GUI 인터페이스, web: 웹 인터페이스, both: GUI 및 웹 동시 실행)')
     
     # 데이터 수집 옵션
     parser.add_argument('--start-date', type=str, 
@@ -483,6 +483,39 @@ def main():
         except ImportError as e:
             logger.error(f"GUI 모듈 로드 실패: {e}")
             logger.error("PyQt5 설치 여부를 확인하세요: pip install PyQt5")
+    
+    elif args.mode == 'web':
+        try:
+            logger.info("웹 모드 시작")
+            # 웹 API 서버 로드 및 실행
+            from web_app.bot_api_server import TradingBotAPIServer
+            # 헤드리스 모드로 웹 API 서버 실행
+            server = TradingBotAPIServer(host='0.0.0.0', port=8080, headless=True)
+            server.run()
+        except ImportError as e:
+            logger.error(f"웹 모듈 로드 실패: {e}")
+            logger.error("Flask 설치 여부를 확인하세요: pip install flask flask-cors")
+    
+    elif args.mode == 'both':
+        try:
+            logger.info("GUI 및 웹 동시 실행 모드 시작")
+            import threading
+            from web_app.bot_api_server import TradingBotAPIServer
+            from gui.crypto_trading_bot_gui_complete import main as run_gui
+            
+            # 웹 서버를 별도 스레드로 실행
+            server = TradingBotAPIServer(host='0.0.0.0', port=8080, headless=False)
+            web_thread = threading.Thread(target=server.run)
+            web_thread.daemon = True
+            web_thread.start()
+            logger.info("웹 서버가 배경에서 실행 중...") 
+            
+            # 메인 스레드에서 GUI 실행
+            logger.info("GUI 로드 중...")
+            run_gui()
+        except ImportError as e:
+            logger.error(f"GUI 혹은 웹 모듈 로드 실패: {e}")
+            logger.error("PyQt5 및 Flask 설치 여부를 확인하세요.")
     
     else:
         logger.error(f"알 수 없는 모드: {args.mode}")

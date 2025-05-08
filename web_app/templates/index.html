@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>암호화폐 자동 매매 봇</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            padding-bottom: 20px;
+        }
+        .card {
+            margin-bottom: 20px;
+        }
+        .navbar {
+            margin-bottom: 20px;
+        }
+        
+        /* 슬라이더 값 표시 스타일 */
+        .position-relative {
+            position: relative;
+        }
+        .slider-value {
+            position: absolute;
+            top: -30px;
+            left: 0;
+            background-color: #0d6efd;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            transform: translateX(-50%);
+            z-index: 1;
+        }
+        .slider-value::after {
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            border-width: 5px;
+            border-style: solid;
+            border-color: #0d6efd transparent transparent transparent;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <div class="container">
+            <a class="navbar-brand" href="#">암호화폐 자동 매매 봇</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- 알림 메시지 영역 -->
+        <div id="alerts-container"></div>
+        
+        <div class="row">
+            <!-- 왼쪽 패널: 상태 및 설정 -->
+            <div class="col-md-4">
+                <!-- 상태 카드 -->
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">봇 상태</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>상태:</strong> <span id="bot-status" class="badge bg-secondary">중지됨</span></p>
+                        <p><strong>거래소:</strong> <span id="exchange-name">-</span></p>
+                        <p><strong>심볼:</strong> <span id="symbol-name">-</span></p>
+                        <p><strong>전략:</strong> <span id="strategy-name">-</span></p>
+                        <p><strong>마지막 업데이트:</strong> <span id="last-update">-</span></p>
+                        <div class="d-grid gap-2">
+                            <button id="start-bot-btn" class="btn btn-success">봇 시작</button>
+                            <button id="stop-bot-btn" class="btn btn-danger">봇 중지</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 잔액 카드 -->
+                <div class="card">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="card-title mb-0">계좌 정보</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>잔액:</strong> <span id="balance-amount">0</span> <span id="balance-currency">USDT</span></p>
+                    </div>
+                </div>
+
+                <!-- 설정 카드 -->
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">봇 설정</h5>
+                    </div>
+                    <div class="card-body">
+                        <form id="bot-config-form">
+                            <div class="mb-3">
+                                <label for="exchange" class="form-label">거래소</label>
+                                <select class="form-select" id="exchange">
+                                    <option value="binance">Binance</option>
+                                    <option value="upbit">Upbit</option>
+                                    <option value="bithumb">Bithumb</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="symbol" class="form-label">거래 쌍</label>
+                                <input type="text" class="form-control" id="symbol" value="BTC/USDT">
+                            </div>
+                            <div class="mb-3">
+                                <label for="timeframe" class="form-label">타임프레임</label>
+                                <select class="form-select" id="timeframe">
+                                    <option value="1m">1분</option>
+                                    <option value="5m">5분</option>
+                                    <option value="15m">15분</option>
+                                    <option value="1h" selected>1시간</option>
+                                    <option value="4h">4시간</option>
+                                    <option value="1d">1일</option>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label for="strategy" class="form-label">전략</label>
+                                <select class="form-select" id="strategy">
+                                    <option value="MovingAverageCrossover">이동평균 교차 (MA Crossover)</option>
+                                    <option value="RSIStrategy">RSI 전략</option>
+                                    <option value="MACDStrategy">MACD 전략</option>
+                                    <option value="BollingerBandsStrategy">볼린저 밴드 전략</option>
+                                    <option value="CombinedStrategy">복합 전략 (Combined)</option>
+                                </select>
+                            </div>
+                            
+                            <!-- 마켓 타입 선택 (현물/선물) -->
+                            <div class="mb-3">
+                                <label for="market-type" class="form-label">마켓 타입</label>
+                                <select class="form-select" id="market-type">
+                                    <option value="spot">현물 (Spot)</option>
+                                    <option value="futures">선물 (Futures)</option>
+                                </select>
+                            </div>
+                            
+                            <!-- 선물 거래 관련 설정 (마켓 타입이 선물일 때만 표시) -->
+                            <div id="futures-settings" class="mb-3 d-none">
+                                <label for="leverage" class="form-label">레버리지</label>
+                                <div class="position-relative">
+                                    <input type="range" class="form-range" id="leverage" min="1" max="20" value="1">
+                                    <div class="slider-value" id="leverage-bubble">1x</div>
+                                </div>
+                                <div class="d-flex justify-content-between">
+                                    <span>1x</span>
+                                    <span id="leverage-value">1x</span>
+                                    <span>20x</span>
+                                </div>
+                            </div>
+                            
+                            <!-- 위험 관리 설정 -->
+                            <div class="card mb-3 bg-light">
+                                <div class="card-header">
+                                    <h6 class="mb-0">위험 관리 설정</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-3">
+                                        <label for="stop-loss" class="form-label">손절매 비율</label>
+                                        <div class="position-relative">
+                                            <input type="range" class="form-range" id="stop-loss" min="1" max="20" value="5">
+                                            <div class="slider-value" id="stop-loss-bubble">5%</div>
+                                        </div>
+                                        <div class="d-flex justify-content-between">
+                                            <span>1%</span>
+                                            <span id="stop-loss-value">5%</span>
+                                            <span>20%</span>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="take-profit" class="form-label">이익실현 비율</label>
+                                        <div class="position-relative">
+                                            <input type="range" class="form-range" id="take-profit" min="1" max="50" value="10">
+                                            <div class="slider-value" id="take-profit-bubble">10%</div>
+                                        </div>
+                                        <div class="d-flex justify-content-between">
+                                            <span>1%</span>
+                                            <span id="take-profit-value">10%</span>
+                                            <span>50%</span>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label for="max-position" class="form-label">최대 포지션 크기</label>
+                                        <div class="position-relative">
+                                            <input type="range" class="form-range" id="max-position" min="1" max="100" value="20">
+                                            <div class="slider-value" id="max-position-bubble">20%</div>
+                                        </div>
+                                        <div class="d-flex justify-content-between">
+                                            <span>1%</span>
+                                            <span id="max-position-value">20%</span>
+                                            <span>100%</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3 form-check">
+                                <input type="checkbox" class="form-check-input" id="test-mode" checked>
+                                <label class="form-check-label" for="test-mode">테스트 모드 (실제 거래 안 함)</label>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 오른쪽 패널: 지갑 및 거래 내역 -->
+            <div class="col-md-8">
+                <!-- 지갑 잔액 카드 -->
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">지갑 잔액</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="wallet-balance">
+                            <p class="text-center">데이터를 불러오는 중...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 포지션 정보 카드 -->
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">현재 포지션</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="position-info">
+                            <p>포지션 없음</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 최근 거래 카드 -->
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="card-title mb-0">최근 거래</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped">
+                                <thead>
+                                    <tr>
+                                        <th>시간</th>
+                                        <th>유형</th>
+                                        <th>가격</th>
+                                        <th>수량</th>
+                                        <th>총액</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recent-trades">
+                                    <tr>
+                                        <td colspan="5" class="text-center">거래 내역이 없습니다</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- 메인 JavaScript -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>

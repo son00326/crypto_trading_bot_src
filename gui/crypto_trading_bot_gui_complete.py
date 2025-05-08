@@ -556,23 +556,52 @@ class BotThread(QThread):
         self.bot.close_position()
         self.update_signal.emit("봇 종료 중...")
 # 메인 윈도우
-class CryptoTradingBotApp(QMainWindow):
-    def __init__(self):
+class CryptoTradingBotGUI(QMainWindow):
+    """암호화폐 자동 매매 봇 GUI 클래스"""
+    
+    def __init__(self, headless=False):
+        # 항상 QMainWindow 초기화 (헤드리스 모드와 상관없이)
         super().__init__()
+        
+        # 헤드리스 모드 설정
+        self.headless = headless
+        
+        # 상태 변수
+        self.bot_running = False
         self.bot_thread = None
+        self.chart_thread = None
         
-        # 지갑 위젯 인스턴스 생성
-        self.wallet_widget = WalletBalanceWidget()
+        # 웹 API 호출을 위한 데이터 저장 변수
+        self.balance_data = None
+        self.position_data = None
+        self.trades_data = []
         
-        self.initUI()
+        # 헤드리스 모드일 경우 기본 속성 설정
+        if self.headless:
+            # 기본 검색에 사용될 공통 속성들
+            from src.config import DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
+            self.exchange_id = DEFAULT_EXCHANGE
+            self.symbol = DEFAULT_SYMBOL
+            self.timeframe = DEFAULT_TIMEFRAME
+            self.strategy_name = 'ma_crossover'  # 기본 전략
         
-        # 환경 변수 로드
+        # GUI 모드인 경우에만 UI 초기화
+        if not headless:
+            # 기본 UI 설정인스턴스 생성
+            self.wallet_widget = WalletBalanceWidget()
+        
+            self.initUI()
+        
+            # 환경 변수 로드
+            load_dotenv()
         load_dotenv()
         
         # API 키 설정
         api_key = os.getenv('BINANCE_API_KEY')
         api_secret = os.getenv('BINANCE_API_SECRET')
-        if api_key and api_secret:
+        
+        # GUI 모드이고 API 키가 있는 경우에만 위젯 업데이트
+        if not self.headless and api_key and api_secret:
             self.api_key_input.setText(api_key)
             self.api_secret_input.setText(api_secret)
             
@@ -1904,13 +1933,147 @@ class CryptoTradingBotApp(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"백테스트 결과 저장 중 오류 발생: {str(e)}")
             logger.error(f"백테스트 결과 저장 오류: {str(e)}")
+    
+    # API 호출을 위한 메서드들
+    def get_bot_status(self):
+        """
+        봇의 현재 상태를 반환하는 메서드
+        
+        Returns:
+            dict: 봇의 상태 정보
+        """
+        # 헤드리스 모드일 경우 기본 심볼 사용
+        default_symbol = "BTC/USDT"  # 기본 심볼 직접 정의
+        
+        return {
+            'running': self.bot_running,
+            'symbol': self.symbol_combo.currentText() if not self.headless else default_symbol,
+            'strategy': self.strategy_combo.currentText() if not self.headless else 'Unknown',
+            'balance': self.balance_data
+        }
+    
+    def start_bot_api(self, strategy=None, symbol=None, timeframe=None):
+        """
+        API를 통해 봇을 시작하는 메서드
+        
+        Args:
+            strategy (str, optional): 사용할 전략
+            symbol (str, optional): 거래 심볼
+            timeframe (str, optional): 타임프레임
+            
+        Returns:
+            dict: 성공/실패 상태 및 메시지
+        """
+        try:
+            if self.bot_running:
+                return {'success': False, 'message': '봇이 이미 실행 중입니다.'}
+            
+            # 거래 심볼 설정
+            if symbol and not self.headless:
+                index = self.symbol_combo.findText(symbol)
+                if index >= 0:
+                    self.symbol_combo.setCurrentIndex(index)
+            
+            # 전략 설정
+            if strategy and not self.headless:
+                index = self.strategy_combo.findText(strategy)
+                if index >= 0:
+                    self.strategy_combo.setCurrentIndex(index)
+            
+            # 봇 시작
+            if not self.headless:
+                self.start_bot()
+            else:
+                # 헤드리스 모드에서 봇 시작 로직
+                self.bot_running = True
+                self.bot_thread = BotThread(self)
+                self.bot_thread.update_signal.connect(self.update_bot_status)
+                self.bot_thread.start()
+            
+            return {'success': True, 'message': '봇 시작 성공'}
+        except Exception as e:
+            return {'success': False, 'message': f'봇 시작 실패: {str(e)}'}
+    
+    def stop_bot_api(self):
+        """
+        API를 통해 봇을 중지하는 메서드
+        
+        Returns:
+            dict: 성공/실패 상태 및 메시지
+        """
+        try:
+            if not self.bot_running:
+                return {'success': False, 'message': '봇이 실행 중이 아닙니다.'}
+            
+            # 봇 중지
+            if not self.headless:
+                self.stop_bot()
+            else:
+                # 헤드리스 모드에서 봇 중지 로직
+                if self.bot_thread:
+                    self.bot_thread.stop()
+                    self.bot_thread = None
+                self.bot_running = False
+            
+            return {'success': True, 'message': '봇 중지 성공'}
+        except Exception as e:
+            return {'success': False, 'message': f'봇 중지 실패: {str(e)}'}
+    
+    def get_balance_api(self):
+        """
+        API를 통해 잔액 정보를 반환하는 메서드
+        
+        Returns:
+            dict: 잔액 정보
+        """
+        if self.balance_data:
+            return {'success': True, 'data': self.balance_data}
+        else:
+            return {'success': False, 'message': '잔액 정보가 없습니다. 봇이 실행 중인지 확인하세요.'}
 
 # 메인 함수
-def main():
-    app = QApplication(sys.argv)
-    window = CryptoTradingBotApp()
-    window.show()
-    sys.exit(app.exec_())
+def main(headless=False):
+    """암호화폐 거래 봇 GUI 실행 함수
+    
+    Args:
+        headless (bool): GUI를 화면에 표시하지 않는 모드
+    
+    Returns:
+        GUI 경우 None을 반환, 헤드리스 모드의 경우 CryptoTradingBotGUI 인스턴스 반환
+    """
+    if headless:
+        # 헤드리스 모드 - GUI 표시 없이 인스턴스 반환
+        window = CryptoTradingBotGUI(headless=True)
+        return window
+    else:
+        # 일반 GUI 모드
+        app = QApplication(sys.argv)
+        window = CryptoTradingBotGUI(headless=False)
+        window.show()
+        sys.exit(app.exec_())
+    
+    def update_bot_status(self, message):
+        """
+        봇 상태 업데이트 메서드 (API 용)
+        
+        Args:
+            message (str): 상태 메시지
+        """
+        if message.startswith('잔액:'):
+            # 잔액 정보 추출 및 저장
+            try:
+                # '잔액: 1000 USD' 같은 형식에서 금액과 통화 추출
+                parts = message.split(': ')[1].split(' ')
+                amount = float(parts[0])
+                currency = parts[1]
+                self.balance_data = {'amount': amount, 'currency': currency}
+            except Exception as e:
+                logger.error(f"잔액 정보 추출 오류: {str(e)}")
+        
+        # 로그 메시지 출력
+        if not self.headless:
+            self.log_text.append(message)
+        logger.info(message)
 
 if __name__ == "__main__":
     main()
