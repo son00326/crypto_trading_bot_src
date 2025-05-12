@@ -91,6 +91,28 @@ class TradingBotAPIServer:
                 market_type = saved_state.get('market_type', 'spot')
                 leverage = saved_state.get('leverage', 1)
                 
+                # GUI에서 저장한 API 키 불러오기
+                home_dir = os.path.expanduser("~")
+                config_file = os.path.join(home_dir, ".crypto_trading_bot", "config.env")
+                
+                if os.path.exists(config_file):
+                    # 저장된 API 키 파일이 있으면 환경 변수에 로드
+                    with open(config_file, 'r') as f:
+                        for line in f:
+                            if '=' in line:
+                                key, value = line.strip().split('=', 1)
+                                os.environ[key] = value
+                    logger.info(f"GUI에서 저장한 API 키 설정을 로드했습니다.")
+                
+                # 환경 변수에서 API 키 확인
+                api_key = os.getenv('BINANCE_API_KEY')
+                api_secret = os.getenv('BINANCE_API_SECRET')
+                
+                if api_key and api_secret:
+                    logger.info(f"API 키가 설정되어 있습니다: {api_key[:5]}...")
+                else:
+                    logger.warning("API 키가 설정되어 있지 않습니다. 지갑 정보를 가져올 수 없습니다.")
+                
                 self.exchange_api = ExchangeAPI(
                     exchange_id=exchange_id,
                     symbol=symbol,
@@ -99,6 +121,11 @@ class TradingBotAPIServer:
                     leverage=leverage
                 )
                 logger.info(f"거래소 API 초기화 완료: {exchange_id}, {symbol}, {market_type}")
+                
+                # 생성된 exchange_api 객체를 GUI 인스턴스에도 전달
+                if hasattr(self.bot_gui, '__dict__'):
+                    self.bot_gui.exchange_api = self.exchange_api
+                    logger.info("GUI 인스턴스에 거래소 API 객체 전달 완료")
             except Exception as e:
                 logger.error(f"거래소 API 초기화 오류: {str(e)}")
         

@@ -2211,10 +2211,39 @@ class CryptoTradingBotGUI(QMainWindow):
         Returns:
             dict: 잔액 정보
         """
+        # 기존에 저장된 잔액 정보가 있는지 확인
         if self.balance_data:
             return {'success': True, 'data': self.balance_data}
-        else:
+            
+        # 기존 잔액 정보가 없으면 바이낸스에서 직접 가져오기 시도
+        try:
+            # 거래소 API가 초기화되어 있는지 확인
+            if hasattr(self, 'exchange_api') and self.exchange_api:
+                # 바이낸스에서 직접 잔액 정보 가져오기
+                balance_result = self.exchange_api.get_balance()
+                
+                if balance_result and 'total' in balance_result:
+                    # 전체 금액을 합산하여 표시
+                    total_balance = 0
+                    # USD, USDT 같은 스테이블코인 찾기
+                    for currency in ['USDT', 'USD', 'BUSD', 'USDC']:
+                        if currency in balance_result['total']:
+                            total_balance = balance_result['total'][currency]
+                            self.balance_data = {'amount': total_balance, 'currency': currency}
+                            return {'success': True, 'data': self.balance_data}
+                    
+                    # 그 외의 체인 기본 통화 찾기 (BTC, ETH 등)
+                    for currency in ['BTC', 'ETH']:
+                        if currency in balance_result['total'] and balance_result['total'][currency] > 0:
+                            total_balance = balance_result['total'][currency]
+                            self.balance_data = {'amount': total_balance, 'currency': currency}
+                            return {'success': True, 'data': self.balance_data}
+            
+            # 거래소 API가 없거나 가져오기 실패한 경우
             return {'success': False, 'message': '잔액 정보가 없습니다. 봇이 실행 중인지 확인하세요.'}
+        except Exception as e:
+            logger.error(f"잔액 정보 조회 중 오류: {str(e)}")
+            return {'success': False, 'message': f'잔액 정보 조회 중 오류: {str(e)}'}
 
 # 메인 함수
 def main(headless=False):
