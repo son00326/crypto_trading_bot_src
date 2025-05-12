@@ -467,6 +467,39 @@ class ExchangeAPI:
         except Exception as e:
             logger.error(f"미체결 주문 조회 중 오류 발생: {e}")
             return None
+            
+    def get_my_trades(self, symbol=None, since=None, limit=100):
+        """사용자의 거래 내역 조회
+        
+        Args:
+            symbol (str, optional): 거래 심볼. 기본값은 인스턴스의 symbol
+            since (int, optional): 특정 시간 이후의 거래만 조회 (timestamp in milliseconds)
+            limit (int, optional): 최대 조회 건수
+            
+        Returns:
+            list: 거래 내역 목록 (성공 시) 또는 빈 리스트 (실패 시)
+        """
+        try:
+            symbol = self._convert_symbol_format(symbol)
+            
+            # 시장 타입에 따른 추가 설정
+            params = {}
+            if self.market_type == 'futures' and self.exchange_id == 'binance':
+                # 바이낸스 선물의 경우 필요한 파라미터
+                params = {
+                    'type': 'future',
+                }
+            
+            trades = self.exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params)
+            
+            if trades:
+                logger.info(f"거래 내역 조회 성공: {symbol}, 개수: {len(trades)}")
+            
+            return trades
+        
+        except Exception as e:
+            logger.error(f"거래 내역 조회 중 오류 발생: {e}")
+            return []
 
 # 테스트 코드
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ from matplotlib.figure import Figure
 
 # 백테스팅 모듈 임포트
 from src.backtesting import Backtester
+from src.trading_algorithm import TradingAlgorithm
+from src.db_manager import DatabaseManager
 from src.strategies import (
     Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, StochasticStrategy, BreakoutStrategy,
@@ -525,22 +527,58 @@ class BotThread(QThread):
         self.bot = bot
         self.interval = interval
         self.running = True
+        
+        # 데이터베이스 관리자 초기화
+        self.db = DatabaseManager()
+        
+        # 트레이딩 알고리즘 초기화
+        self.algo = None
+        if hasattr(self.bot, 'exchange_id') and hasattr(self.bot, 'symbol') and hasattr(self.bot, 'timeframe'):
+            self.init_trading_algorithm()
+    
+    def init_trading_algorithm(self):
+        """트레이딩 알고리즘 초기화"""
+        try:
+            # 현재 봇의 설정을 사용하여 트레이딩 알고리즘 초기화
+            self.algo = TradingAlgorithm(
+                exchange_id=self.bot.exchange_id,
+                symbol=self.bot.symbol,
+                timeframe=self.bot.timeframe,
+                strategy=self.bot.strategy,
+                test_mode=self.bot.test_mode,
+                restore_state=True  # 이전 상태 복원
+            )
+            self.update_signal.emit(f"트레이딩 알고리즘 초기화 완료: {self.bot.symbol}")
+        except Exception as e:
+            self.update_signal.emit(f"트레이딩 알고리즘 초기화 오류: {e}")
     
     def run(self):
         self.update_signal.emit("자동 매매 봇이 시작되었습니다.")
+        
+        # 이전 거래 상태 복원
+        self.restore_trading_state()
+        
         try:
             while self.running:
+                # 봇 실행
                 self.bot.run_once()
                 self.update_signal.emit(f"{self.interval}초 대기 중...")
                 
                 # 로그 업데이트
-                with open("trading_bot.log", "r") as f:
-                    logs = f.readlines()
-                    if logs:
-                        last_logs = logs[-5:]  # 마지막 5줄만 표시
-                        for log in last_logs:
-                            self.update_signal.emit(log.strip())
+                try:
+                    with open("trading_bot.log", "r") as f:
+                        logs = f.readlines()
+                        if logs:
+                            last_logs = logs[-5:]  # 마지막 5줄만 표시
+                            for log in last_logs:
+                                self.update_signal.emit(log.strip())
+                except Exception as e:
+                    self.update_signal.emit(f"로그 읽기 오류: {e}")
                 
+                # 현재 상태 저장 (각 실행 주기마다)
+                self.save_trading_state()
+                
+                # 주기적 슬립
                 for i in range(self.interval):
                     if not self.running:
                         break
@@ -549,11 +587,132 @@ class BotThread(QThread):
         except Exception as e:
             self.update_signal.emit(f"오류 발생: {e}")
         finally:
+            # 유효한 거래 상태이면 종료 전 저장
+            self.save_trading_state()
             self.update_signal.emit("봇이 중지되었습니다.")
+    
+    def restore_trading_state(self):
+        """이전 거래 상태 복원"""
+        try:
+            if self.algo is not None:
+                # 이미 초기화된 TradingAlgorithm이 있는 경우
+                saved_state = self.algo.db.load_bot_state()
+                if saved_state:
+                    self.update_signal.emit("이전 거래 상태를 복원합니다.")
+                    
+                    # 트레이딩 활성화 상태 바로 적용
+                    if 'is_running' in saved_state:
+                        self.bot.is_running = saved_state['is_running']
+                    
+                    # 추가 상태 복원 로직 (필요시)
+                    # ...
+                    
+                    # 포지션 복원
+                    open_positions = self.algo.db.get_open_positions(self.bot.symbol)
+                    if open_positions:
+                        self.update_signal.emit(f"{len(open_positions)}개의 열린 포지션을 복원합니다.")
+                        # 현재 봇의 포지션 업데이트
+                        for pos in open_positions:
+                            if pos['side'] == 'long':
+                                position_type = 'long'
+                            elif pos['side'] == 'short':
+                                position_type = 'short'
+                            else:
+                                continue
+                            
+                            # 봇 포지션 업데이트
+                            if hasattr(self.bot, 'update_position'):
+                                self.bot.update_position(
+                                    position_type=position_type,
+                                    size=pos['amount'],
+                                    price=pos['entry_price']
+                                )
+                                self.update_signal.emit(f"포지션 복원 완료: {position_type}, 가격: {pos['entry_price']}, 수량: {pos['amount']}")
+                    
+                    self.update_signal.emit("거래 상태 복원 완료")
+                else:
+                    self.update_signal.emit("저장된 이전 거래 상태가 없습니다.")
+            else:
+                self.update_signal.emit("트레이딩 알고리즘이 초기화되지 않았습니다.")
+        except Exception as e:
+            self.update_signal.emit(f"거래 상태 복원 오류: {e}")
+    
+    def save_trading_state(self):
+        """현재 거래 상태 저장"""
+        try:
+            if self.algo is not None:
+                # 현재 주요 상태 저장
+                bot_state = {
+                    'exchange_id': self.bot.exchange_id,
+                    'symbol': self.bot.symbol,
+                    'timeframe': self.bot.timeframe,
+                    'strategy': self.bot.strategy.name if hasattr(self.bot.strategy, 'name') else 'unknown',
+                    'market_type': getattr(self.bot, 'market_type', 'spot'),
+                    'leverage': getattr(self.bot, 'leverage', 1),
+                    'is_running': self.running,
+                    'test_mode': self.bot.test_mode,
+                    'updated_at': datetime.now().isoformat(),
+                    'additional_info': {
+                        'interval': self.interval
+                    }
+                }
+                
+                # 저장
+                self.algo.db.save_bot_state(bot_state)
+                
+                # 포지션 정보 저장
+                if hasattr(self.bot, 'position') and self.bot.position['type'] is not None:
+                    position_data = {
+                        'symbol': self.bot.symbol,
+                        'side': self.bot.position['type'],
+                        'amount': self.bot.position['size'],
+                        'entry_price': self.bot.position['entry_price'],
+                        'leverage': getattr(self.bot, 'leverage', 1),
+                        'opened_at': datetime.now().isoformat(),
+                        'status': 'open',
+                        'additional_info': {
+                            'stop_loss': self.bot.position.get('stop_loss', 0),
+                            'take_profit': self.bot.position.get('take_profit', 0)
+                        }
+                    }
+                    
+                    # 새 포지션이면 추가, 기존 포지션이 있으면 업데이트
+                    open_positions = self.algo.db.get_open_positions(self.bot.symbol)
+                    if not open_positions:
+                        self.algo.db.save_position(position_data)
+                    else:
+                        for pos in open_positions:
+                            if pos['side'] == self.bot.position['type']:
+                                update_data = {
+                                    'amount': self.bot.position['size'],
+                                    'entry_price': self.bot.position['entry_price'],
+                                    'additional_info': position_data['additional_info']
+                                }
+                                self.algo.db.update_position(pos['id'], update_data)
+                                break
+                
+                # 잔액 정보 저장 (새로운 잔액 정보가 있는 경우에만)
+                if hasattr(self.bot, 'get_account_balance'):
+                    balance = self.bot.get_account_balance()
+                    if balance > 0:
+                        quote_currency = self.bot.symbol.split('/')[1]  # USDT, USD 등
+                        self.algo.db.save_balance(quote_currency, balance)
+                
+                self.update_signal.emit("현재 봇 상태 저장 완료")
+            else:
+                self.update_signal.emit("트레이딩 알고리즘이 초기화되지 않아 상태를 저장할 수 없습니다.")
+        except Exception as e:
+            self.update_signal.emit(f"거래 상태 저장 오류: {e}")
     
     def stop(self):
         self.running = False
-        self.bot.close_position()
+        # 종료 전 상태 저장
+        self.save_trading_state()
+        
+        # 포지션 정리 (필요시)
+        if hasattr(self.bot, 'close_position'):
+            self.bot.close_position()
+        
         self.update_signal.emit("봇 종료 중...")
 # 메인 윈도우
 class CryptoTradingBotGUI(QMainWindow):
@@ -1986,7 +2145,10 @@ class CryptoTradingBotGUI(QMainWindow):
             else:
                 # 헤드리스 모드에서 봇 시작 로직
                 self.bot_running = True
-                self.bot_thread = BotThread(self)
+                # interval 값 가져오기 (헤드리스 모드에서는 기본값 사용)
+                interval = self.interval_spin.value() if hasattr(self, 'interval_spin') else 3600  # 기본값 1시간(3600초)
+                # interval 매개변수를 포함한 BotThread 생성
+                self.bot_thread = BotThread(self, interval)
                 self.bot_thread.update_signal.connect(self.update_bot_status)
                 self.bot_thread.start()
             
@@ -2019,6 +2181,29 @@ class CryptoTradingBotGUI(QMainWindow):
         except Exception as e:
             return {'success': False, 'message': f'봇 중지 실패: {str(e)}'}
     
+    def update_bot_status(self, message):
+        """
+        봇 상태 업데이트 메서드 (API 용)
+        
+        Args:
+            message (str): 상태 메시지
+        """
+        if message.startswith('잔액:'):
+            # 잔액 정보 추출 및 저장
+            try:
+                # '잔액: 1000 USD' 같은 형식에서 금액과 통화 추출
+                parts = message.split(': ')[1].split(' ')
+                amount = float(parts[0])
+                currency = parts[1]
+                self.balance_data = {'amount': amount, 'currency': currency}
+            except Exception as e:
+                logger.error(f"잔액 정보 추출 오류: {str(e)}")
+        
+        # 로그 메시지 출력
+        if not self.headless:
+            self.log_text.append(message)
+        logger.info(message)
+
     def get_balance_api(self):
         """
         API를 통해 잔액 정보를 반환하는 메서드
@@ -2051,29 +2236,6 @@ def main(headless=False):
         window = CryptoTradingBotGUI(headless=False)
         window.show()
         sys.exit(app.exec_())
-    
-    def update_bot_status(self, message):
-        """
-        봇 상태 업데이트 메서드 (API 용)
-        
-        Args:
-            message (str): 상태 메시지
-        """
-        if message.startswith('잔액:'):
-            # 잔액 정보 추출 및 저장
-            try:
-                # '잔액: 1000 USD' 같은 형식에서 금액과 통화 추출
-                parts = message.split(': ')[1].split(' ')
-                amount = float(parts[0])
-                currency = parts[1]
-                self.balance_data = {'amount': amount, 'currency': currency}
-            except Exception as e:
-                logger.error(f"잔액 정보 추출 오류: {str(e)}")
-        
-        # 로그 메시지 출력
-        if not self.headless:
-            self.log_text.append(message)
-        logger.info(message)
 
 if __name__ == "__main__":
     main()

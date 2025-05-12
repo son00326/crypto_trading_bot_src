@@ -206,14 +206,52 @@
 
             <!-- 오른쪽 패널: 지갑 및 거래 내역 -->
             <div class="col-md-8">
-                <!-- 지갑 잔액 카드 -->
+                <!-- 지갑 잔액 및 요약 정보 카드 -->
                 <div class="card">
                     <div class="card-header bg-primary text-white">
-                        <h5 class="card-title mb-0">지갑 잔액</h5>
+                        <h5 class="card-title mb-0">지갑 및 성과 요약</h5>
                     </div>
                     <div class="card-body">
-                        <div id="wallet-balance">
-                            <p class="text-center">데이터를 불러오는 중...</p>
+                        <div id="summary-loading-message" class="text-center">
+                            <p class="mb-0">데이터를 불러오는 중...</p>
+                        </div>
+                        <div id="summary-content" class="d-none">
+                            <div class="row mb-3">
+                                <div class="col-md-6">
+                                    <div class="card bg-light">
+                                        <div class="card-body">
+                                            <h6 class="card-title">지갑 잔액</h6>
+                                            <h4><span id="summary-balance-amount">0</span> <span id="summary-balance-currency">USDT</span></h4>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card bg-light">
+                                        <div class="card-body">
+                                            <h6 class="card-title">총 수익</h6>
+                                            <h4><span id="total-profit">0.00</span> USDT</h4>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="card bg-light">
+                                        <div class="card-body">
+                                            <h6 class="card-title">승률</h6>
+                                            <h4><span id="win-rate">0%</span></h4>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card bg-light">
+                                        <div class="card-body">
+                                            <h6 class="card-title">평균 수익</h6>
+                                            <h4><span id="avg-profit">0.00</span> USDT</h4>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -224,8 +262,25 @@
                         <h5 class="card-title mb-0">현재 포지션</h5>
                     </div>
                     <div class="card-body">
-                        <div id="position-info">
-                            <p>포지션 없음</p>
+                        <div id="positions-loading-message" class="text-center">
+                            <p class="mb-0">데이터를 불러오는 중...</p>
+                        </div>
+                        <div id="positions-table" class="table-responsive d-none">
+                            <table class="table table-striped table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>심볼</th>
+                                        <th>타입</th>
+                                        <th>진입가격</th>
+                                        <th>수량</th>
+                                        <th>현재가격</th>
+                                        <th>수익</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="positions-table-body">
+                                    <!-- 여기에 JS로 포지션 데이터 추가 -->
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -236,21 +291,24 @@
                         <h5 class="card-title mb-0">최근 거래</h5>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
-                            <table class="table table-striped">
+                        <div id="trades-loading-message" class="text-center">
+                            <p class="mb-0">데이터를 불러오는 중...</p>
+                        </div>
+                        <div id="trades-table" class="table-responsive d-none">
+                            <table class="table table-striped table-hover">
                                 <thead>
                                     <tr>
                                         <th>시간</th>
-                                        <th>유형</th>
+                                        <th>심볼</th>
+                                        <th>타입</th>
                                         <th>가격</th>
                                         <th>수량</th>
-                                        <th>총액</th>
+                                        <th>비용</th>
+                                        <th>수익</th>
                                     </tr>
                                 </thead>
-                                <tbody id="recent-trades">
-                                    <tr>
-                                        <td colspan="5" class="text-center">거래 내역이 없습니다</td>
-                                    </tr>
+                                <tbody id="trades-table-body">
+                                    <!-- 여기에 JS로 거래 내역 데이터 추가 -->
                                 </tbody>
                             </table>
                         </div>

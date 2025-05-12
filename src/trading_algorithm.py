@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import logging
 import time
+import os
 from datetime import datetime, timedelta
 import threading
 import json
@@ -17,6 +18,7 @@ from src.exchange_api import ExchangeAPI
 from src.data_manager import DataManager
 from src.data_collector import DataCollector
 from src.data_analyzer import DataAnalyzer
+from src.db_manager import DatabaseManager
 from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, CombinedStrategy
@@ -37,7 +39,7 @@ class TradingAlgorithm:
     """암호화폐 자동매매 알고리즘 클래스"""
     
     def __init__(self, exchange_id=DEFAULT_EXCHANGE, symbol=DEFAULT_SYMBOL, timeframe=DEFAULT_TIMEFRAME, 
-                 strategy=None, initial_balance=None, test_mode=True):
+                 strategy=None, initial_balance=None, test_mode=True, restore_state=True):
         """
         거래 알고리즘 초기화
         
@@ -48,11 +50,15 @@ class TradingAlgorithm:
             strategy: 거래 전략 객체
             initial_balance (float): 초기 자산 (테스트 모드에서만 사용)
             test_mode (bool): 테스트 모드 여부
+            restore_state (bool): 이전 상태 복원 여부
         """
         self.exchange_id = exchange_id
         self.symbol = symbol
         self.timeframe = timeframe
         self.test_mode = test_mode
+        
+        # 데이터베이스 관리자 초기화
+        self.db = DatabaseManager()
         
         # 거래소 API 및 데이터 관련 객체 초기화
         self.exchange_api = ExchangeAPI(exchange_id=exchange_id, symbol=symbol, timeframe=timeframe)
@@ -77,7 +83,7 @@ class TradingAlgorithm:
         
         logger.info(f"{self.strategy.name} 전략을 사용합니다.")
         
-        # 포트폴리오 초기화
+        # 포트폴리오 초기화 (기본값)
         self.portfolio = {
             'base_currency': symbol.split('/')[0],  # BTC, ETH 등
             'quote_currency': symbol.split('/')[1],  # USDT, USD 등
@@ -87,14 +93,120 @@ class TradingAlgorithm:
             'trade_history': []
         }
         
-        # 거래 상태
+        # 거래 상태 (기본값)
         self.trading_active = False
         self.last_signal = 0  # 0: 중립, 1: 매수, -1: 매도
         
         # 위험 관리 설정
         self.risk_management = RISK_MANAGEMENT.copy()
         
+        # 이전 상태 복원
+        if restore_state:
+            self._restore_state()
+        
         logger.info(f"{exchange_id} 거래소의 {symbol} 거래 알고리즘이 초기화되었습니다.")
+    
+    def _restore_state(self):
+        """데이터베이스에서 이전 상태 복원"""
+        try:
+            # 봇 상태 불러오기
+            saved_state = self.db.load_bot_state()
+            if saved_state:
+                logger.info("이전 봇 상태를 불러옵니다.")
+                
+                # 기본 설정 복원
+                if 'symbol' in saved_state and saved_state['symbol'] == self.symbol:
+                    if 'is_running' in saved_state:
+                        self.trading_active = saved_state['is_running']
+                    if 'test_mode' in saved_state:
+                        self.test_mode = saved_state['test_mode']
+                        if self.test_mode:
+                            self.exchange_api.exchange.set_sandbox_mode(True)
+                    
+                    # 전략 파라미터 복원 (필요시)
+                    if 'parameters' in saved_state and saved_state['parameters']:
+                        logger.info("전략 파라미터를 복원합니다.")
+                        # 여기서 전략별 파라미터 적용 코드 추가 가능
+                    
+                    logger.info("봇 상태 복원 완료")
+                else:
+                    logger.warning(f"저장된 상태의 심볼({saved_state.get('symbol')})이 현재 심볼({self.symbol})과 일치하지 않습니다.")
+            
+            # 열린 포지션 복원
+            open_positions = self.db.get_open_positions(self.symbol)
+            if open_positions:
+                logger.info(f"{len(open_positions)}개의 열린 포지션을 복원합니다.")
+                self.portfolio['positions'] = open_positions
+            
+            # 잔액 정보 복원
+            latest_balance = self.db.get_latest_balance()
+            if latest_balance:
+                for currency, bal_info in latest_balance.items():
+                    if currency == self.portfolio['base_currency']:
+                        self.portfolio['base_balance'] = bal_info['amount']
+                    elif currency == self.portfolio['quote_currency']:
+                        self.portfolio['quote_balance'] = bal_info['amount']
+            
+            # 거래 내역 복원 (최근 50개)
+            recent_trades = self.db.get_trades(self.symbol, limit=50)
+            if recent_trades:
+                logger.info(f"{len(recent_trades)}개의 최근 거래 내역을 복원합니다.")
+                self.portfolio['trade_history'] = recent_trades
+                
+                # 마지막 신호 유추
+                if recent_trades:
+                    last_trade = recent_trades[0]  # 가장 최근 거래
+                    if last_trade['side'] == 'buy':
+                        self.last_signal = 1
+                    elif last_trade['side'] == 'sell':
+                        self.last_signal = -1
+            
+            logger.info("상태 복원 완료")
+            return True
+        except Exception as e:
+            logger.error(f"상태 복원 중 오류 발생: {e}")
+            return False
+    
+    def save_state(self):
+        """현재 상태를 데이터베이스에 저장"""
+        try:
+            # 봇 상태 저장
+            bot_state = {
+                'exchange_id': self.exchange_id,
+                'symbol': self.symbol,
+                'timeframe': self.timeframe,
+                'strategy': self.strategy.name if hasattr(self.strategy, 'name') else 'unknown',
+                'market_type': 'futures' if self.exchange_api.is_futures else 'spot',
+                'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
+                'is_running': self.trading_active,
+                'test_mode': self.test_mode,
+                'updated_at': datetime.now().isoformat(),
+                'parameters': {
+                    'risk_management': self.risk_management,
+                    'strategy_params': getattr(self.strategy, 'params', {})
+                },
+                'additional_info': {
+                    'last_signal': self.last_signal
+                }
+            }
+            
+            self.db.save_bot_state(bot_state)
+            logger.info("봇 상태 저장 완료")
+            
+            # 현재 잔액 저장
+            self.db.save_balance(self.portfolio['base_currency'], 
+                                self.portfolio['base_balance'],
+                                {'source': 'automatic_save'})
+            
+            self.db.save_balance(self.portfolio['quote_currency'], 
+                                self.portfolio['quote_balance'],
+                                {'source': 'automatic_save'})
+            
+            logger.info("잔액 정보 저장 완료")
+            return True
+        except Exception as e:
+            logger.error(f"상태 저장 중 오류 발생: {e}")
+            return False
     
     def update_portfolio(self):
         """포트폴리오 정보 업데이트"""
@@ -170,11 +282,12 @@ class TradingAlgorithm:
             dict: 주문 결과
         """
         try:
+            order_time = datetime.now()
             if self.test_mode:
                 # 테스트 모드에서는 주문을 시뮬레이션
                 order = {
-                    'id': f"test_buy_{datetime.now().timestamp()}",
-                    'datetime': datetime.now().isoformat(),
+                    'id': f"test_buy_{order_time.timestamp()}",
+                    'datetime': order_time.isoformat(),
                     'symbol': self.symbol,
                     'type': 'market',
                     'side': 'buy',
@@ -191,24 +304,50 @@ class TradingAlgorithm:
                 
                 # 포지션 추가
                 position = {
-                    'entry_time': datetime.now().isoformat(),
-                    'entry_price': price,
-                    'quantity': quantity,
+                    'symbol': self.symbol,
                     'side': 'long',
+                    'amount': quantity,
+                    'entry_price': price,
+                    'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
+                    'opened_at': order_time.isoformat(),
                     'status': 'open',
-                    'order_id': order['id']
+                    'additional_info': {
+                        'order_id': order['id'],
+                        'test_mode': True
+                    }
                 }
                 self.portfolio['positions'].append(position)
                 
-                # 거래 기록 추가
-                self.portfolio['trade_history'].append({
-                    'time': datetime.now().isoformat(),
-                    'type': 'buy',
+                # 데이터베이스에 포지션 저장
+                position_id = self.db.save_position(position)
+                
+                # 거래 내역 추가
+                trade_record = {
+                    'symbol': self.symbol,
+                    'side': 'buy',
+                    'order_type': 'market',
+                    'amount': quantity,
                     'price': price,
-                    'quantity': quantity,
                     'cost': price * quantity,
-                    'fee': price * quantity * 0.001
-                })
+                    'fee': price * quantity * 0.001,
+                    'timestamp': order_time.isoformat(),
+                    'position_id': position_id,
+                    'additional_info': {
+                        'order_id': order['id'],
+                        'test_mode': True
+                    }
+                }
+                self.portfolio['trade_history'].append(trade_record)
+                
+                # 데이터베이스에 거래 내역 저장
+                self.db.save_trade(trade_record)
+                
+                # 잔액 정보 저장
+                self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
+                self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+                
+                # 현재 상태 저장
+                self.save_state()
                 
                 logger.info(f"[테스트] 매수 주문 실행: 가격={price}, 수량={quantity}, 비용={price * quantity}")
                 return order
@@ -224,24 +363,50 @@ class TradingAlgorithm:
                     
                     # 포지션 추가
                     position = {
-                        'entry_time': datetime.now().isoformat(),
-                        'entry_price': price,
-                        'quantity': quantity,
+                        'symbol': self.symbol,
                         'side': 'long',
+                        'amount': quantity,
+                        'entry_price': price,
+                        'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
+                        'opened_at': order_time.isoformat(),
                         'status': 'open',
-                        'order_id': order['id']
+                        'additional_info': {
+                            'order_id': order['id'],
+                            'test_mode': False
+                        }
                     }
                     self.portfolio['positions'].append(position)
                     
-                    # 거래 기록 추가
-                    self.portfolio['trade_history'].append({
-                        'time': datetime.now().isoformat(),
-                        'type': 'buy',
+                    # 데이터베이스에 포지션 저장
+                    position_id = self.db.save_position(position)
+                    
+                    # 거래 내역 추가
+                    trade_record = {
+                        'symbol': self.symbol,
+                        'side': 'buy',
+                        'order_type': 'market',
+                        'amount': quantity,
                         'price': price,
-                        'quantity': quantity,
                         'cost': price * quantity,
-                        'fee': order.get('fee', {}).get('cost', 0)
-                    })
+                        'fee': order.get('fee', {}).get('cost', 0),
+                        'timestamp': order_time.isoformat(),
+                        'position_id': position_id,
+                        'additional_info': {
+                            'order_id': order['id'],
+                            'test_mode': False
+                        }
+                    }
+                    self.portfolio['trade_history'].append(trade_record)
+                    
+                    # 데이터베이스에 거래 내역 저장
+                    self.db.save_trade(trade_record)
+                    
+                    # 잔액 정보 저장
+                    self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
+                    self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+                    
+                    # 현재 상태 저장
+                    self.save_state()
                     
                     return order
                 else:
@@ -264,11 +429,12 @@ class TradingAlgorithm:
             dict: 주문 결과
         """
         try:
+            order_time = datetime.now()
             if self.test_mode:
                 # 테스트 모드에서는 주문을 시뮬레이션
                 order = {
-                    'id': f"test_sell_{datetime.now().timestamp()}",
-                    'datetime': datetime.now().isoformat(),
+                    'id': f"test_sell_{order_time.timestamp()}",
+                    'datetime': order_time.isoformat(),
                     'symbol': self.symbol,
                     'type': 'market',
                     'side': 'sell',
@@ -283,25 +449,68 @@ class TradingAlgorithm:
                 self.portfolio['base_balance'] -= quantity
                 self.portfolio['quote_balance'] += (price * quantity) - (price * quantity * 0.001)
                 
-                # 포지션 업데이트
-                for position in self.portfolio['positions']:
+                # 포지션 업데이트 및 데이터베이스 저장
+                position_id = None
+                for i, position in enumerate(self.portfolio['positions']):
                     if position['status'] == 'open' and position['side'] == 'long':
-                        position['exit_time'] = datetime.now().isoformat()
-                        position['exit_price'] = price
-                        position['status'] = 'closed'
-                        position['profit'] = (price - position['entry_price']) * position['quantity']
-                        position['profit_pct'] = (price - position['entry_price']) / position['entry_price'] * 100
+                        # 포트폴리오 업데이트
+                        self.portfolio['positions'][i]['closed_at'] = order_time.isoformat()
+                        self.portfolio['positions'][i]['status'] = 'closed'
+                        self.portfolio['positions'][i]['pnl'] = (price - position['entry_price']) * position['amount']
+                        
+                        # 데이터베이스 업데이트
+                        update_data = {
+                            'closed_at': order_time.isoformat(),
+                            'status': 'closed',
+                            'pnl': (price - position['entry_price']) * position['amount'],
+                            'additional_info': {
+                                'exit_price': price,
+                                'profit_pct': (price - position['entry_price']) / position['entry_price'] * 100,
+                                'exit_order_id': order['id']
+                            }
+                        }
+                        
+                        # 현재 포지션에 ID가 있는 경우 사용
+                        if 'id' in position:
+                            position_id = position['id']
+                            self.db.update_position(position_id, update_data)
+                        # 데이터베이스에서 포지션 찾기
+                        else:
+                            open_positions = self.db.get_open_positions(self.symbol)
+                            for op in open_positions:
+                                if op['status'] == 'open' and op['side'] == 'long':
+                                    position_id = op['id']
+                                    self.db.update_position(position_id, update_data)
+                                    break
                         break
                 
-                # 거래 기록 추가
-                self.portfolio['trade_history'].append({
-                    'time': datetime.now().isoformat(),
-                    'type': 'sell',
+                # 거래 내역 추가
+                trade_record = {
+                    'symbol': self.symbol,
+                    'side': 'sell',
+                    'order_type': 'market',
+                    'amount': quantity,
                     'price': price,
-                    'quantity': quantity,
                     'cost': price * quantity,
-                    'fee': price * quantity * 0.001
-                })
+                    'fee': price * quantity * 0.001,
+                    'timestamp': order_time.isoformat(),
+                    'position_id': position_id,
+                    'additional_info': {
+                        'order_id': order['id'],
+                        'test_mode': True
+                    }
+                }
+                self.portfolio['trade_history'].append(trade_record)
+                
+                # 데이터베이스에 거래 내역 저장
+                self.db.save_trade(trade_record)
+                
+                # 잔액 정보 저장
+                self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
+                self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+                
+                # 현재 상태 저장
+                self.save_state()
                 
                 logger.info(f"[테스트] 매도 주문 실행: 가격={price}, 수량={quantity}, 수익={price * quantity}")
                 return order
@@ -315,25 +524,68 @@ class TradingAlgorithm:
                     # 포트폴리오 업데이트
                     self.update_portfolio()
                     
-                    # 포지션 업데이트
-                    for position in self.portfolio['positions']:
+                    # 포지션 업데이트 및 데이터베이스 저장
+                    position_id = None
+                    for i, position in enumerate(self.portfolio['positions']):
                         if position['status'] == 'open' and position['side'] == 'long':
-                            position['exit_time'] = datetime.now().isoformat()
-                            position['exit_price'] = price
-                            position['status'] = 'closed'
-                            position['profit'] = (price - position['entry_price']) * position['quantity']
-                            position['profit_pct'] = (price - position['entry_price']) / position['entry_price'] * 100
+                            # 포트폴리오 업데이트
+                            self.portfolio['positions'][i]['closed_at'] = order_time.isoformat()
+                            self.portfolio['positions'][i]['status'] = 'closed'
+                            self.portfolio['positions'][i]['pnl'] = (price - position['entry_price']) * position['amount']
+                            
+                            # 데이터베이스 업데이트
+                            update_data = {
+                                'closed_at': order_time.isoformat(),
+                                'status': 'closed',
+                                'pnl': (price - position['entry_price']) * position['amount'],
+                                'additional_info': {
+                                    'exit_price': price,
+                                    'profit_pct': (price - position['entry_price']) / position['entry_price'] * 100,
+                                    'exit_order_id': order['id']
+                                }
+                            }
+                            
+                            # 현재 포지션에 ID가 있는 경우 사용
+                            if 'id' in position:
+                                position_id = position['id']
+                                self.db.update_position(position_id, update_data)
+                            # 데이터베이스에서 포지션 찾기
+                            else:
+                                open_positions = self.db.get_open_positions(self.symbol)
+                                for op in open_positions:
+                                    if op['status'] == 'open' and op['side'] == 'long':
+                                        position_id = op['id']
+                                        self.db.update_position(position_id, update_data)
+                                        break
                             break
                     
-                    # 거래 기록 추가
-                    self.portfolio['trade_history'].append({
-                        'time': datetime.now().isoformat(),
-                        'type': 'sell',
+                    # 거래 내역 추가
+                    trade_record = {
+                        'symbol': self.symbol,
+                        'side': 'sell',
+                        'order_type': 'market',
+                        'amount': quantity,
                         'price': price,
-                        'quantity': quantity,
                         'cost': price * quantity,
-                        'fee': order.get('fee', {}).get('cost', 0)
-                    })
+                        'fee': order.get('fee', {}).get('cost', 0),
+                        'timestamp': order_time.isoformat(),
+                        'position_id': position_id,
+                        'additional_info': {
+                            'order_id': order['id'],
+                            'test_mode': False
+                        }
+                    }
+                    self.portfolio['trade_history'].append(trade_record)
+                    
+                    # 데이터베이스에 거래 내역 저장
+                    self.db.save_trade(trade_record)
+                    
+                    # 잔액 정보 저장
+                    self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
+                    self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+                    
+                    # 현재 상태 저장
+                    self.save_state()
                     
                     return order
                 else:

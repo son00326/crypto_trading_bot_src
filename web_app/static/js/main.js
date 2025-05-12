@@ -19,7 +19,10 @@ const API_URLS = {
     STATUS: '/api/status',
     START_BOT: '/api/start_bot',
     STOP_BOT: '/api/stop_bot',
-    BALANCE: '/api/balance'
+    BALANCE: '/api/balance',
+    TRADES: '/api/trades',
+    POSITIONS: '/api/positions', 
+    SUMMARY: '/api/summary'
 };
 
 // 봇 상태 업데이트 함수
@@ -152,13 +155,157 @@ function showAlert(message, type = 'info') {
     }, 5000);
 }
 
+// 거래 내역 업데이트 함수
+function updateTrades() {
+    fetch(API_URLS.TRADES)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.data) {
+                // 거래 내역 테이블 참조
+                const tradesTableBody = document.getElementById('trades-table-body');
+                if (!tradesTableBody) return;
+                
+                // 거래 내역 테이블 비우기
+                tradesTableBody.innerHTML = '';
+                
+                // 거래 내역이 없는 경우
+                if (data.data.length === 0) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = '<td colspan="7" class="text-center">거래 내역이 없습니다.</td>';
+                    tradesTableBody.appendChild(row);
+                } else {
+                    // 거래 내역 데이터로 테이블 채우기
+                    data.data.forEach(trade => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${new Date(trade.datetime).toLocaleString()}</td>
+                            <td>${trade.symbol}</td>
+                            <td><span class="badge ${trade.type === 'buy' ? 'bg-success' : 'bg-danger'}">${trade.type}</span></td>
+                            <td>${trade.price}</td>
+                            <td>${trade.amount}</td>
+                            <td>${trade.cost}</td>
+                            <td><span class="${parseFloat(trade.profit) >= 0 ? 'text-success' : 'text-danger'}">${trade.profit} (${trade.profit_percent}%)</span></td>
+                        `;
+                        tradesTableBody.appendChild(row);
+                    });
+                }
+                
+                // "데이터를 불러오는 중..." 메시지 숨기기
+                const loadingMsg = document.getElementById('trades-loading-message');
+                if (loadingMsg) loadingMsg.classList.add('d-none');
+                
+                // 테이블 표시
+                const tradesTable = document.getElementById('trades-table');
+                if (tradesTable) tradesTable.classList.remove('d-none');
+            }
+        })
+        .catch(error => {
+            console.error('거래 내역 업데이트 오류:', error);
+        });
+}
+
+// 포지션 정보 업데이트 함수
+function updatePositions() {
+    fetch(API_URLS.POSITIONS)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.data) {
+                // 포지션 테이블 참조
+                const positionsTableBody = document.getElementById('positions-table-body');
+                if (!positionsTableBody) return;
+                
+                // 포지션 테이블 비우기
+                positionsTableBody.innerHTML = '';
+                
+                // 포지션이 없는 경우
+                if (data.data.length === 0) {
+                    const row = document.createElement('tr');
+                    row.innerHTML = '<td colspan="6" class="text-center">포지션이 없습니다.</td>';
+                    positionsTableBody.appendChild(row);
+                } else {
+                    // 포지션 데이터로 테이블 채우기
+                    data.data.forEach(position => {
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${position.symbol}</td>
+                            <td><span class="badge ${position.type === 'long' ? 'bg-success' : 'bg-danger'}">${position.type}</span></td>
+                            <td>${position.entry_price}</td>
+                            <td>${position.amount}</td>
+                            <td>${position.current_price}</td>
+                            <td><span class="${parseFloat(position.profit) >= 0 ? 'text-success' : 'text-danger'}">${position.profit} (${position.profit_percent}%)</span></td>
+                        `;
+                        positionsTableBody.appendChild(row);
+                    });
+                }
+                
+                // "데이터를 불러오는 중..." 메시지 숨기기
+                const positionsLoadingMsg = document.getElementById('positions-loading-message');
+                if (positionsLoadingMsg) positionsLoadingMsg.classList.add('d-none');
+                
+                // 테이블 표시
+                const positionsTable = document.getElementById('positions-table');
+                if (positionsTable) positionsTable.classList.remove('d-none');
+            }
+        })
+        .catch(error => {
+            console.error('포지션 업데이트 오류:', error);
+        });
+}
+
+// 요약 정보 업데이트 함수
+function updateSummary() {
+    fetch(API_URLS.SUMMARY)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.data) {
+                // 잔액 정보 업데이트
+                if (data.data.balance) {
+                    document.getElementById('summary-balance-amount').textContent = data.data.balance.amount || '0';
+                    document.getElementById('summary-balance-currency').textContent = data.data.balance.currency || 'USDT';
+                    balanceAmountElem.textContent = data.data.balance.amount || '0';
+                    balanceCurrencyElem.textContent = data.data.balance.currency || 'USDT';
+                }
+                
+                // 수익 성과 정보 업데이트
+                if (data.data.performance) {
+                    const perf = data.data.performance;
+                    const totalProfitElem = document.getElementById('total-profit');
+                    if (totalProfitElem) totalProfitElem.textContent = perf.total_profit || '0.00';
+                    
+                    const winRateElem = document.getElementById('win-rate');
+                    if (winRateElem) winRateElem.textContent = perf.win_rate || '0%';
+                    
+                    const avgProfitElem = document.getElementById('avg-profit');
+                    if (avgProfitElem) avgProfitElem.textContent = perf.avg_profit || '0.00';
+                }
+                
+                // "데이터를 불러오는 중..." 메시지 숨기기
+                const summaryLoadingMsg = document.getElementById('summary-loading-message');
+                if (summaryLoadingMsg) summaryLoadingMsg.classList.add('d-none');
+                
+                // 요약 데이터 표시
+                const summaryContent = document.getElementById('summary-content');
+                if (summaryContent) summaryContent.classList.remove('d-none');
+            }
+        })
+        .catch(error => {
+            console.error('요약 정보 업데이트 오류:', error);
+        });
+}
+
 // 이벤트 리스너 등록
 document.addEventListener('DOMContentLoaded', function() {
-    // 초기 상태 업데이트
+    // 초기 데이터 로드
     updateBotStatus();
+    updateTrades();
+    updatePositions();
+    updateSummary();
     
-    // 정기적인 상태 업데이트 (10초마다)
-    setInterval(updateBotStatus, 10000);
+    // 정기적인 데이터 업데이트
+    setInterval(updateBotStatus, 10000);    // 10초마다
+    setInterval(updateTrades, 15000);       // 15초마다
+    setInterval(updatePositions, 10000);    // 10초마다
+    setInterval(updateSummary, 30000);      // 30초마다
     
     // 봇 시작 버튼 클릭 이벤트
     startBotBtn.addEventListener('click', startBot);
