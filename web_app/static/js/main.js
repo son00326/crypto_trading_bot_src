@@ -22,7 +22,8 @@ const API_URLS = {
     BALANCE: '/api/balance',
     TRADES: '/api/trades',
     POSITIONS: '/api/positions', 
-    SUMMARY: '/api/summary'
+    SUMMARY: '/api/summary',
+    SET_STOPLOSS_TAKEPROFIT: '/api/set_stop_loss_take_profit'
 };
 
 // 봇 상태 업데이트 함수
@@ -233,6 +234,15 @@ function updatePositions() {
                             <td>${position.amount}</td>
                             <td>${position.current_price}</td>
                             <td><span class="${parseFloat(position.profit) >= 0 ? 'text-success' : 'text-danger'}">${position.profit} (${position.profit_percent}%)</span></td>
+                            <td>
+                                <button class="btn btn-sm btn-primary set-stoploss-takeprofit-btn" 
+                                    data-position-id="${position.id}" 
+                                    data-symbol="${position.symbol}" 
+                                    data-side="${position.type}" 
+                                    data-entry-price="${position.entry_price}">
+                                    손절/이익실현 설정
+                                </button>
+                            </td>
                         `;
                         positionsTableBody.appendChild(row);
                     });
@@ -374,6 +384,49 @@ function updateSummary() {
         });
 }
 
+// 손절/이익실현 설정 함수
+function setStopLossTakeProfit(positionId, symbol, side, entryPrice) {
+    // 현재 슬라이더 값 가져오기
+    const stopLossPct = parseFloat(document.getElementById('stop-loss').value) / 100;
+    const takeProfitPct = parseFloat(document.getElementById('take-profit').value) / 100;
+    
+    // API 호출 데이터 준비
+    const data = {
+        position_id: positionId,
+        symbol: symbol,
+        side: side,
+        entry_price: parseFloat(entryPrice),
+        stop_loss_pct: stopLossPct,
+        take_profit_pct: takeProfitPct
+    };
+    
+    // API 호출
+    fetch(API_URLS.SET_STOPLOSS_TAKEPROFIT, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(result => {
+        if (result.success) {
+            // 성공 메시지 표시
+            showAlert('손절/이익실현 설정이 완료되었습니다.', 'success');
+            
+            // 포지션 목록 업데이트
+            updatePositions();
+        } else {
+            // 실패 메시지 표시
+            showAlert('손절/이익실현 설정 실패: ' + (result.message || '알 수 없는 오류'), 'danger');
+        }
+    })
+    .catch(error => {
+        console.error('손절/이익실현 설정 중 오류:', error);
+        showAlert('손절/이익실현 설정 중 오류가 발생했습니다.', 'danger');
+    });
+}
+
 // 이벤트 리스너 등록
 document.addEventListener('DOMContentLoaded', function() {
     // 초기 데이터 로드
@@ -381,6 +434,22 @@ document.addEventListener('DOMContentLoaded', function() {
     updateTrades();
     updatePositions();
     updateSummary();
+    
+    // 손절/이익실현 버튼 클릭 이벤트 등록 (delegation 사용)
+    document.addEventListener('click', function(event) {
+        if (event.target.classList.contains('set-stoploss-takeprofit-btn')) {
+            const positionId = event.target.getAttribute('data-position-id');
+            const symbol = event.target.getAttribute('data-symbol');
+            const side = event.target.getAttribute('data-side');
+            const entryPrice = event.target.getAttribute('data-entry-price');
+            
+            // 현재 슬라이더 값 표시
+            alert(`${symbol} 포지션에 손절매/이익실현을 적용합니다:\n\n손절매: ${document.getElementById('stop-loss-value').textContent}\n이익실현: ${document.getElementById('take-profit-value').textContent}`);
+            
+            // API 호출
+            setStopLossTakeProfit(positionId, symbol, side, entryPrice);
+        }
+    });
     
     // 정기적인 데이터 업데이트
     setInterval(updateBotStatus, 10000);    // 10초마다

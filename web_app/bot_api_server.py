@@ -88,7 +88,7 @@ class TradingBotAPIServer:
                 exchange_id = saved_state.get('exchange_id', DEFAULT_EXCHANGE)
                 symbol = saved_state.get('symbol', DEFAULT_SYMBOL)
                 timeframe = saved_state.get('timeframe', DEFAULT_TIMEFRAME)
-                market_type = saved_state.get('market_type', 'futures')
+                market_type = saved_state.get('market_type', 'futures')  # 기본값을 futures로 설정
                 leverage = saved_state.get('leverage', 1)
                 
                 # GUI에서 저장한 API 키 불러오기
@@ -246,6 +246,84 @@ class TradingBotAPIServer:
                 return jsonify({
                     'success': False,
                     'message': f'포지션 정보 조회 중 오류: {str(e)}'
+                }), 500
+        
+        # 손절/이익실현 설정 API
+        @app.route('/api/set_stop_loss_take_profit', methods=['POST'])
+        def set_stop_loss_take_profit():
+            try:
+                data = request.json
+                symbol = data.get('symbol')
+                position_id = data.get('position_id')
+                side = data.get('side', 'long')  # 'long' 또는 'short'
+                entry_price = float(data.get('entry_price', 0))
+                stop_loss_pct = float(data.get('stop_loss_pct', 0.05))
+                take_profit_pct = float(data.get('take_profit_pct', 0.1))
+                
+                # RiskManager 인스턴스 생성
+                from src.risk_manager import RiskManager
+                risk_manager = RiskManager(
+                    exchange_id=DEFAULT_EXCHANGE, 
+                    symbol=symbol
+                )
+                
+                # 손절가, 이익실현가 계산
+                stop_loss_price = risk_manager.calculate_stop_loss_price(
+                    entry_price=entry_price,
+                    side=side,
+                    custom_pct=stop_loss_pct
+                )
+                
+                take_profit_price = risk_manager.calculate_take_profit_price(
+                    entry_price=entry_price,
+                    side=side,
+                    custom_pct=take_profit_pct
+                )
+                
+                # 위험 대비 보상 비율 계산
+                risk_reward_ratio = risk_manager.calculate_risk_reward_ratio(
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price
+                )
+                
+                # 기존 포지션이 있다면 업데이트
+                if position_id:
+                    positions = self.db.load_positions()
+                    updated = False
+                    
+                    for pos in positions:
+                        if str(pos.get('id')) == str(position_id):
+                            pos['stop_loss_price'] = stop_loss_price
+                            pos['take_profit_price'] = take_profit_price
+                            pos['stop_loss_pct'] = stop_loss_pct
+                            pos['take_profit_pct'] = take_profit_pct
+                            pos['risk_reward_ratio'] = risk_reward_ratio
+                            updated = True
+                            break
+                            
+                    if updated:
+                        self.db.save_positions(positions)
+                        logger.info(f"포지션 {position_id}의 손절/이익실현 설정이 업데이트되었습니다.")
+                
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'symbol': symbol,
+                        'position_id': position_id,
+                        'side': side,
+                        'entry_price': entry_price,
+                        'stop_loss_price': stop_loss_price,
+                        'take_profit_price': take_profit_price,
+                        'risk_reward_ratio': risk_reward_ratio
+                    }
+                })
+                
+            except Exception as e:
+                logger.error(f"손절매/이익실현 설정 중 오류: {str(e)}")
+                return jsonify({
+                    'success': False, 
+                    'message': f'손절매/이익실현 설정 중 오류: {str(e)}'
                 }), 500
 
         # 지갑 잔액 및 요약 정보 API
