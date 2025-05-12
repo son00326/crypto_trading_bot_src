@@ -167,11 +167,60 @@ class ExchangeAPI:
             logger.error(f"OHLCV 데이터 조회 중 오류 발생: {e}")
             return None
     
-    def get_balance(self):
-        """계정 잔고 조회"""
+    def get_balance(self, balance_type=None):
+        """계정 잔고 조회
+        
+        Args:
+            balance_type (str, optional): 잔고 유형 ('spot', 'future', 'all'). 기본값은 인스턴스의 market_type 값
+        
+        Returns:
+            dict: 잔고 정보. balance_type이 'all'인 경우 spot과 future 모두 포함
+        """
         try:
-            balance = self.exchange.fetch_balance()
-            return balance
+            # 기본 잔고 유형 설정
+            if balance_type is None:
+                balance_type = self.market_type
+            
+            # 모든 잔고 정보 가져오기 (현물 + 선물)
+            if balance_type == 'all':
+                # 현물 잔고 가져오기
+                spot_balance = None
+                try:
+                    spot_balance = self.exchange.fetch_balance()
+                except Exception as e:
+                    logger.error(f"현물 잔고 조회 중 오류 발생: {e}")
+                
+                # 선물 잔고 가져오기
+                future_balance = None
+                try:
+                    # 바이낸스의 경우 파라미터 설정
+                    params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+                    future_balance = self.exchange.fetch_balance(params=params)
+                except Exception as e:
+                    logger.error(f"선물 잔고 조회 중 오류 발생: {e}")
+                
+                # 결과 합치기
+                return {
+                    'spot': spot_balance,
+                    'future': future_balance,
+                    'total': spot_balance.get('total', {}) if spot_balance else {},
+                    'free': spot_balance.get('free', {}) if spot_balance else {},
+                    'used': spot_balance.get('used', {}) if spot_balance else {}
+                }
+            
+            # 선물 잔고만 가져오기
+            elif balance_type == 'future':
+                params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+                balance = self.exchange.fetch_balance(params=params)
+                logger.info(f"선물 잔고 조회 성공: {self.exchange_id}")
+                return balance
+            
+            # 현물 잔고만 가져오기 (기본값)
+            else:
+                balance = self.exchange.fetch_balance()
+                logger.info(f"현물 잔고 조회 성공: {self.exchange_id}")
+                return balance
+                
         except Exception as e:
             logger.error(f"잔고 조회 중 오류 발생: {e}")
             return None

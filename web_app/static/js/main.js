@@ -254,16 +254,97 @@ function updatePositions() {
 
 // 요약 정보 업데이트 함수
 function updateSummary() {
+    console.log('잔액 정보 업데이트 시작...');
     fetch(API_URLS.SUMMARY)
         .then(response => response.json())
         .then(data => {
+            console.log('받은 잔액 데이터:', data);
             if (data.success && data.data) {
                 // 잔액 정보 업데이트
                 if (data.data.balance) {
-                    document.getElementById('summary-balance-amount').textContent = data.data.balance.amount || '0';
-                    document.getElementById('summary-balance-currency').textContent = data.data.balance.currency || 'USDT';
-                    balanceAmountElem.textContent = data.data.balance.amount || '0';
-                    balanceCurrencyElem.textContent = data.data.balance.currency || 'USDT';
+                    console.log('발견된 잔액 데이터:', data.data.balance);
+                    // 새로운 잔액 구조 처리 (현물 + 선물)
+                    const balances = [];
+                    
+                    // 현물 잔액 처리
+                    if (data.data.balance.spot) {
+                        console.log('현물 잔액 발견:', data.data.balance.spot);
+                        balances.push({
+                            amount: data.data.balance.spot.amount,
+                            currency: data.data.balance.spot.currency,
+                            type: 'spot'
+                        });
+                    }
+                    
+                    // 선물 잔액 처리
+                    if (data.data.balance.future) {
+                        console.log('선물 잔액 발견:', data.data.balance.future);
+                        balances.push({
+                            amount: data.data.balance.future.amount,
+                            currency: data.data.balance.future.currency,
+                            type: 'future'
+                        });
+                    }
+                    
+                    // 잔액 정보가 없을 경우 기본값 설정
+                    if (balances.length === 0) {
+                        console.log('잔액 정보 없음, 기본값 사용');
+                        balances.push({
+                            amount: '0',
+                            currency: 'USDT',
+                            type: 'spot'
+                        });
+                    }
+                    
+                    console.log('처리된 잔액 데이터:', balances);
+                    
+                    // 잔액 표시 업데이트 - 메인 표시용
+                    if (balances.length > 0) {
+                        // 메인 표시 영역에는 모든 잔액 표시
+                        if (balanceAmountElem && balanceCurrencyElem) {
+                            const mainBalance = balances[0];
+                            balanceAmountElem.textContent = Number(mainBalance.amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 8});
+                            balanceCurrencyElem.textContent = mainBalance.currency;
+                            console.log('메인 잔액 업데이트 완료');
+                        } else {
+                            console.error('메인 잔액 표시 요소를 찾을 수 없음');
+                        }
+                    }
+                    
+                    // 요약 표시용
+                    const summaryBalanceAmount = document.getElementById('summary-balance-amount');
+                    const summaryBalanceCurrency = document.getElementById('summary-balance-currency');
+                    if (summaryBalanceAmount && summaryBalanceCurrency && balances.length > 0) {
+                        const mainBalance = balances[0];
+                        summaryBalanceAmount.textContent = Number(mainBalance.amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 8});
+                        summaryBalanceCurrency.textContent = mainBalance.currency;
+                        console.log('요약 잔액 업데이트 완료');
+                    }
+                    
+                    // 현물/선물 잔액 모두 표시
+                    const balanceContainer = document.getElementById('balance-container');
+                    if (balanceContainer) {
+                        // 기존 내용 삭제
+                        balanceContainer.innerHTML = '';
+                        console.log('balance-container 발견, 내용 초기화');
+                        
+                        // 각 잔액 정보 표시
+                        balances.forEach(balance => {
+                            const balanceItem = document.createElement('div');
+                            balanceItem.className = 'mb-2';
+                            balanceItem.innerHTML = `
+                                <div class="fw-bold">${balance.type === 'spot' ? '현물' : '선물'} 잔액:</div>
+                                <div class="h5 mb-0">
+                                    <span>${Number(balance.amount).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 8})}</span>
+                                    <span>${balance.currency}</span>
+                                </div>
+                            `;
+                            balanceContainer.appendChild(balanceItem);
+                            console.log(`${balance.type} 잔액 업데이트 완료: ${balance.amount} ${balance.currency}`);
+                        });
+                    } else {
+                        console.error('balance-container 요소를 찾을 수 없음');
+                    }
                 }
                 
                 // 수익 성과 정보 업데이트

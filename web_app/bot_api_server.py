@@ -88,7 +88,7 @@ class TradingBotAPIServer:
                 exchange_id = saved_state.get('exchange_id', DEFAULT_EXCHANGE)
                 symbol = saved_state.get('symbol', DEFAULT_SYMBOL)
                 timeframe = saved_state.get('timeframe', DEFAULT_TIMEFRAME)
-                market_type = saved_state.get('market_type', 'spot')
+                market_type = saved_state.get('market_type', 'futures')
                 leverage = saved_state.get('leverage', 1)
                 
                 # GUI에서 저장한 API 키 불러오기
@@ -253,11 +253,67 @@ class TradingBotAPIServer:
         def get_summary():
             try:
                 # 지갑 요약 정보 가져오기
-                balance = None
-                if hasattr(self.bot_gui, 'get_balance_api'):
+                # 현물과 선물 지갑 정보를 모두 가져오기
+                spot_balance = None
+                future_balance = None
+                
+                if hasattr(self.bot_gui, 'exchange_api') and self.bot_gui.exchange_api:
+                    # 현물+선물 잔고 모두 가져오기
+                    try:
+                        all_balances = self.bot_gui.exchange_api.get_balance('all')
+                        
+                        # 현물 잔고 처리
+                        if 'spot' in all_balances and all_balances['spot']:
+                            spot_data = all_balances['spot']
+                            for currency in ['USDT', 'USD', 'BUSD', 'USDC']:
+                                if currency in spot_data.get('total', {}) and spot_data['total'][currency] > 0:
+                                    spot_balance = {
+                                        'amount': spot_data['total'][currency],
+                                        'currency': currency,
+                                        'type': 'spot'
+                                    }
+                                    break
+                            
+                            # 스테이블코인이 없는 경우 다른 통화 검색
+                            if not spot_balance:
+                                for currency in ['BTC', 'ETH']:
+                                    if currency in spot_data.get('total', {}) and spot_data['total'][currency] > 0:
+                                        spot_balance = {
+                                            'amount': spot_data['total'][currency],
+                                            'currency': currency,
+                                            'type': 'spot'
+                                        }
+                                        break
+                        
+                        # 선물 잔고 처리
+                        if 'future' in all_balances and all_balances['future']:
+                            future_data = all_balances['future']
+                            for currency in ['USDT', 'USD', 'BUSD', 'USDC']:
+                                if currency in future_data.get('total', {}) and future_data['total'][currency] > 0:
+                                    future_balance = {
+                                        'amount': future_data['total'][currency],
+                                        'currency': currency,
+                                        'type': 'future'
+                                    }
+                                    break
+                    except Exception as e:
+                        logger.error(f"잔고 정보 가져오기 오류: {str(e)}")
+                
+                # 이전 방식으로도 시도 (이전 코드와의 호환성 유지)
+                if not spot_balance and not future_balance and hasattr(self.bot_gui, 'get_balance_api'):
                     balance_result = self.bot_gui.get_balance_api()
                     if balance_result.get('success', False):
-                        balance = balance_result.get('data')
+                        balance_data = balance_result.get('data')
+                        if balance_data.get('type') == 'future':
+                            future_balance = balance_data
+                        else:
+                            spot_balance = balance_data
+                
+                # 종합 밸런스 정보
+                balance = {
+                    'spot': spot_balance,
+                    'future': future_balance
+                }
                 
                 # 수익 요약 정보
                 performance = self.db.load_performance_stats() if hasattr(self.db, 'load_performance_stats') else None

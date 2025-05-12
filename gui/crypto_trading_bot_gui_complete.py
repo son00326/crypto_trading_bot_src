@@ -2209,7 +2209,7 @@ class CryptoTradingBotGUI(QMainWindow):
         API를 통해 잔액 정보를 반환하는 메서드
         
         Returns:
-            dict: 잔액 정보
+            dict: 잔액 정보 (현물 및 선물 잔고 모두 포함)
         """
         # 기존에 저장된 잔액 정보가 있는지 확인
         if self.balance_data:
@@ -2219,24 +2219,53 @@ class CryptoTradingBotGUI(QMainWindow):
         try:
             # 거래소 API가 초기화되어 있는지 확인
             if hasattr(self, 'exchange_api') and self.exchange_api:
-                # 바이낸스에서 직접 잔액 정보 가져오기
-                balance_result = self.exchange_api.get_balance()
+                # 현물+선물 모든 잔액 정보 가져오기
+                balance_result = self.exchange_api.get_balance('all')
                 
-                if balance_result and 'total' in balance_result:
-                    # 전체 금액을 합산하여 표시
-                    total_balance = 0
-                    # USD, USDT 같은 스테이블코인 찾기
+                # 설정된 시장 유형에 따라 적절한 잔고 정보 선택
+                market_type = 'spot'
+                if hasattr(self.exchange_api, 'market_type'):
+                    market_type = self.exchange_api.market_type
+                
+                # 선물 거래인 경우 선물 잔고 사용
+                if market_type == 'futures' and balance_result.get('future'):
+                    logger.info("선물 잔고 정보를 사용합니다.")
+                    future_balance = balance_result['future']
+                    if future_balance and 'total' in future_balance:
+                        # USDT 선물 잔고 찾기
+                        for currency in ['USDT', 'USD', 'BUSD', 'USDC']:
+                            if currency in future_balance['total']:
+                                total_balance = future_balance['total'][currency]
+                                self.balance_data = {
+                                    'amount': total_balance, 
+                                    'currency': currency,
+                                    'type': 'future'
+                                }
+                                return {'success': True, 'data': self.balance_data}
+                
+                # 현물 잔고 사용 (바이낸스 일반 잔고 또는 선물 거래 정보가 없는 경우)
+                spot_balance = balance_result.get('spot') or balance_result
+                if spot_balance and 'total' in spot_balance:
+                    # 스테이블코인 잔고 찾기
                     for currency in ['USDT', 'USD', 'BUSD', 'USDC']:
-                        if currency in balance_result['total']:
-                            total_balance = balance_result['total'][currency]
-                            self.balance_data = {'amount': total_balance, 'currency': currency}
+                        if currency in spot_balance['total'] and spot_balance['total'][currency] > 0:
+                            total_balance = spot_balance['total'][currency]
+                            self.balance_data = {
+                                'amount': total_balance, 
+                                'currency': currency,
+                                'type': 'spot'
+                            }
                             return {'success': True, 'data': self.balance_data}
                     
-                    # 그 외의 체인 기본 통화 찾기 (BTC, ETH 등)
+                    # 그 외의 통화 잔고 찾기
                     for currency in ['BTC', 'ETH']:
-                        if currency in balance_result['total'] and balance_result['total'][currency] > 0:
-                            total_balance = balance_result['total'][currency]
-                            self.balance_data = {'amount': total_balance, 'currency': currency}
+                        if currency in spot_balance['total'] and spot_balance['total'][currency] > 0:
+                            total_balance = spot_balance['total'][currency]
+                            self.balance_data = {
+                                'amount': total_balance, 
+                                'currency': currency,
+                                'type': 'spot'
+                            }
                             return {'success': True, 'data': self.balance_data}
             
             # 거래소 API가 없거나 가져오기 실패한 경우
