@@ -7,9 +7,16 @@ import logging
 import json
 import time
 from datetime import datetime
-from flask import Flask, jsonify, request, render_template, send_from_directory
+from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash
 from flask_cors import CORS
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+# 표준 라이브러리를 사용하여 URL 파싱
+from urllib.parse import urlparse
 from PyQt5.QtWidgets import QApplication
+
+# 사용자 모델 임포트
+from web_app.models import User
 
 # 필요한 모듈 추가
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -43,10 +50,31 @@ class TradingBotAPIServer:
         self.flask_app = Flask(__name__, 
                          template_folder=template_dir,
                          static_folder=static_dir)
+        self.flask_app.secret_key = os.getenv('SECRET_KEY', 'crypto_trading_bot_secret_key')
         CORS(self.flask_app)
+        
+        # 로그인 관리자 초기화
+        self.login_manager = LoginManager()
+        self.login_manager.init_app(self.flask_app)
+        self.login_manager.login_view = 'login'
+        self.login_manager.login_message = '이 페이지에 액세스하려면 로그인이 필요합니다.'
         
         # 데이터베이스 관리자 초기화
         self.db = DatabaseManager()
+        
+        # 사용자 테이블 생성 확인
+        self.db.create_users_table()
+        
+        # 기본 관리자 계정 생성 (없는 경우)
+        admin_user = self.db.get_user_by_username('admin')
+        if not admin_user:
+            admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')  # 환경변수에서 암호 가져오기
+            self.db.create_user(
+                username='admin',
+                password_hash=generate_password_hash(admin_password),
+                is_admin=True
+            )
+            logger.info('기본 관리자 계정이 생성되었습니다.')
         
         try:
             # PyQt5 애플리케이션 객체 초기화 (실행 중이 아니면 생성)
@@ -158,17 +186,103 @@ class TradingBotAPIServer:
                 'message': f"저장된 설정으로 봇 재시작 중 오류: {str(e)}"
             }
     
+    # 사용자 로드 콜백 함수
+    def load_user(self, user_id):
+        """사용자 ID로 사용자 객체 로드"""
+        user_data = self.db.get_user_by_id(user_id)
+        if user_data:
+            return User(
+                id=user_data['id'],
+                username=user_data['username'],
+                password_hash=user_data['password_hash'],
+                email=user_data['email'],
+                is_admin=user_data['is_admin']
+            )
+        return None
+
     def register_endpoints(self):
         """API 엔드포인트 등록"""
         app = self.flask_app
         
+        # 사용자 로드 콜백 등록
+        @self.login_manager.user_loader
+        def load_user(user_id):
+            return self.load_user(user_id)
+        
+        # 로그인 페이지
+        @app.route('/login', methods=['GET', 'POST'])
+        def login():
+            if current_user.is_authenticated:
+                return redirect(url_for('index'))
+                
+            if request.method == 'POST':
+                username = request.form.get('username')
+                password = request.form.get('password')
+                remember = 'remember' in request.form
+                
+                # 디버깅을 위한 출력 추가
+                logger.info(f"로그인 시도: {username}")
+                
+                # 사용자 확인
+                user_data = self.db.get_user_by_username(username)
+                if user_data:
+                    # 비밀번호 해시 확인 
+                    logger.info(f"사용자 찾음: {username}, 비밀번호 검증 시도")
+                    
+                    # 해시 타입 확인 및 변환
+                    stored_hash = str(user_data['password_hash'])
+                    
+                    if check_password_hash(stored_hash, password):
+                        user = User(
+                            id=user_data['id'], 
+                            username=user_data['username'],
+                            password_hash=user_data['password_hash'],
+                            email=user_data['email'],
+                            is_admin=user_data['is_admin']
+                        )
+                        login_user(user, remember=remember)
+                        
+                        logger.info(f"로그인 성공: {username}")
+                        
+                        # 원래 요청했던 페이지로 리다이렉트
+                        next_page = request.args.get('next')
+                        if not next_page or urlparse(next_page).netloc != '':
+                            next_page = '/'
+                            
+                        return redirect(next_page)
+                    else:
+                        logger.warning(f"비밀번호 불일치: {username}")
+                else:
+                    logger.warning(f"사용자 없음: {username}")
+                    
+                # 로그인 실패
+                flash('사용자명 또는 비밀번호가 잘못되었습니다.')
+            
+            return render_template('login.html')
+
+        # 회원가입 페이지 - 비활성화(고정 관리자 계정만 사용)
+        @app.route('/register', methods=['GET', 'POST'])
+        def register():
+            # 관리자 계정만 사용하도록 회원가입 기능 비활성화
+            flash('회원가입이 필요하지 않습니다. 기본 관리자 계정을 사용하세요.')
+            return redirect(url_for('login'))
+
+        # 로그아웃
+        @app.route('/logout')
+        @login_required
+        def logout():
+            logout_user()
+            return redirect(url_for('index'))
+        
         # 메인 페이지
         @app.route('/')
+        @login_required
         def index():
             return render_template('index.html')
         
         # 상태 확인 API
         @app.route('/api/status', methods=['GET'])
+        @login_required
         def get_status():
             try:
                 # GUI에서 상태 정보 가져오기
@@ -184,6 +298,7 @@ class TradingBotAPIServer:
         
         # 거래 내역 조회 API
         @app.route('/api/trades', methods=['GET'])
+        @login_required
         def get_trades():
             try:
                 # 거래 내역 데이터 가져오기
@@ -217,6 +332,7 @@ class TradingBotAPIServer:
 
         # 포지션 정보 조회 API
         @app.route('/api/positions', methods=['GET'])
+        @login_required
         def get_positions():
             try:
                 # 현재 포지션 데이터 가져오기
@@ -250,6 +366,7 @@ class TradingBotAPIServer:
         
         # 손절/이익실현 설정 API
         @app.route('/api/set_stop_loss_take_profit', methods=['POST'])
+        @login_required
         def set_stop_loss_take_profit():
             try:
                 data = request.json
@@ -328,6 +445,7 @@ class TradingBotAPIServer:
 
         # 지갑 잔액 및 요약 정보 API
         @app.route('/api/summary', methods=['GET'])
+        @login_required
         def get_summary():
             try:
                 # 지갑 요약 정보 가져오기
@@ -412,6 +530,7 @@ class TradingBotAPIServer:
         
         # 봇 시작 API
         @app.route('/api/start_bot', methods=['POST'])
+        @login_required
         def start_bot():
             try:
                 data = request.json or {}
@@ -468,6 +587,7 @@ class TradingBotAPIServer:
         
         # 봇 중지 API
         @self.flask_app.route('/api/stop_bot', methods=['POST'])
+        @login_required
         def stop_bot():
             try:
                 # GUI API를 통해 봇 중지
@@ -524,6 +644,7 @@ class TradingBotAPIServer:
     
         # 잔액 정보 API
         @self.flask_app.route('/api/balance')
+        @login_required
         def get_balance():
             try:
                 # GUI API를 통해 잔액 정보 가져오기

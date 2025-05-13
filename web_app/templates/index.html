@@ -48,6 +48,14 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
             <a class="navbar-brand" href="#">암호화폐 자동 매매 봇</a>
+            <div class="d-flex align-items-center">
+                {% if current_user.is_authenticated %}
+                <span class="text-light me-3">{{ current_user.username }} 님</span>
+                <a href="{{ url_for('logout') }}" class="btn btn-sm btn-outline-light">로그아웃</a>
+                {% else %}
+                <a href="{{ url_for('login') }}" class="btn btn-sm btn-light">로그인</a>
+                {% endif %}
+            </div>
         </div>
     </nav>
 

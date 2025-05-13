@@ -141,6 +141,18 @@ class DatabaseManager:
             )
             ''')
             
+            # 사용자 테이블 (로그인 기능용)
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                email TEXT UNIQUE,
+                is_admin INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            ''')
+            
             conn.commit()
             logger.debug("데이터베이스 테이블 생성 완료")
         except sqlite3.Error as e:
@@ -155,6 +167,183 @@ class DatabaseManager:
             _thread_local.conn = None
             _thread_local.cursor = None
             logger.debug(f"스레드 {threading.get_ident()} 의 데이터베이스 연결 종료")
+    
+    # 사용자 관련 메서드 (로그인 기능용)
+    def create_users_table(self):
+        """사용자 테이블 생성 (이미 _create_tables에서 처리)"""
+        pass  # 호환성을 위해 남겨둠
+    
+    def get_user_by_id(self, user_id):
+        """
+        ID로 사용자 정보 조회
+        
+        Args:
+            user_id (int): 사용자 ID
+            
+        Returns:
+            dict: 사용자 정보, 없으면 None
+        """
+        try:
+            conn, cursor = self._get_connection()
+            cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+            user_data = cursor.fetchone()
+            
+            if user_data:
+                # 타입 명시적으로 처리
+                return {
+                    'id': int(user_data['id']),
+                    'username': str(user_data['username']),
+                    'password_hash': str(user_data['password_hash']),
+                    'email': user_data['email'],
+                    'is_admin': bool(user_data['is_admin']),
+                    'created_at': user_data['created_at']
+                }
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"사용자 조회 오류 (ID): {e}")
+            return None
+    
+    def get_user_by_username(self, username):
+        """
+        사용자명으로 사용자 정보 조회
+        
+        Args:
+            username (str): 사용자명
+            
+        Returns:
+            dict: 사용자 정보, 없으면 None
+        """
+        try:
+            conn, cursor = self._get_connection()
+            cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
+            user_data = cursor.fetchone()
+            
+            if user_data:
+                # 타입 명시적으로 처리
+                return {
+                    'id': int(user_data['id']),
+                    'username': str(user_data['username']),
+                    'password_hash': str(user_data['password_hash']),
+                    'email': user_data['email'],
+                    'is_admin': bool(user_data['is_admin']),
+                    'created_at': user_data['created_at']
+                }
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"사용자 조회 오류 (사용자명): {e}")
+            return None
+    
+    def create_user(self, username, password_hash, email=None, is_admin=False):
+        """
+        새 사용자 생성
+        
+        Args:
+            username (str): 사용자명
+            password_hash (str): 암호화된 비밀번호
+            email (str, optional): 이메일 주소
+            is_admin (bool, optional): 관리자 여부
+            
+        Returns:
+            bool: 생성 성공 여부
+        """
+        try:
+            conn, cursor = self._get_connection()
+            cursor.execute(
+                'INSERT INTO users (username, password_hash, email, is_admin) VALUES (?, ?, ?, ?)',
+                (username, password_hash, email, int(is_admin))
+            )
+            conn.commit()
+            logger.info(f"새 사용자 생성 완료: {username}")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"사용자 생성 오류: {e}")
+            conn.rollback()
+            return False
+            
+    def update_user(self, user_id, username=None, password_hash=None, email=None, is_admin=None):
+        """
+        사용자 정보 업데이트
+        
+        Args:
+            user_id (int): 사용자 ID
+            username (str, optional): 사용자명
+            password_hash (str, optional): 암호화된 비밀번호
+            email (str, optional): 이메일 주소
+            is_admin (bool, optional): 관리자 여부
+            
+        Returns:
+            bool: 업데이트 성공 여부
+        """
+        try:
+            conn, cursor = self._get_connection()
+            current_user = self.get_user_by_id(user_id)
+            
+            if not current_user:
+                logger.warning(f"업데이트할 사용자를 찾을 수 없음: ID {user_id}")
+                return False
+            
+            # 업데이트할 필드 구성
+            updates = []
+            values = []
+            
+            if username is not None:
+                updates.append("username = ?")
+                values.append(username)
+            
+            if password_hash is not None:
+                updates.append("password_hash = ?")
+                values.append(password_hash)
+            
+            if email is not None:
+                updates.append("email = ?")
+                values.append(email)
+            
+            if is_admin is not None:
+                updates.append("is_admin = ?")
+                values.append(int(is_admin))
+            
+            if not updates:
+                logger.warning("업데이트할 필드가 없습니다.")
+                return False
+            
+            # 업데이트 쿼리 실행
+            query = f"UPDATE users SET {', '.join(updates)} WHERE id = ?"
+            values.append(user_id)
+            
+            cursor.execute(query, values)
+            conn.commit()
+            logger.info(f"사용자 정보 업데이트 완료: ID {user_id}")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"사용자 업데이트 오류: {e}")
+            conn.rollback()
+            return False
+            
+    def delete_user(self, user_id):
+        """
+        사용자 삭제
+        
+        Args:
+            user_id (int): 삭제할 사용자 ID
+            
+        Returns:
+            bool: 삭제 성공 여부
+        """
+        try:
+            conn, cursor = self._get_connection()
+            cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            
+            if cursor.rowcount > 0:
+                conn.commit()
+                logger.info(f"사용자 삭제 완료: ID {user_id}")
+                return True
+            else:
+                logger.warning(f"삭제할 사용자를 찾을 수 없음: ID {user_id}")
+                return False
+        except sqlite3.Error as e:
+            logger.error(f"사용자 삭제 오류: {e}")
+            conn.rollback()
+            return False
     
     def save_bot_state(self, state_data):
         """
