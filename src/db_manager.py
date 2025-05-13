@@ -565,7 +565,17 @@ class DatabaseManager:
                 
                 # JSON 필드 역직렬화
                 if 'additional_info' in position and position['additional_info']:
-                    position['additional_info'] = json.loads(position['additional_info'])
+                    try:
+                        position['additional_info'] = json.loads(position['additional_info'])
+                    except json.JSONDecodeError:
+                        position['additional_info'] = {}
+                        logger.warning(f"포지션 ID {position.get('id')}의 additional_info JSON 파싱 오류")
+                
+                # 필수 필드 기본값 설정
+                position.setdefault('type', position.get('side', 'unknown'))
+                position.setdefault('current_price', 0)
+                position.setdefault('profit', 0)
+                position.setdefault('profit_percent', 0)
                 
                 positions.append(position)
             
@@ -681,13 +691,20 @@ class DatabaseManager:
                     try:
                         trade['additional_info'] = json.loads(trade['additional_info'])
                     except json.JSONDecodeError:
-                        pass
+                        trade['additional_info'] = {}
+                        logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
+                else:
+                    trade['additional_info'] = {}
                 
-                # 필드명 변환 (API 응답 형식에 맞게)
-                if 'side' in trade:
-                    trade['type'] = trade['side']  # side -> type
-                if 'timestamp' in trade:
-                    trade['datetime'] = trade['timestamp']  # timestamp -> datetime
+                # 필드명 변환 및 기본값 설정 (API 응답 형식에 맞게)
+                trade.setdefault('type', trade.get('side', 'unknown'))
+                trade.setdefault('datetime', trade.get('timestamp', ''))
+                trade.setdefault('price', 0)
+                trade.setdefault('amount', 0)
+                trade.setdefault('cost', 0)
+                trade.setdefault('fee', 0)
+                trade.setdefault('profit', 0)
+                trade.setdefault('profit_percent', 0)
                 
                 trades.append(trade)
             

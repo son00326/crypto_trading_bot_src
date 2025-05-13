@@ -177,15 +177,27 @@ function updateTrades() {
                 } else {
                     // 거래 내역 데이터로 테이블 채우기
                     data.data.forEach(trade => {
+                        // 테스트 모드 배지 추가
+                        const testBadge = trade.test_mode ? 
+                            '<span class="badge bg-info me-1">테스트</span>' : '';
+                            
+                        // null/undefined 처리
+                        const date = trade.datetime ? new Date(trade.datetime).toLocaleString() : '';
+                        const price = parseFloat(trade.price || 0).toFixed(2);
+                        const amount = parseFloat(trade.amount || 0).toFixed(4);
+                        const cost = parseFloat(trade.cost || 0).toFixed(2);
+                        const profit = parseFloat(trade.profit || 0);
+                        const profitPercent = parseFloat(trade.profit_percent || 0).toFixed(2);
+                        
                         const row = document.createElement('tr');
                         row.innerHTML = `
-                            <td>${new Date(trade.datetime).toLocaleString()}</td>
-                            <td>${trade.symbol}</td>
-                            <td><span class="badge ${trade.type === 'buy' ? 'bg-success' : 'bg-danger'}">${trade.type}</span></td>
-                            <td>${trade.price}</td>
-                            <td>${trade.amount}</td>
-                            <td>${trade.cost}</td>
-                            <td><span class="${parseFloat(trade.profit) >= 0 ? 'text-success' : 'text-danger'}">${trade.profit} (${trade.profit_percent}%)</span></td>
+                            <td>${date}</td>
+                            <td>${trade.symbol || ''}</td>
+                            <td>${testBadge}<span class="badge ${trade.type === 'buy' ? 'bg-success' : 'bg-danger'}">${trade.type || ''}</span></td>
+                            <td>${price}</td>
+                            <td>${amount}</td>
+                            <td>${cost}</td>
+                            <td><span class="${profit >= 0 ? 'text-success' : 'text-danger'}">${profit.toFixed(2)} (${profitPercent}%)</span></td>
                         `;
                         tradesTableBody.appendChild(row);
                     });
@@ -226,14 +238,25 @@ function updatePositions() {
                 } else {
                     // 포지션 데이터로 테이블 채우기
                     data.data.forEach(position => {
+                        // 테스트 모드 배지 추가
+                        const testBadge = position.test_mode ? 
+                            '<span class="badge bg-info me-1">테스트</span>' : '';
+                            
+                        // null/undefined 처리
+                        const entryPrice = parseFloat(position.entry_price || 0).toFixed(2);
+                        const amount = parseFloat(position.amount || 0).toFixed(4);
+                        const currentPrice = parseFloat(position.current_price || 0).toFixed(2);
+                        const profit = parseFloat(position.profit || 0);
+                        const profitPercent = parseFloat(position.profit_percent || 0).toFixed(2);
+                        
                         const row = document.createElement('tr');
                         row.innerHTML = `
-                            <td>${position.symbol}</td>
-                            <td><span class="badge ${position.type === 'long' ? 'bg-success' : 'bg-danger'}">${position.type}</span></td>
-                            <td>${position.entry_price}</td>
-                            <td>${position.amount}</td>
-                            <td>${position.current_price}</td>
-                            <td><span class="${parseFloat(position.profit) >= 0 ? 'text-success' : 'text-danger'}">${position.profit} (${position.profit_percent}%)</span></td>
+                            <td>${position.symbol || ''}</td>
+                            <td>${testBadge}<span class="badge ${position.type === 'long' ? 'bg-success' : 'bg-danger'}">${position.type || ''}</span></td>
+                            <td>${entryPrice}</td>
+                            <td>${amount}</td>
+                            <td>${currentPrice}</td>
+                            <td><span class="${profit >= 0 ? 'text-success' : 'text-danger'}">${profit.toFixed(2)} (${profitPercent}%)</span></td>
                             <td>
                                 <button class="btn btn-sm btn-primary set-stoploss-takeprofit-btn" 
                                     data-position-id="${position.id}" 

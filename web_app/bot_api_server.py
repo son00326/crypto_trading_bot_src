@@ -316,7 +316,8 @@ class TradingBotAPIServer:
                         'cost': trade.get('cost'),
                         'datetime': trade.get('datetime'),
                         'profit': trade.get('profit', 0),
-                        'profit_percent': trade.get('profit_percent', 0)
+                        'profit_percent': trade.get('profit_percent', 0),
+                        'test_mode': trade.get('additional_info', {}).get('test_mode', False)
                     })
                     
                 return jsonify({
@@ -350,7 +351,8 @@ class TradingBotAPIServer:
                         'current_price': pos.get('current_price', 0),
                         'profit': pos.get('profit', 0),
                         'profit_percent': pos.get('profit_percent', 0),
-                        'open_time': pos.get('open_time')
+                        'open_time': pos.get('open_time'),
+                        'test_mode': pos.get('additional_info', {}).get('test_mode', False)
                     })
                     
                 return jsonify({
@@ -719,29 +721,44 @@ class TradingBotAPIServer:
         """
         거래소에서 현재 포지션 정보를 가져와 DB에 저장
         """
-        # 시장 타입이 'futures'가 아닐 경우 포지션 조회를 스킵
-        if not self.exchange_api or self.exchange_api.market_type != 'futures':
-            logger.debug(f"현재 시장 타입이 {self.exchange_api.market_type if self.exchange_api else 'unknown'}이미로 포지션 정보를 조회하지 않습니다.")
-            return
+        # 기존 테스트 모드 포지션 로드
+        existing_positions = self.db.load_positions()
+        test_positions = []
+        for pos in existing_positions:
+            if pos.get('additional_info', {}).get('test_mode', False):
+                test_positions.append(pos)
+                logger.debug(f"테스트 모드 포지션 발견: {pos.get('symbol')}, {pos.get('side')}")
         
-        try:
-            # 거래소에서 현재 포지션 정보 가져오기
-            positions = self.exchange_api.get_positions()
-            
-            if positions:
-                # 가져온 포지션을 DB에 저장
-                for pos in positions:
-                    self.db.save_position(pos)
-                logger.info(f"포지션 정보 동기화 완료: {len(positions)}개 포지션")
-            else:
-                logger.info("활성화된 포지션이 없습니다.")
+        # 시장 타입이 'futures'가 아닐 경우 실제 포지션 조회 스킵
+        if not self.exchange_api or self.exchange_api.market_type != 'futures':
+            logger.debug(f"현재 시장 타입이 {self.exchange_api.market_type if self.exchange_api else 'unknown'}이미로 실제 포지션 정보를 조회하지 않습니다.")
+        else:
+            try:
+                # 거래소에서 현재 포지션 정보 가져오기
+                positions = self.exchange_api.get_positions()
                 
-        except Exception as e:
-            # 현물 계좌에서 포지션 조회 오류이면 무시
-            if "MarketTypeError" in str(e.__class__) or "현물 계좌에서는 포지션 조회가 불가능합니다" in str(e):
-                logger.debug(f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_api.exchange_id if self.exchange_api else 'unknown'}")
-            else:
-                logger.error(f"포지션 정보 동기화 중 오류: {str(e)}")
+                if positions:
+                    # 가져온 포지션을 DB에 저장
+                    for pos in positions:
+                        self.db.save_position(pos)
+                    logger.info(f"포지션 정보 동기화 완료: {len(positions)}개 포지션")
+                else:
+                    logger.info("활성화된 실제 포지션이 없습니다.")
+                    
+            except Exception as e:
+                # 현물 계좌에서 포지션 조회 오류이면 무시
+                if "MarketTypeError" in str(e.__class__) or "현물 계좌에서는 포지션 조회가 불가능합니다" in str(e):
+                    logger.debug(f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_api.exchange_id if self.exchange_api else 'unknown'}")
+                else:
+                    logger.error(f"포지션 정보 동기화 중 오류: {str(e)}")
+        
+        # 테스트 포지션 보존
+        for test_pos in test_positions:
+            # 중복 저장 방지
+            existing_ids = [p.get('id') for p in self.db.load_positions()]
+            if test_pos.get('id') not in existing_ids and test_pos.get('status') == 'open':
+                logger.info(f"테스트 포지션 보존: {test_pos.get('symbol')}, {test_pos.get('side')}")
+                self.db.save_position(test_pos)
     
     # 거래 내역 동기화
     def _sync_trades(self):
