@@ -734,6 +734,7 @@ class CryptoTradingBotGUI(QMainWindow):
         self.balance_data = None
         self.position_data = None
         self.trades_data = []
+        self.current_strategy = 'Unknown'  # 현재 사용 중인 전략 저장 변수
         
         # 헤드리스 모드일 경우 기본 속성 설정
         if self.headless:
@@ -2107,7 +2108,7 @@ class CryptoTradingBotGUI(QMainWindow):
         return {
             'running': self.bot_running,
             'symbol': self.symbol_combo.currentText() if not self.headless else default_symbol,
-            'strategy': self.strategy_combo.currentText() if not self.headless else 'Unknown',
+            'strategy': self.strategy_combo.currentText() if not self.headless else self.current_strategy,
             'balance': self.balance_data
         }
     
@@ -2134,10 +2135,15 @@ class CryptoTradingBotGUI(QMainWindow):
                     self.symbol_combo.setCurrentIndex(index)
             
             # 전략 설정
-            if strategy and not self.headless:
-                index = self.strategy_combo.findText(strategy)
-                if index >= 0:
-                    self.strategy_combo.setCurrentIndex(index)
+            if strategy:
+                # 헤드리스 모드에서도 전략 이름 저장
+                self.current_strategy = strategy
+                
+                # UI 업데이트는 헤드리스 모드가 아닐 때만
+                if not self.headless:
+                    index = self.strategy_combo.findText(strategy)
+                    if index >= 0:
+                        self.strategy_combo.setCurrentIndex(index)
             
             # 봇 시작
             if not self.headless:

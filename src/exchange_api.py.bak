@@ -272,41 +272,9 @@ class ExchangeAPI:
             # API 호출 로깅
             log_api_call(f"/balance", "GET", request_data={"type": balance_type})
             
-            # 시작 시간 기록
-            start_time = time.time()
-            
-            # 모든 잔고 가져오기
-            if balance_type == 'all':
-                # 현물 잔고 조회
-                spot_balance = None
-                future_balance = None
-                
-                try:
-                    spot_balance = self.exchange.fetch_balance()
-                    self.logger.debug(f"현물 잔고 조회 성공: {self.exchange_id}")
-                except Exception as e:
-                    self.logger.warning(f"현물 잔고 조회 실패: {str(e)}")
-                
-                try:
-                    # 선물 잔고 파라미터
-                    params = {'type': 'future'} if self.exchange_id == 'binance' else {}
-                    future_balance = self.exchange.fetch_balance(params=params)
-                    self.logger.debug(f"선물 잔고 조회 성공: {self.exchange_id}")
-                except Exception as e:
-                    self.logger.warning(f"선물 잔고 조회 실패: {str(e)}")
-                
-                # 결과 병합
-                result = {
-                    'spot': {
-                        'total': spot_balance.get('total', {}) if spot_balance else {},
-                        'free': spot_balance.get('free', {}) if spot_balance else {},
-                        'used': spot_balance.get('used', {}) if spot_balance else {}
-                    },
-                    'future': {
-                        'total': future_balance.get('total', {}) if future_balance else {},
-                        'free': future_balance.get('free', {}) if future_balance else {},
-                        'used': future_balance.get('used', {}) if future_balance else {}
-                    }
+                    'total': spot_balance.get('total', {}) if spot_balance else {},
+                    'free': spot_balance.get('free', {}) if spot_balance else {},
+                    'used': spot_balance.get('used', {}) if spot_balance else {}
                 }
                 
                 # 완료 시간 기록 및 성능 로깅
@@ -314,19 +282,7 @@ class ExchangeAPI:
                 self.logger.debug(f"전체 잔고 조회 완료 (소요시간: {elapsed:.4f}초)")
                 
                 # 성공적인 응답 로깅
-                try:
-                    # 안전하게 'total' 키 접근 - 구조에 따라 다른 처리
-                    if 'spot' in result and 'total' in result['spot']:
-                        currencies = list(result['spot']['total'].keys())[:5] if result['spot']['total'] else []
-                    elif 'total' in result:
-                        currencies = list(result['total'].keys())[:5] if result['total'] else []
-                    else:
-                        currencies = []
-                        self.logger.warning(f"잔고 정보에 'total' 키가 없습니다: {list(result.keys()) if isinstance(result, dict) else type(result)}")
-                except Exception as e:
-                    currencies = []
-                    self.logger.warning(f"잔고 정보 처리 중 오류: {str(e)}")
-                    
+                currencies = list(result['total'].keys())[:5] if result['total'] else []
                 log_api_call("/balance", "GET", response_data={
                     "spot_available": True if spot_balance else False,
                     "future_available": True if future_balance else False,

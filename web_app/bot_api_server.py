@@ -539,6 +539,22 @@ class TradingBotAPIServer:
                 strategy = data.get('strategy')
                 symbol = data.get('symbol')
                 timeframe = data.get('timeframe')
+                market_type = data.get('market_type', 'spot')
+                leverage = data.get('leverage', 1)
+                test_mode = data.get('test_mode', False)
+                
+                # 마켓 타입 설정 저장
+                if hasattr(self.bot_gui, 'exchange_id') and self.exchange_api:
+                    # 기존 exchange_api 인스턴스 업데이트
+                    self.exchange_api.market_type = market_type
+                    if market_type == 'futures':
+                        self.exchange_api.leverage = leverage
+                    logger.info(f"시장 타입을 {market_type}로 설정했습니다. 레버리지: {leverage}")
+                
+                # 테스트 모드 설정
+                if hasattr(self.bot_gui, 'test_mode'):
+                    self.bot_gui.test_mode = test_mode
+                    logger.info(f"테스트 모드: {test_mode}")
                 
                 result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe)
                 
@@ -557,10 +573,10 @@ class TradingBotAPIServer:
                             'symbol': symbol or (self.bot_gui.symbol if hasattr(self.bot_gui, 'symbol') else 'unknown'),
                             'timeframe': timeframe or (self.bot_gui.timeframe if hasattr(self.bot_gui, 'timeframe') else '1h'),
                             'strategy': strategy or 'unknown',
-                            'market_type': getattr(self.bot_gui, 'market_type', 'spot'),
-                            'leverage': getattr(self.bot_gui, 'leverage', 1),
+                            'market_type': market_type,  # 요청에서 받은 값 사용
+                            'leverage': leverage,  # 입력받은 레버리지 값
                             'is_running': True,
-                            'test_mode': getattr(self.bot_gui, 'test_mode', True),
+                            'test_mode': test_mode,  # 입력받은 테스트 모드 값
                             'updated_at': datetime.now().isoformat(),
                             'additional_info': {
                                 'via': 'web_api',
@@ -701,8 +717,13 @@ class TradingBotAPIServer:
     # 포지션 정보 동기화
     def _sync_positions(self):
         """
-        바이낸스에서 현재 포지션 정보를 가져와 DB에 저장
+        거래소에서 현재 포지션 정보를 가져와 DB에 저장
         """
+        # 시장 타입이 'futures'가 아닐 경우 포지션 조회를 스킵
+        if not self.exchange_api or self.exchange_api.market_type != 'futures':
+            logger.debug(f"현재 시장 타입이 {self.exchange_api.market_type if self.exchange_api else 'unknown'}이미로 포지션 정보를 조회하지 않습니다.")
+            return
+        
         try:
             # 거래소에서 현재 포지션 정보 가져오기
             positions = self.exchange_api.get_positions()
@@ -716,7 +737,11 @@ class TradingBotAPIServer:
                 logger.info("활성화된 포지션이 없습니다.")
                 
         except Exception as e:
-            logger.error(f"포지션 정보 동기화 중 오류: {str(e)}")
+            # 현물 계좌에서 포지션 조회 오류이면 무시
+            if "MarketTypeError" in str(e.__class__) or "현물 계좌에서는 포지션 조회가 불가능합니다" in str(e):
+                logger.debug(f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_api.exchange_id if self.exchange_api else 'unknown'}")
+            else:
+                logger.error(f"포지션 정보 동기화 중 오류: {str(e)}")
     
     # 거래 내역 동기화
     def _sync_trades(self):
