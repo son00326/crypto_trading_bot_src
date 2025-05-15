@@ -21,7 +21,9 @@ BITHUMB_API_SECRET = os.getenv('BITHUMB_API_SECRET', '')
 
 # 거래 설정
 DEFAULT_EXCHANGE = 'binance'  # 기본 거래소 (binance, upbit, bithumb)
-DEFAULT_SYMBOL = 'BTC/USDT'   # 기본 거래 심볼
+DEFAULT_SYMBOL = 'BTC/USDT'   # 기본 거래 심볼 (현물 거래용)
+DEFAULT_FUTURES_SYMBOL = 'BTC/USDT'  # 기본 선물 거래 심볼 (선물 거래용)
+DEFAULT_MARKET_TYPE = 'spot'  # 기본 시장 유형 ('spot' 또는 'futures')
 DEFAULT_TIMEFRAME = '1h'      # 기본 타임프레임 (1m, 5m, 15m, 1h, 4h, 1d)
 
 # 전략 파라미터

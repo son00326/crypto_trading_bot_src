@@ -14,7 +14,7 @@ from src.config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     UPBIT_API_KEY, UPBIT_API_SECRET,
     BITHUMB_API_KEY, BITHUMB_API_SECRET,
-    DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
+    DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_FUTURES_SYMBOL, DEFAULT_MARKET_TYPE, DEFAULT_TIMEFRAME
 )
 
 # 향상된 로깅 시스템 사용
@@ -27,7 +27,7 @@ logger = get_logger('crypto_bot.exchange')
 class ExchangeAPI:
     """암호화폐 거래소 API 연결 및 작업을 위한 클래스"""
     
-    def __init__(self, exchange_id=DEFAULT_EXCHANGE, symbol=DEFAULT_SYMBOL, timeframe=DEFAULT_TIMEFRAME, market_type='spot', leverage=1):
+    def __init__(self, exchange_id=DEFAULT_EXCHANGE, symbol=None, timeframe=DEFAULT_TIMEFRAME, market_type=DEFAULT_MARKET_TYPE, leverage=1):
         """
         거래소 API 클래스 초기화
         
@@ -39,12 +39,59 @@ class ExchangeAPI:
             leverage (int): 레버리지 배수 (선물 거래에만 적용, 1-125)
         """
         self.exchange_id = exchange_id
-        self.symbol = symbol
+        # 시장 유형에 따라 기본 심볼 선택
+        if symbol is None:
+            if market_type == 'futures':
+                self.symbol = DEFAULT_FUTURES_SYMBOL
+            else:
+                self.symbol = DEFAULT_SYMBOL
+        else:
+            self.symbol = symbol
+        
         self.market_type = market_type
         self.leverage = leverage if market_type == 'futures' else 1
         self.timeframe = timeframe
         self.logger = get_logger(f'crypto_bot.exchange.{self.exchange_id}')
         self.exchange = self._initialize_exchange()
+        
+        # 초기화 완료 로그
+        self.logger.info(f"거래소 API 초기화 완료: {self.exchange_id}, 시장: {self.market_type}, 심볼: {self.symbol}")
+        
+    def format_symbol(self, symbol=None):
+        """
+        거래소 및 거래 유형에 맞는 심볼 형식으로 변환
+        
+        Args:
+            symbol (str, optional): 기본 심볼 문자열. None이면 self.symbol 사용
+            
+        Returns:
+            str: 거래소 형식에 맞게 포맷팅된 심볼
+        """
+        # 심볼이 없으면 기본값 사용
+        symbol = symbol or self.symbol
+        
+        # 바이낸스 선물인 경우
+        if self.exchange_id == 'binance' and self.market_type == 'futures':
+            # '/'가 포함된 형태이면 제거 ('BTC/USDT' -> 'BTCUSDT')
+            if '/' in symbol:
+                formatted_symbol = symbol.replace('/', '')
+                # ':USDT' 부분 있는지 확인하고 제거
+                if ':' in formatted_symbol:
+                    base, quote = formatted_symbol.split(':')
+                    if base.endswith(quote):
+                        self.logger.warning(f"심볼 수정: {formatted_symbol} -> {base}")
+                        formatted_symbol = base
+                return formatted_symbol
+            # ':USDT' 부분 있는지 확인하고 제거
+            elif ':' in symbol:
+                base, quote = symbol.split(':')
+                if base.endswith(quote):
+                    self.logger.warning(f"심볼 수정: {symbol} -> {base}")
+                    return base
+            return symbol
+        
+        # 현물 거래 또는 다른 거래소의 경우 원본 그대로 사용
+        return symbol
         
     @api_error_handler
     def _initialize_exchange(self):
@@ -99,7 +146,7 @@ class ExchangeAPI:
             # 선물 거래인 경우 레버리지 설정
             if self.market_type == 'futures' and self.exchange_id == 'binance':
                 # 심볼 형식 변환
-                futures_symbol = self._convert_symbol_format()
+                futures_symbol = self.format_symbol()
                 
                 try:
                     # 실제 API 키가 설정된 경우에만 레버리지 설정 시도
@@ -133,27 +180,13 @@ class ExchangeAPI:
             self.logger.error(f"거래소 초기화 중 오류 발생: {str(e)}\n{traceback.format_exc()}")
             raise APIError(f"거래소 초기화 오류: {str(e)}", original_exception=e)
     
-    def _convert_symbol_format(self, symbol=None):
-        """시장 타입에 맞는 심볼 형식으로 변환
-        
-        Args:
-            symbol (str, optional): 변환할 심볼. None이면 인스턴스의 symbol 속성 사용
-            
-        Returns:
-            str: 변환된 심볼 형식
-        """
-        symbol = symbol or self.symbol
-        
-        # 선물 거래이고 심볼에 '/'가 포함되어 있으면 제거
-        if self.market_type == 'futures' and '/' in symbol:
-            return symbol.replace('/', '')
-        return symbol
+    # _convert_symbol_format 함수는 format_symbol 함수로 대체되었습니다.
     
     @api_error_handler
     def get_ticker(self, symbol=None):
         """현재 시세 정보 조회"""
         try:
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # API 호출 로깅
             log_api_call(f"/ticker/{symbol}", "GET")
@@ -186,7 +219,7 @@ class ExchangeAPI:
     def get_ohlcv(self, symbol=None, timeframe=None, limit=100):
         """OHLCV 데이터 조회 (봉 데이터)"""
         try:
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             timeframe = timeframe or self.timeframe
             
             # API 호출 로깅
@@ -398,15 +431,14 @@ class ExchangeAPI:
                 raise MarketTypeError(error_msg)
             
             # 심볼 처리
-            if symbol:
-                symbol = self._convert_symbol_format(symbol)
-            else:
-                symbol = self._convert_symbol_format(self.symbol)
+            original_symbol = symbol or self.symbol
+            symbol = self.format_symbol(original_symbol)
             
             # API 호출 로깅
             log_api_call(f"/positions/{symbol}", "GET", request_data={
                 "exchange": self.exchange_id,
                 "market_type": self.market_type,
+                "symbol": symbol,
                 "leverage": self.leverage
             })
             
@@ -427,7 +459,40 @@ class ExchangeAPI:
                 # 빗썸의 경우 선물 거래 지원 확인
                 self.logger.warning(f"빗썸에서는 포지션 조회가 제한될 수 있습니다")
             
-            positions = self.exchange.fetch_positions(symbol, params=params)
+            try:
+                # 바이낸스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
+                if self.exchange_id == 'binance' and self.market_type == 'futures':
+                    self.logger.info(f"바이낸스 선물 API 요구사항에 따라 배열로 심볼 전달: [{symbol}]")
+                    positions = self.exchange.fetch_positions([symbol], params=params)
+                else:
+                    positions = self.exchange.fetch_positions(symbol, params=params)
+            except Exception as e:
+                # 오류 발생시 다른 형식 시도
+                error_msg = str(e)
+                self.logger.error(f"포지션 조회 오류: {error_msg}")
+                
+                # 심볼 형식 관련 오류인 경우
+                if "requires an array argument for symbols" in error_msg and self.exchange_id == 'binance':
+                    try:
+                        # 배열 형태로 다시 시도
+                        self.logger.info(f"배열 형태로 다시 시도: [{symbol}]")
+                        positions = self.exchange.fetch_positions([symbol], params=params)
+                    except Exception as e2:
+                        # 다시 실패하면 원래 오류 발생
+                        raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
+                # 다른 심볼 형식 오류인 경우
+                elif "does not have market symbol" in error_msg and '/' in original_symbol:
+                    try:
+                        # 슬래시 제거한 형식 시도
+                        alt_symbol = original_symbol.replace('/', '')
+                        self.logger.info(f"대체 심볼 형식 시도: {symbol} -> {alt_symbol}")
+                        positions = self.exchange.fetch_positions(alt_symbol, params=params)
+                    except Exception as e2:
+                        # 다시 실패하면 원래 오류 발생
+                        raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
+                else:
+                    # 다른 종류의 오류면 그대로 발생
+                    raise
             
             # 완료 시간 및 성능 로깅
             elapsed = time.time() - start_time
@@ -579,7 +644,7 @@ class ExchangeAPI:
         """
         try:
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # 값 유효성 검사
             if amount is None:
@@ -696,7 +761,7 @@ class ExchangeAPI:
         """
         try:
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # 값 유효성 검사
             if amount is None:
@@ -816,7 +881,7 @@ class ExchangeAPI:
         """
         try:
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # 값 유효성 검사
             if amount is None or price is None:
@@ -940,7 +1005,7 @@ class ExchangeAPI:
         """
         try:
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # 값 유효성 검사
             if amount is None or price is None:
@@ -1069,7 +1134,7 @@ class ExchangeAPI:
                 raise ValueError("취소할 주문 ID를 지정해야 합니다.")
                 
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # API 호출 로깅
             cancel_request = {
@@ -1165,7 +1230,7 @@ class ExchangeAPI:
                 raise ValueError("조회할 주문 ID를 지정해야 합니다.")
                 
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # API 호출 로깅
             status_request = {
@@ -1257,7 +1322,7 @@ class ExchangeAPI:
         """
         try:
             # 심볼 처리
-            symbol = self._convert_symbol_format(symbol)
+            symbol = self.format_symbol(symbol)
             
             # API 호출 로깅
             request_data = {
@@ -1389,7 +1454,8 @@ class ExchangeAPI:
         """
         try:
             # 심볼 유효성 검사 및 형식 변환
-            symbol = self._convert_symbol_format(symbol)
+            original_symbol = symbol or self.symbol
+            symbol = self.format_symbol(original_symbol)
             
             # since 파라미터 유효성 검사(타임스태프)
             if since is not None:
@@ -1437,8 +1503,16 @@ class ExchangeAPI:
             period_desc = f"{datetime.fromtimestamp(since/1000).strftime('%Y-%m-%d %H:%M:%S')} 이후" if since else "모든 기간"
             self.logger.info(f"거래 내역 조회 요청: {symbol or '모든 심볼'}, {period_desc}, 최대 {limit}개")
             
-            # API 호출 실행
+            # API 호출 실행 (포맷팅된 심볼 사용)
             trades = self.exchange.fetch_my_trades(symbol, since=since, limit=limit, params=params)
+            
+            # 만약 오류가 발생하고 심볼 형식이 문제였다면, 다른 형식 시도
+            if not trades and self.market_type == 'futures' and self.exchange_id == 'binance':
+                # 다른 형식으로 시도
+                if symbol and '/' in original_symbol:
+                    alt_symbol = original_symbol.replace('/', '')
+                    self.logger.warning(f"대체 심볼 형식 시도: {symbol} -> {alt_symbol}")
+                    trades = self.exchange.fetch_my_trades(alt_symbol, since=since, limit=limit, params=params)
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
