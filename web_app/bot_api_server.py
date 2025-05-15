@@ -7,6 +7,19 @@ import logging
 import json
 import time
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 프로젝트 루트 디렉토리로 작업 디렉토리 변경
+# 이것은 상대 경로를 사용하는 부분에서 문제를 해결하기 위함
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+os.chdir(project_root)
+
+# .env 파일 로드
+env_path = os.path.join(project_root, '.env')
+load_dotenv(env_path)
+print(f"Working directory set to: {os.getcwd()}")
+print(f"Loading environment variables from: {env_path}")
+
 from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash
 from flask_cors import CORS
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -558,7 +571,18 @@ class TradingBotAPIServer:
                     self.bot_gui.test_mode = test_mode
                     logger.info(f"테스트 모드: {test_mode}")
                 
-                result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe)
+                # 자동 손절매/이익실현 설정 처리
+                auto_sl_tp = data.get('auto_sl_tp', False)
+                partial_tp = data.get('partial_tp', False)
+                
+                if hasattr(self.bot_gui, 'auto_sl_tp'):
+                    self.bot_gui.auto_sl_tp = auto_sl_tp
+                    self.bot_gui.partial_tp = partial_tp
+                    logger.info(f"자동 손절매/이익실현: {auto_sl_tp}, 부분 청산: {partial_tp}")
+                
+                # BotThread 에 자동 손절매/이익실현 설정 전달
+                result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe, 
+                                                   auto_sl_tp=auto_sl_tp, partial_tp=partial_tp)
                 
                 # 성공적으로 시작되면 상태 저장
                 if result.get('success', False):
@@ -579,6 +603,8 @@ class TradingBotAPIServer:
                             'leverage': leverage,  # 입력받은 레버리지 값
                             'is_running': True,
                             'test_mode': test_mode,  # 입력받은 테스트 모드 값
+                            'auto_sl_tp': auto_sl_tp,  # 자동 손절매/이익실현 설정
+                            'partial_tp': partial_tp,  # 부분 청산 설정
                             'updated_at': datetime.now().isoformat(),
                             'additional_info': {
                                 'via': 'web_api',

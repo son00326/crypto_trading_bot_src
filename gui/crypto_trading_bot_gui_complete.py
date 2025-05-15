@@ -522,11 +522,13 @@ class TradingBot:
 class BotThread(QThread):
     update_signal = pyqtSignal(str)
     
-    def __init__(self, bot, interval):
+    def __init__(self, bot, interval, auto_sl_tp=False, partial_tp=False):
         super().__init__()
         self.bot = bot
         self.interval = interval
         self.running = True
+        self.auto_sl_tp = auto_sl_tp
+        self.partial_tp = partial_tp
         
         # 데이터베이스 관리자 초기화
         self.db = DatabaseManager()
@@ -548,6 +550,21 @@ class BotThread(QThread):
                 test_mode=self.bot.test_mode,
                 restore_state=True  # 이전 상태 복원
             )
+            
+            # 자동 손절매/이익실현 설정
+            if self.auto_sl_tp:
+                # auto_position_manager가 초기화되었는지 확인
+                if hasattr(self.algo, 'auto_position_manager') and self.algo.auto_position_manager is not None:
+                    try:
+                        self.algo.auto_position_manager.set_auto_sl_tp(True)
+                        self.algo.auto_position_manager.set_partial_tp(self.partial_tp)
+                        self.algo.auto_position_manager.start_monitoring()
+                        self.update_signal.emit(f"자동 손절매/이익실현 기능 활성화 (부분 청산: {self.partial_tp})")
+                    except Exception as e:
+                        self.update_signal.emit(f"자동 손절매/이익실현 기능 활성화 오류: {e}")
+                else:
+                    self.update_signal.emit("경고: 자동 손절매/이익실현 기능을 활성화할 수 없습니다 (auto_position_manager 없음)")
+            
             self.update_signal.emit(f"트레이딩 알고리즘 초기화 완료: {self.bot.symbol}")
         except Exception as e:
             self.update_signal.emit(f"트레이딩 알고리즘 초기화 오류: {e}")
@@ -835,6 +852,16 @@ class CryptoTradingBotGUI(QMainWindow):
         self.test_mode_check = QCheckBox("테스트 모드 (실제 거래 없음)")
         self.test_mode_check.setChecked(True)
         
+        # 자동 손절매/이익실현 기능
+        self.auto_sl_tp_check = QCheckBox("자동 손절매/이익실현 활성화")
+        self.auto_sl_tp_check.setChecked(False)
+        self.auto_sl_tp_check.stateChanged.connect(self.on_auto_sl_tp_changed)
+        
+        # 부분 청산 기능
+        self.partial_tp_check = QCheckBox("부분 청산 활성화")
+        self.partial_tp_check.setChecked(False)
+        self.partial_tp_check.setEnabled(False)  # 기본적으로 비활성화
+        
         # 거래 타입 선택 (현물/선물)
         self.market_type_combo = QComboBox()
         self.market_type_combo.addItems(['spot', 'futures'])
@@ -854,6 +881,8 @@ class CryptoTradingBotGUI(QMainWindow):
         trade_layout.addRow("레버리지:", self.leverage_spin)
         trade_layout.addRow("실행 간격:", self.interval_spin)
         trade_layout.addRow(self.test_mode_check)
+        trade_layout.addRow(self.auto_sl_tp_check)
+        trade_layout.addRow(self.partial_tp_check)
         
         trade_group.setLayout(trade_layout)
         
@@ -1316,6 +1345,14 @@ class CryptoTradingBotGUI(QMainWindow):
         
         logger.info(f"거래 타입 변경: {market_type}, 심볼 목록 업데이트")
         
+    def on_auto_sl_tp_changed(self, state):
+        """자동 손절매/이익실현 체크박스 상태 변경 처리"""
+        # 부분 청산 체크박스 활성화/비활성화
+        self.partial_tp_check.setEnabled(state == Qt.Checked)
+        
+        if state != Qt.Checked:
+            self.partial_tp_check.setChecked(False)
+    
     def toggle_leverage_settings(self):
         """선물거래 시 레버리지 설정 화면 표시"""
         market_type = self.market_type_combo.currentText()
@@ -1349,6 +1386,10 @@ class CryptoTradingBotGUI(QMainWindow):
         test_mode = self.test_mode_check.isChecked()
         market_type = self.market_type_combo.currentText()
         leverage = self.leverage_spin.value() if market_type == 'futures' else 1
+        
+        # 자동 손절매/이익실현 옵션
+        auto_sl_tp = self.auto_sl_tp_check.isChecked()
+        partial_tp = self.partial_tp_check.isChecked() if auto_sl_tp else False
         
         # spot 전략 생성
         spot_strategies = []
@@ -1442,7 +1483,7 @@ class CryptoTradingBotGUI(QMainWindow):
             leverage=leverage
         )
         # 봇 스레드 시작
-        self.bot_thread = BotThread(bot, interval)
+        self.bot_thread = BotThread(bot, interval, auto_sl_tp, partial_tp)
         self.bot_thread.update_signal.connect(self.update_log)
         self.bot_thread.start()
         # 버튼 상태 변경
@@ -2124,7 +2165,7 @@ class CryptoTradingBotGUI(QMainWindow):
             'balance': self.balance_data
         }
     
-    def start_bot_api(self, strategy=None, symbol=None, timeframe=None):
+    def start_bot_api(self, strategy=None, symbol=None, timeframe=None, auto_sl_tp=False, partial_tp=False):
         """
         API를 통해 봇을 시작하는 메서드
         
@@ -2132,6 +2173,8 @@ class CryptoTradingBotGUI(QMainWindow):
             strategy (str, optional): 사용할 전략
             symbol (str, optional): 거래 심볼
             timeframe (str, optional): 타임프레임
+            auto_sl_tp (bool, optional): 자동 손절매/이익실현 활성화 여부
+            partial_tp (bool, optional): 부분 청산 활성화 여부
             
         Returns:
             dict: 성공/실패 상태 및 메시지
@@ -2165,8 +2208,8 @@ class CryptoTradingBotGUI(QMainWindow):
                 self.bot_running = True
                 # interval 값 가져오기 (헤드리스 모드에서는 기본값 사용)
                 interval = self.interval_spin.value() if hasattr(self, 'interval_spin') else 3600  # 기본값 1시간(3600초)
-                # interval 매개변수를 포함한 BotThread 생성
-                self.bot_thread = BotThread(self, interval)
+                # 자동 손절매/이익실현 및 부분 청산 옵션을 포함한 BotThread 생성
+                self.bot_thread = BotThread(self, interval, auto_sl_tp=auto_sl_tp, partial_tp=partial_tp)
                 self.bot_thread.update_signal.connect(self.update_bot_status)
                 self.bot_thread.start()
             

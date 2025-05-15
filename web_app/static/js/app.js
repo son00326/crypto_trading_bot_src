@@ -21,6 +21,17 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('take-profit').addEventListener('input', updateTakeProfitValue);
     document.getElementById('max-position').addEventListener('input', updateMaxPositionValue);
     
+    // 자동 손절매/이익실현 체크박스 상태 변경 이벤트
+    document.getElementById('auto-sl-tp').addEventListener('change', function() {
+        // 부분 청산 체크박스 활성화/비활성화
+        document.getElementById('partial-tp').disabled = !this.checked;
+        
+        // 체크 해제되면 부분 청산 해제
+        if (!this.checked) {
+            document.getElementById('partial-tp').checked = false;
+        }
+    });
+    
     // 초기 UI 설정
     updateMarketTypeUI();
 });
@@ -132,7 +143,11 @@ function startBot() {
             stop_loss_pct: parseInt(document.getElementById('stop-loss').value) / 100,
             take_profit_pct: parseInt(document.getElementById('take-profit').value) / 100,
             max_position_size: parseInt(document.getElementById('max-position').value) / 100
-        }
+        },
+        
+        // 자동 손절매/이익실현 설정
+        auto_sl_tp: document.getElementById('auto-sl-tp').checked,
+        partial_tp: document.getElementById('partial-tp').checked
     };
     
     // API 호출

@@ -22,6 +22,7 @@ from src.data_manager import DataManager
 from src.data_collector import DataCollector
 from src.data_analyzer import DataAnalyzer
 from src.db_manager import DatabaseManager
+from src.auto_position_manager import AutoPositionManager
 from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, CombinedStrategy
@@ -99,6 +100,11 @@ class TradingAlgorithm:
         # 거래 상태 (기본값)
         self.trading_active = False
         self.last_signal = 0  # 0: 중립, 1: 매수, -1: 매도
+        
+        # 자동 포지션 관리자 초기화
+        self.auto_position_manager = AutoPositionManager(self)
+        self.auto_sl_tp_enabled = False  # 자동 손절매/이익실현 활성화 여부
+        self.partial_tp_enabled = False  # 부분 이익실현 활성화 여부
         
         # 위험 관리 설정
         self.risk_management = RISK_MANAGEMENT.copy()
@@ -1095,17 +1101,30 @@ class TradingAlgorithm:
             logger.error(f"거래 시작 중 오류 발생: {e}")
             self.stop_trading()
     
-    def start_trading_thread(self, interval=60):
+    def start_trading_thread(self, interval=60, auto_sl_tp=False, partial_tp=False):
         """
         별도 스레드에서 자동 거래 시작
         
         Args:
             interval (int): 거래 사이클 간격 (초)
+            auto_sl_tp (bool): 자동 손절매/이익실현 활성화 여부
+            partial_tp (bool): 부분 이익실현 활성화 여부
         """
         try:
             if self.trading_active:
                 logger.warning("이미 거래가 활성화되어 있습니다.")
                 return
+            
+            # 자동 손절매/이익실현 설정
+            self.auto_sl_tp_enabled = auto_sl_tp
+            self.partial_tp_enabled = partial_tp
+            self.auto_position_manager.set_auto_sl_tp(auto_sl_tp)
+            self.auto_position_manager.set_partial_tp(partial_tp)
+            
+            # 포지션 모니터링 시작
+            if auto_sl_tp:
+                self.auto_position_manager.start_monitoring()
+                logger.info(f"자동 손절매/이익실현 기능 활성화 (부분 청산: {partial_tp})")
             
             # 거래 스레드 시작
             trading_thread = threading.Thread(target=self.start_trading, args=(interval,))
@@ -1122,7 +1141,10 @@ class TradingAlgorithm:
     def stop_trading(self):
         """자동 거래 중지"""
         self.trading_active = False
-        logger.info("자동 거래를 중지합니다.")
+        
+        # 자동 포지션 모니터링 중지
+        self.auto_position_manager.stop_monitoring()
+        logger.info("자동 거래를 중지합니다. 자동 포지션 관리 기능도 중지되었습니다.")
     
     def save_trade_history(self):
         """거래 기록 저장"""
