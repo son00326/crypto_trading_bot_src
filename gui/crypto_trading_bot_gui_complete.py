@@ -1049,15 +1049,22 @@ class CryptoTradingBotGUI(QMainWindow):
         risk_group = QGroupBox("위험 관리 설정")
         risk_layout = QFormLayout()
         
+        # 자동 손절매/이익실현 활성화 체크박스 추가
+        self.auto_exit_check = QCheckBox("자동 손절매/이익실현 활성화")
+        self.auto_exit_check.setChecked(True)  # 기본값으로 활성화
+        self.auto_exit_check.setToolTip("설정된 손절매/이익실현 비율에 따라 자동으로 포지션을 종료합니다")
+        
         self.stop_loss_spin = QDoubleSpinBox()
         self.stop_loss_spin.setRange(0.01, 0.5)
         self.stop_loss_spin.setValue(0.05)
         self.stop_loss_spin.setSingleStep(0.01)
+        self.stop_loss_spin.setToolTip("진입가 대비 손실 비율이 이 값에 도달하면 자동으로 포지션을 종료합니다")
         
         self.take_profit_spin = QDoubleSpinBox()
         self.take_profit_spin.setRange(0.01, 0.5)
         self.take_profit_spin.setValue(0.1)
         self.take_profit_spin.setSingleStep(0.01)
+        self.take_profit_spin.setToolTip("진입가 대비 이익 비율이 이 값에 도달하면 자동으로 포지션을 종료합니다")
         
         self.max_position_spin = QDoubleSpinBox()
         self.max_position_spin.setRange(0.01, 1)
@@ -1072,6 +1079,10 @@ class CryptoTradingBotGUI(QMainWindow):
         # 초기화 시 접미사 설정
         self.update_spin_suffix()
         
+        # 자동 종료 체크박스는 별도 행으로 추가
+        risk_layout.addRow(self.auto_exit_check)
+        
+        # 손절매/이익실현 비율 설정
         risk_layout.addRow("손절매 비율:", self.stop_loss_spin)
         risk_layout.addRow("이익실현 비율:", self.take_profit_spin)
         risk_layout.addRow("최대 포지션 크기:", self.max_position_spin)
@@ -1414,7 +1425,8 @@ class CryptoTradingBotGUI(QMainWindow):
         risk_manager = RiskManager(
             stop_loss_pct=self.stop_loss_spin.value(),
             take_profit_pct=self.take_profit_spin.value(),
-            max_position_size=self.max_position_spin.value()
+            max_position_size=self.max_position_spin.value(),
+            auto_exit_enabled=self.auto_exit_check.isChecked()  # 자동 손절매/이익실현 활성화 여부 전달
         )
         # 봇 생성
         bot = TradingBot(

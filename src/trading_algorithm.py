@@ -5,14 +5,17 @@
 다양한 전략을 기반으로 매수/매도 신호를 생성하고 실제 거래를 수행합니다.
 """
 
+import os
+import sys
+import json
+import time
+import random
+import threading
+import logging
 import pandas as pd
 import numpy as np
-import logging
-import time
-import os
 from datetime import datetime, timedelta
-import threading
-import json
+from pathlib import Path
 
 from src.exchange_api import ExchangeAPI
 from src.data_manager import DataManager
@@ -417,37 +420,332 @@ class TradingAlgorithm:
             logger.error(f"매수 주문 실행 중 오류 발생: {e}")
             return None
     
-    def execute_sell(self, price, quantity):
+    def test_connection(self):
+        """
+        거래소 API 연결 테스트
+        """
+        try:
+            # 시장 정보 가져오기 시도
+            markets = self.exchange.load_markets()
+            if self.symbol in markets:
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"거래소 연결 테스트 중 오류 발생: {e}")
+            return False
+            
+    def _get_min_order_qty(self):
+        """
+        심볼에 대한 최소 주문 수량을 가져온다.
+        
+        Returns:
+            float: 최소 주문 수량, 가져오기 실패 시 0.001 기본값 사용
+        """
+        try:
+            # 시장 정보 업데이트
+            markets = self.exchange.load_markets()
+            
+            # 해당 시장에서 최소 주문 수량 가져오기
+            if self.symbol in markets:
+                market = markets[self.symbol]
+                limits = market.get('limits', {})
+                amount = limits.get('amount', {})
+                min_amount = amount.get('min', 0.001)  # 기본값 0.001
+                return min_amount
+            else:
+                logger.warning(f"심볼 정보를 찾을 수 없음: {self.symbol}, 기본값 사용")
+                return 0.001
+        except Exception as e:
+            logger.error(f"최소 주문 수량 가져오기 실패: {e}")
+            return 0.001  # 오류 발생 시 기본값 사용
+    
+    def execute_sell(self, price, quantity, additional_exit_info=None, percentage=1.0, position_id=None):
         """
         매도 주문 실행
         
         Args:
             price (float): 매도 가격
-            quantity (float): 매도 수량
+            quantity (float): 매도 수량 (총 수량)
+            additional_exit_info (dict, optional): 추가 종료 정보 (자동 손절매/이익실현 등)
+                                                   예: {'exit_type': 'stop_loss', 'exit_reason': '...', 'level_index': 0}
+            percentage (float): 청산할 포지션의 비율 (0~1 사이 값, 기본값 1.0은 전체 청산)
+            position_id (str, optional): 포지션 ID (지정되지 않으면 찾아서 사용)
         
         Returns:
             dict: 주문 결과
         """
         try:
             order_time = datetime.now()
-            if self.test_mode:
-                # 테스트 모드에서는 주문을 시뮬레이션
-                order = {
-                    'id': f"test_sell_{order_time.timestamp()}",
-                    'datetime': order_time.isoformat(),
-                    'symbol': self.symbol,
-                    'type': 'market',
-                    'side': 'sell',
-                    'price': price,
-                    'amount': quantity,
-                    'cost': price * quantity,
-                    'fee': price * quantity * 0.001,  # 0.1% 수수료 가정
-                    'status': 'closed'
+            
+            # 백분율 범위 검증 (0~1 사이로 제한)
+            percentage = max(0.0, min(1.0, percentage))  # 0.0~1.0 범위로 제한
+            
+            # 실제 매도할 수량 계산 (percentage에 따라 조정)
+            actual_quantity = quantity * percentage
+            
+            # 유효한 매도 수량인지 확인
+            if actual_quantity <= 0:
+                logger.warning(f"유효하지 않은 매도 수량: {actual_quantity}")
+                return None
+            
+            # 최소 주문 수량 검증
+            min_order_qty = self._get_min_order_qty()
+            if actual_quantity < min_order_qty:
+                if percentage < 1.0:
+                    logger.warning(f"부분 청산 수량이 최소 주문 수량보다 작음. 전량 청산으로 변경: {actual_quantity} < {min_order_qty}")
+                    actual_quantity = quantity
+                    percentage = 1.0
+                else:
+                    logger.warning(f"주문 수량이 최소 주문 수량보다 작음: {actual_quantity} < {min_order_qty}")
+                    if actual_quantity < min_order_qty * 0.5:  # 최소 주문의 절반보다 작으면 주문 취소
+                        logger.error(f"주문 수량이 너무 작아 주문 취소: {actual_quantity}")
+                        return None
+            
+            # 부분 청산 로깅
+            is_partial = (percentage < 1.0)
+            if is_partial:
+                logger.info(f"부분 청산 실행: {percentage:.1%} ({actual_quantity}/{quantity})")
+                
+                # 부분 청산 시 청산 이력 업데이트 (중복 청산 방지)
+                if position_id and additional_exit_info and additional_exit_info.get('exit_type') == 'partial_tp':
+                    # 어떤 TP 레벨에서 청산되었는지 확인
+                    level_idx = additional_exit_info.get('level_index')
+                    if level_idx is not None:
+                        # RiskManager의 tp_executed_levels 업데이트
+                        if position_id in self.exchange_api.risk_manager.tp_executed_levels:
+                            try:
+                                self.exchange_api.risk_manager.tp_executed_levels[position_id][level_idx] = True
+                                logger.info(f"청산 이력 업데이트 성공: position_id={position_id}, level={level_idx}")
+                            except (IndexError, TypeError) as e:
+                                logger.error(f"tp_executed_levels 업데이트 실패: {e}")
+            
+            # 포지션 잔여량 검증
+            remaining = quantity - actual_quantity
+            if 0 < remaining < min_order_qty:
+                logger.warning(f"잔여량이 최소 주문 수량보다 작음. 전량 청산으로 변경: {remaining} < {min_order_qty}")
+                actual_quantity = quantity
+                percentage = 1.0
+                is_partial = False
+        except Exception as e:
+            logger.error(f"매도 주문 실행 중 오류 발생: {e}")
+            return None
+        
+        if self.test_mode:
+            # 테스트 모드에서는 주문을 시ミュ레이션
+            order = {
+                'id': f"test_sell_{order_time.timestamp()}",
+                'datetime': order_time.isoformat(),
+                'symbol': self.symbol,
+                'type': 'market',
+                'side': 'sell',
+                'price': price,
+                'amount': actual_quantity,  # 조정된 수량 사용
+                'cost': price * actual_quantity,
+                'fee': price * actual_quantity * 0.001,  # 0.1% 수수료 가정
+                'status': 'closed',
+                'percentage_sold': percentage  # 청산 비율 추가
+            }
+            
+            # 포트폴리오 업데이트
+            self.portfolio['base_balance'] -= actual_quantity
+            self.portfolio['quote_balance'] += (price * actual_quantity) - (price * actual_quantity * 0.001)
+            
+            # 실제 주문 실행 완료 상태를 리턴
+            return order
+            
+        else:
+            # 실제 거래소 주문 실행
+            try:
+                # 거래소 API를 통한 실제 매도 주문
+                order = self.exchange_api.create_order(
+                    symbol=self.symbol,
+                    type='market',
+                    side='sell',
+                    amount=actual_quantity
+                )
+                
+                logger.info(f"매도 주문 성공: {order['id']}, 가격: {price}, 수량: {actual_quantity}")
+                return order
+            except Exception as e:
+                logger.error(f"매도 주문 실행 중 추가 오류 발생: {e}")
+                return None
+        
+        # 포지션 잔여량 검증
+        remaining = quantity - actual_quantity
+        if 0 < remaining < min_order_qty:
+            logger.warning(f"잔여량이 최소 주문 수량보다 작음. 전량 청산으로 변경: {remaining} < {min_order_qty}")
+            actual_quantity = quantity
+            percentage = 1.0
+            is_partial = False
+        
+        if self.test_mode:
+            # 테스트 모드에서는 주문을 시뮬레이션
+            order = {
+                'id': f"test_sell_{order_time.timestamp()}",
+                'datetime': order_time.isoformat(),
+                'symbol': self.symbol,
+                'type': 'market',
+                'side': 'sell',
+                'price': price,
+                'amount': actual_quantity,  # 조정된 수량 사용
+                'cost': price * actual_quantity,
+                'fee': price * actual_quantity * 0.001,  # 0.1% 수수료 가정
+                'status': 'closed',
+                'percentage_sold': percentage  # 청산 비율 추가
+            }
+            
+            # 포트폴리오 업데이트
+            self.portfolio['base_balance'] -= actual_quantity
+            self.portfolio['quote_balance'] += (price * actual_quantity) - (price * actual_quantity * 0.001)
+            
+            # 포지션 업데이트 및 데이터베이스 저장
+            target_position_id = position_id
+            found_position = False
+            
+            for i, position in enumerate(self.portfolio['positions']):
+                if position['status'] == 'open' and position['side'] == 'long':
+                    found_position = True
+                    
+                    # 지정된 position_id가 있으면 해당 포지션만 처리
+                    if target_position_id and position.get('id') != target_position_id:
+                        continue
+                        
+                    # 수익/손실 계산
+                    pnl = (price - position['entry_price']) * actual_quantity
+                    profit_pct = (price - position['entry_price']) / position['entry_price'] * 100
+                    
+                    # 부분 청산인 경우
+                    if percentage < 1.0:
+                        # 수량 및 평균 진입가 조정
+                        remaining_amount = position['amount'] - actual_quantity
+                        logger.info(f"포지션 부분 청산: {actual_quantity} 청산, {remaining_amount} 남음")
+                        
+                        # 포트폴리오 업데이트 - 남은 수량 반영
+                        self.portfolio['positions'][i]['amount'] = remaining_amount
+                        self.portfolio['positions'][i]['partial_exits'] = self.portfolio['positions'][i].get('partial_exits', []) + [{
+                            'time': order_time.isoformat(),
+                            'price': price,
+                            'amount': actual_quantity,
+                            'percentage': percentage,
+                            'pnl': pnl,
+                            'profit_pct': profit_pct
+                        }]
+                    else:
+                        # 전체 청산인 경우
+                        self.portfolio['positions'][i]['closed_at'] = order_time.isoformat()
+                        self.portfolio['positions'][i]['status'] = 'closed'
+                        self.portfolio['positions'][i]['pnl'] = pnl
+                        self.portfolio['positions'][i]['exit_price'] = price
+                    
+                    # 추가 종료 정보 처리
+                    exit_info = {
+                        'exit_price': price,
+                        'profit_pct': (price - position['entry_price']) / position['entry_price'] * 100,
+                        'exit_order_id': order['id']
+                    }
+                    
+                    # 자동 종료(손절매/이익실현) 정보가 있는 경우 추가
+                    if additional_exit_info:
+                        exit_info.update({
+                            'exit_type': additional_exit_info.get('exit_type', 'manual'),
+                            'exit_reason': additional_exit_info.get('exit_reason', ''),
+                            'auto_exit': additional_exit_info.get('auto_exit', False)
+                        })
+                        
+                        # 로그 추가
+                        exit_type = additional_exit_info.get('exit_type', 'manual')
+                        logger.info(f"자동 종료 실행: {exit_type}, 이유: {additional_exit_info.get('exit_reason', '')}")
+                    
+                    # 데이터베이스 업데이트 데이터 준비
+                    # 포지션 ID 가져오기
+                    pos_id = None
+                    if 'id' in position:
+                        pos_id = position['id']
+                    
+                    # 데이터베이스 업데이트 데이터 구성
+                    update_data = {
+                        'additional_info': exit_info
+                    }
+                    
+                    # 부분 청산이냐 전체 청산이냐에 따라 다른 데이터 추가
+                    if percentage < 1.0:
+                        # 부분 청산인 경우
+                        partial_exit_data = {
+                            'time': order_time.isoformat(),
+                            'price': price,
+                            'amount': actual_quantity,
+                            'percentage': percentage,
+                            'pnl': (price - position['entry_price']) * actual_quantity,
+                            'exit_type': additional_exit_info.get('exit_type', 'manual'),
+                            'exit_reason': additional_exit_info.get('exit_reason', '')
+                        }
+                        
+                        # 기존 부분 청산 이력 업데이트
+                        update_data['partial_exits'] = position.get('partial_exits', []) + [partial_exit_data]
+                        update_data['amount'] = position['amount'] - actual_quantity
+                        logger.info(f"부분 청산 정보 업데이트: {percentage:.1%}, 남은 수량: {update_data['amount']}")
+                    else:
+                        # 전체 청산인 경우
+                        update_data.update({
+                            'closed_at': order_time.isoformat(),
+                            'status': 'closed',
+                            'pnl': (price - position['entry_price']) * position['amount'],
+                            'exit_price': price
+                        })
+                        logger.info(f"포지션 전체 청산 정보 업데이트")
+                    
+                    # 데이터베이스에 업데이트
+                    if pos_id:
+                        # 이미 ID가 있는 경우
+                        self.db.update_position(pos_id, update_data)
+                    else:
+                        # 데이터베이스에서 포지션 찾기
+                        open_positions = self.db.get_open_positions(self.symbol)
+                        for op in open_positions:
+                            if op['status'] == 'open' and op['side'] == 'long':
+                                self.db.update_position(op['id'], update_data)
+                                break
+                    break
+            
+            # 거래 내역 추가
+            trade_record = {
+                'symbol': self.symbol,
+                'side': 'sell',
+                'order_type': 'market',
+                'amount': quantity,
+                'price': price,
+                'cost': price * quantity,
+                'fee': price * quantity * 0.001,
+                'timestamp': order_time.isoformat(),
+                'position_id': position_id,
+                'additional_info': {
+                    'order_id': order['id'],
+                    'test_mode': True
                 }
+            }
+            self.portfolio['trade_history'].append(trade_record)
+            
+            # 데이터베이스에 거래 내역 저장
+            self.db.save_trade(trade_record)
+            
+            # 잔액 정보 저장
+            self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
+            self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+            
+            # 현재 상태 저장
+            self.save_state()
+            
+            logger.info(f"[테스트] 매도 주문 실행: 가격={price}, 수량={quantity}, 수익={price * quantity}")
+            return order
+        else:
+            # 실제 거래소에 주문 실행
+            order = self.exchange_api.create_market_sell_order(amount=quantity)
+            
+            if order:
+                logger.info(f"매도 주문 성공: {order}")
                 
                 # 포트폴리오 업데이트
-                self.portfolio['base_balance'] -= quantity
-                self.portfolio['quote_balance'] += (price * quantity) - (price * quantity * 0.001)
+                self.update_portfolio()
                 
                 # 포지션 업데이트 및 데이터베이스 저장
                 position_id = None
@@ -492,12 +790,12 @@ class TradingAlgorithm:
                     'amount': quantity,
                     'price': price,
                     'cost': price * quantity,
-                    'fee': price * quantity * 0.001,
+                    'fee': order.get('fee', {}).get('cost', 0),
                     'timestamp': order_time.isoformat(),
                     'position_id': position_id,
                     'additional_info': {
                         'order_id': order['id'],
-                        'test_mode': True
+                        'test_mode': False
                     }
                 }
                 self.portfolio['trade_history'].append(trade_record)
@@ -512,89 +810,10 @@ class TradingAlgorithm:
                 # 현재 상태 저장
                 self.save_state()
                 
-                logger.info(f"[테스트] 매도 주문 실행: 가격={price}, 수량={quantity}, 수익={price * quantity}")
                 return order
             else:
-                # 실제 거래소에 주문 실행
-                order = self.exchange_api.create_market_sell_order(amount=quantity)
-                
-                if order:
-                    logger.info(f"매도 주문 성공: {order}")
-                    
-                    # 포트폴리오 업데이트
-                    self.update_portfolio()
-                    
-                    # 포지션 업데이트 및 데이터베이스 저장
-                    position_id = None
-                    for i, position in enumerate(self.portfolio['positions']):
-                        if position['status'] == 'open' and position['side'] == 'long':
-                            # 포트폴리오 업데이트
-                            self.portfolio['positions'][i]['closed_at'] = order_time.isoformat()
-                            self.portfolio['positions'][i]['status'] = 'closed'
-                            self.portfolio['positions'][i]['pnl'] = (price - position['entry_price']) * position['amount']
-                            
-                            # 데이터베이스 업데이트
-                            update_data = {
-                                'closed_at': order_time.isoformat(),
-                                'status': 'closed',
-                                'pnl': (price - position['entry_price']) * position['amount'],
-                                'additional_info': {
-                                    'exit_price': price,
-                                    'profit_pct': (price - position['entry_price']) / position['entry_price'] * 100,
-                                    'exit_order_id': order['id']
-                                }
-                            }
-                            
-                            # 현재 포지션에 ID가 있는 경우 사용
-                            if 'id' in position:
-                                position_id = position['id']
-                                self.db.update_position(position_id, update_data)
-                            # 데이터베이스에서 포지션 찾기
-                            else:
-                                open_positions = self.db.get_open_positions(self.symbol)
-                                for op in open_positions:
-                                    if op['status'] == 'open' and op['side'] == 'long':
-                                        position_id = op['id']
-                                        self.db.update_position(position_id, update_data)
-                                        break
-                            break
-                    
-                    # 거래 내역 추가
-                    trade_record = {
-                        'symbol': self.symbol,
-                        'side': 'sell',
-                        'order_type': 'market',
-                        'amount': quantity,
-                        'price': price,
-                        'cost': price * quantity,
-                        'fee': order.get('fee', {}).get('cost', 0),
-                        'timestamp': order_time.isoformat(),
-                        'position_id': position_id,
-                        'additional_info': {
-                            'order_id': order['id'],
-                            'test_mode': False
-                        }
-                    }
-                    self.portfolio['trade_history'].append(trade_record)
-                    
-                    # 데이터베이스에 거래 내역 저장
-                    self.db.save_trade(trade_record)
-                    
-                    # 잔액 정보 저장
-                    self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
-                    self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
-                    
-                    # 현재 상태 저장
-                    self.save_state()
-                    
-                    return order
-                else:
-                    logger.error("매도 주문 실패")
-                    return None
-        
-        except Exception as e:
-            logger.error(f"매도 주문 실행 중 오류 발생: {e}")
-            return None
+                logger.error("매도 주문 실패")
+                return None
     
     def check_stop_loss_take_profit(self, current_price):
         """
@@ -604,33 +823,80 @@ class TradingAlgorithm:
             current_price (float): 현재 가격
         
         Returns:
-            int: 신호 (0: 중립, -1: 매도)
+            tuple: (exit_signal, exit_info)
+                  exit_signal (bool): 청산 신호 여부
+                  exit_info (dict): 청산 관련 정보 (reason, type, percentage 등)
         """
         try:
             # 열린 포지션이 없으면 중립
             open_positions = [p for p in self.portfolio['positions'] if p['status'] == 'open']
             if not open_positions:
-                return 0
+                return False, None
             
             for position in open_positions:
-                if position['side'] == 'long':
-                    # 손절매 조건 확인
-                    stop_loss_price = position['entry_price'] * (1 - self.risk_management['stop_loss_pct'])
-                    if current_price <= stop_loss_price:
-                        logger.info(f"손절매 조건 충족: 진입가={position['entry_price']}, 현재가={current_price}, 손절가={stop_loss_price}")
-                        return -1
+                # 포지션 ID 가져오기 (부분 청산 추적용)
+                # 기본적으로 DB ID 사용, 없으면 포지션 고유 식별자 생성
+                position_id = None
+                
+                # 1. 포지션에 ID가 있는 경우
+                if 'id' in position:
+                    position_id = position['id']
+                # 2. 포지션에 ID가 없으면 고유한 식별자 생성 (entry_time + entry_price)
+                elif 'entry_time' in position and 'entry_price' in position:
+                    # 진입 시간과 가격으로 더 안정적인 ID 생성
+                    entry_time_str = position.get('entry_time', '')
+                    entry_price_str = str(position.get('entry_price', 0))
+                    position_id = f"{entry_time_str}_{entry_price_str}_{position.get('side', 'unknown')}"
+                # 3. 그래도 없으면 현재 시간 + 난수 사용
+                else:
+                    position_id = f"pos_{int(time.time())}_{random.randint(1000, 9999)}"
+                    logger.warning(f"포지션 ID가 없어 임시 ID 생성함: {position_id}")
+                
+                # 안전성 검사 - entry_price가 0이면 오류 방지
+                if position.get('entry_price', 0) <= 0:
+                    logger.error(f"유효하지 않은 진입가격: {position.get('entry_price')}")
+                    continue
                     
-                    # 이익실현 조건 확인
-                    take_profit_price = position['entry_price'] * (1 + self.risk_management['take_profit_pct'])
-                    if current_price >= take_profit_price:
-                        logger.info(f"이익실현 조건 충족: 진입가={position['entry_price']}, 현재가={current_price}, 이익실현가={take_profit_price}")
-                        return -1
+                # 손절매 가격 계산
+                stop_loss_price = position['entry_price'] * (1 - self.risk_management['stop_loss_pct'])
+                # 이익실현 가격 계산
+                take_profit_price = position['entry_price'] * (1 + self.risk_management['take_profit_pct'])
+                
+                # RiskManager의 check_exit_conditions 메서드 활용 (부분 청산 지원 형식)
+                exit_type, exit_reason, exit_percentage = self.exchange_api.risk_manager.check_exit_conditions(
+                    current_price=current_price,
+                    position_type=position['side'],
+                    entry_price=position['entry_price'],
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    position_id=position_id,
+                    check_partial=True
+                )
+                
+                if exit_type:
+                    logger.info(f"{exit_type} 조건 충족: {exit_reason}, 청산비율: {exit_percentage:.1%}")
+                    
+                    # 종료 정보 구성
+                    exit_info = {
+                        'type': exit_type,
+                        'reason': exit_reason,
+                        'percentage': exit_percentage,
+                        'position_id': position_id
+                    }
+                    
+                    # 부분 청산인지 확인
+                    is_partial = (exit_type == 'partial_tp' and exit_percentage < 1.0)
+                    if is_partial:
+                        logger.info(f"부분 청산 신호 발견: {exit_percentage:.1%}")
+                    
+                    # 청산 신호 반환
+                    return True, exit_info
             
-            return 0
+            return False, None
         
         except Exception as e:
             logger.error(f"손절매/이익실현 확인 중 오류 발생: {e}")
-            return 0
+            return False, None
     
     def process_trading_signals(self, df):
         """
@@ -652,11 +918,12 @@ class TradingAlgorithm:
             # 현재 가격
             current_price = df['close'].iloc[-1]
             
-            # 손절매/이익실현 확인
-            sl_tp_signal = self.check_stop_loss_take_profit(current_price)
+            # 손절매/이익실현 확인 (튜플 반환: 신호, 종료 이유)
+            sl_tp_signal, exit_reason = self.check_stop_loss_take_profit(current_price)
             
             # 손절매/이익실현 신호가 있으면 우선 처리
             if sl_tp_signal == -1:
+                logger.info(f"자동 종료 신호 처리: {exit_reason}")
                 return -1
             
             # 신호가 변경된 경우에만 처리
@@ -684,8 +951,36 @@ class TradingAlgorithm:
             # 현재 가격
             current_price = df['close'].iloc[-1]
             
-            # 거래 신호 처리
-            signal = self.process_trading_signals(df)
+            # 거래 신호 처리 (특수 신호 정보를 저장하기 위해 추가 정보 가져오기)
+            signal = 0  # 기본값 초기화: 중립
+            exit_info = None
+            is_auto_exit = False
+            
+            # 자동 손절매/이익실현 확인 (변경된 형식)
+            exit_signal, exit_details = self.check_stop_loss_take_profit(current_price)
+            
+            if exit_signal and exit_details:
+                # 자동 종료(손절매/이익실현) 처리
+                signal = -1  # 매도 신호 설정
+                is_auto_exit = True
+                exit_info = exit_details
+                
+                # 종료 정보 추출
+                exit_type = exit_info.get('type')
+                exit_reason = exit_info.get('reason')
+                exit_percentage = exit_info.get('percentage', 1.0)
+                position_id = exit_info.get('position_id')
+                
+                # 부분 청산 여부 확인
+                is_partial = (exit_type == 'partial_tp' and exit_percentage < 1.0)
+                
+                if is_partial:
+                    logger.info(f"자동 부분 청산 실행: {exit_type}, 비율: {exit_percentage:.1%}, 이유: {exit_reason}")
+                else:
+                    logger.info(f"자동 포지션 종료: {exit_type}, 이유: {exit_reason}")
+            else:
+                # 그 외 신호 처리(일반 매매)
+                signal = self.process_trading_signals(df)
             
             # 포트폴리오 업데이트
             self.update_portfolio()
@@ -717,11 +1012,41 @@ class TradingAlgorithm:
                     return
                 
                 # 총 보유 수량 계산
-                total_quantity = sum(p['quantity'] for p in open_positions)
+                total_quantity = sum(p['amount'] for p in open_positions if 'amount' in p)
+                if not total_quantity > 0:
+                    total_quantity = sum(p['quantity'] for p in open_positions if 'quantity' in p)
                 
                 if total_quantity > 0:
-                    # 매도 주문 실행
-                    self.execute_sell(current_price, total_quantity)
+                    # 자동 청산인 경우
+                    if is_auto_exit and exit_info:
+                        # 부분 청산 여부 확인
+                        exit_type = exit_info.get('type')
+                        exit_reason = exit_info.get('reason')
+                        exit_percentage = exit_info.get('percentage', 1.0)
+                        position_id = exit_info.get('position_id')
+                        
+                        # 추가 정보 구성
+                        additional_exit_info = {
+                            'exit_type': exit_type,
+                            'exit_reason': exit_reason,
+                            'auto_exit': True
+                        }
+                        
+                        # 매도 주문 실행 (부분 청산 지원)
+                        self.execute_sell(
+                            price=current_price, 
+                            quantity=total_quantity, 
+                            additional_exit_info=additional_exit_info,
+                            percentage=exit_percentage,
+                            position_id=position_id
+                        )
+                        
+                        # 부분 청산 로깅
+                        if exit_percentage < 1.0:
+                            logger.info(f"부분 청산 실행 완료: {exit_percentage:.1%}, 유형: {exit_type}")
+                    else:
+                        # 일반 매도 주문 실행 (전체 청산)
+                        self.execute_sell(current_price, total_quantity)
                 else:
                     logger.warning("매도할 수량이 0이하입니다.")
         

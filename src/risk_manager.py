@@ -32,7 +32,8 @@ logger = logging.getLogger('risk_manager')
 class RiskManager:
     """거래 위험 관리를 위한 클래스"""
     
-    def __init__(self, exchange_id='binance', symbol='BTC/USDT', risk_config=None):
+    def __init__(self, exchange_id='binance', symbol='BTC/USDT', risk_config=None, auto_exit_enabled=True,
+                 partial_tp_enabled=False, tp_levels=None, tp_percentages=None):
         """
         위험 관리자 초기화
         
@@ -40,9 +41,41 @@ class RiskManager:
             exchange_id (str): 거래소 ID
             symbol (str): 거래 심볼
             risk_config (dict, optional): 위험 관리 설정
+            auto_exit_enabled (bool): 자동 손절매/이익실현 활성화 여부
+            partial_tp_enabled (bool): 부분 이익실현 활성화 여부
+            tp_levels (list): 이익실현 수준 목록 [0.05, 0.1, 0.2] (각각 5%, 10%, 20% 이익 시)
+            tp_percentages (list): 각 이익실현 수준에서 청산할 비율 [0.3, 0.3, 0.4] (각각 30%, 30%, 40%)
         """
         self.exchange_id = exchange_id
         self.symbol = symbol
+        
+        # 자동 손절매/이익실현 활성화 여부
+        self.auto_exit_enabled = auto_exit_enabled
+        
+        # 부분 이익실현 설정
+        self.partial_tp_enabled = partial_tp_enabled
+        self.tp_levels = tp_levels if tp_levels else [0.05, 0.1, 0.2]  # 기본 이익실현 단계: 5%, 10%, 20%
+        self.tp_percentages = tp_percentages if tp_percentages else [0.3, 0.3, 0.4]  # 기본 청산 비율: 30%, 30%, 40%
+        
+        # tp_levels와 tp_percentages 검증
+        if len(self.tp_levels) != len(self.tp_percentages):
+            logger.warning(f"TP 레벨과 백분율 배열 길이 불일치: {len(self.tp_levels)} vs {len(self.tp_percentages)}")
+            # 길이 맞추기
+            min_len = min(len(self.tp_levels), len(self.tp_percentages))
+            self.tp_levels = self.tp_levels[:min_len]
+            self.tp_percentages = self.tp_percentages[:min_len]
+            logger.info(f"배열 길이 조정함: {min_len}")
+        
+        # 백분율 합계 검증 - 1.0 초과 시 정규화
+        total_percentage = sum(self.tp_percentages)
+        if total_percentage > 1.0:
+            logger.warning(f"TP 백분율 합계가 1.0을 초과: {total_percentage}")
+            # 정규화
+            self.tp_percentages = [p/total_percentage for p in self.tp_percentages]
+            logger.info(f"백분율 정규화함: {self.tp_percentages}")
+        
+        # 청산 이력 추적 (포지션 ID를 키로 사용하는 사전)
+        self.tp_executed_levels = {}
         
         # 위험 관리 설정
         self.risk_config = risk_config if risk_config else RISK_MANAGEMENT.copy()
@@ -57,6 +90,7 @@ class RiskManager:
         
         logger.info(f"{exchange_id} 거래소의 {symbol} 위험 관리자가 초기화되었습니다.")
         logger.info(f"위험 관리 설정: {self.risk_config}")
+        logger.info(f"자동 손절매/이익실현 활성화: {self.auto_exit_enabled}")
     
     def calculate_position_size(self, account_balance, current_price, risk_per_trade=None):
         """
@@ -207,6 +241,138 @@ class RiskManager:
         except Exception as e:
             logger.error(f"위험 대비 보상 비율 계산 중 오류 발생: {e}")
             return 0
+    
+    def check_exit_conditions(self, current_price, position_type, entry_price, stop_loss_price, take_profit_price, position_id=None, check_partial=True):
+        """
+        현재 가격이 손절매나 이익실현 조건을 만족하는지 확인
+        
+        Args:
+            current_price (float): 현재 가격
+            position_type (str): 포지션 타입 ('long' 또는 'short')
+            entry_price (float): 진입 가격
+            stop_loss_price (float): 손절매 가격
+            take_profit_price (float): 이익실현 가격
+            position_id (str, optional): 포지션 ID (부분 청산 추적용)
+            check_partial (bool): 부분 이익실현 확인 여부
+            
+        Returns:
+            tuple: (exit_type, exit_reason, exit_percentage)
+                   exit_type: None, 'stop_loss', 'take_profit', 'partial_tp' 중 하나
+                   exit_reason: 종료 이유 설명
+                   exit_percentage: 청산할 비율 (None 또는 0~1 사이 값)
+        """
+        try:
+            # 안전성 검사 - 진입가격 및 현재 가격 유효성 검사
+            if entry_price is None or entry_price <= 0 or current_price is None or current_price <= 0:
+                logger.error(f"유효하지 않은 가격 데이터: entry_price={entry_price}, current_price={current_price}")
+                return None, None, None
+            
+            # 자동 손절매/이익실현이 비활성화된 경우 실행하지 않음
+            if not self.auto_exit_enabled:
+                logger.debug("자동 손절매/이익실현이 비활성화되어 체크하지 않음")
+                return None, None, None
+                
+            # 부분 이익실현 확인 조건 검증
+            check_partial_tp = check_partial and self.partial_tp_enabled
+            
+            # position_id 유효성 검사
+            if check_partial_tp and (position_id is None or position_id == ''):
+                logger.warning("부분 청산 확인을 위한 position_id가 없음, 전체 청산만 검사합니다.")
+                check_partial_tp = False
+            
+            # 부분 이익실현 확인 (활성화 및 position_id가 있는 경우만)
+            if check_partial_tp and position_id:
+                try:
+                    is_partial, level_idx, percentage, reason = self.check_partial_take_profit(
+                        position_id, current_price, position_type, entry_price
+                    )
+                    if is_partial and percentage is not None and percentage > 0:
+                        logger.info(f"부분 청산 신호 발견: {percentage:.1%}, 이유: {reason}")
+                        return 'partial_tp', reason, percentage
+                except Exception as e:
+                    logger.error(f"부분 청산 검사 중 오류: {e}")
+                    # 부분 청산 오류 발생 시 일반 이익실현/손절매 검사로 진행
+
+            if position_type.lower() == 'long':
+                # 롱 포지션 체크
+                if current_price <= stop_loss_price:
+                    return 'stop_loss', f'현재 가격({current_price})이 손절매 가격({stop_loss_price}) 이하로 하락', 1.0
+                elif current_price >= take_profit_price:
+                    # 부분 이익실현이 활성화되지 않은 경우에만 전체 청산
+                    if not self.partial_tp_enabled:
+                        return 'take_profit', f'현재 가격({current_price})이 이익실현 가격({take_profit_price}) 이상으로 상승', 1.0
+            elif position_type.lower() == 'short':
+                # 숏 포지션 체크
+                if current_price >= stop_loss_price:
+                    return 'stop_loss', f'현재 가격({current_price})이 손절매 가격({stop_loss_price}) 이상으로 상승', 1.0
+                elif current_price <= take_profit_price:
+                    # 부분 이익실현이 활성화되지 않은 경우에만 전체 청산
+                    if not self.partial_tp_enabled:
+                        return 'take_profit', f'현재 가격({current_price})이 이익실현 가격({take_profit_price}) 이하로 하락', 1.0
+            else:
+                logger.warning(f"잘못된 포지션 타입: {position_type}")
+            
+            # 조건이 충족되지 않으면 None 반환
+            return None, None, None
+            
+        except Exception as e:
+            logger.error(f"종료 조건 확인 중 오류 발생: {e}")
+            return None, None, None
+    
+    def check_partial_take_profit(self, position_id, current_price, position_type, entry_price):
+        """
+        현재 가격이 부분 이익실현 조건을 만족하는지 확인
+        
+        Args:
+            position_id (str): 포지션 ID
+            current_price (float): 현재 가격
+            position_type (str): 포지션 타입 ('long' 또는 'short')
+            entry_price (float): 진입 가격
+            
+        Returns:
+            tuple: (is_partial_tp, level_index, percentage, reason)
+                   is_partial_tp: 부분 이익실현 조건 충족 여부
+                   level_index: 충족된 이익실현 수준 인덱스
+                   percentage: 청산할 비율
+                   reason: 청산 이유 설명
+        """
+        # 자동 이익실현 또는 부분 이익실현이 비활성화된 경우 처리
+        if not self.auto_exit_enabled or not self.partial_tp_enabled:
+            return False, None, None, None
+        
+        # 안전 검사 - entry_price가 0이면 분모가 0이 되어 예외 발생
+        if entry_price == 0 or entry_price is None:
+            logger.error(f"진입가격이 유효하지 않음 (0 또는 None): position_id={position_id}")
+            return False, None, None, None
+        
+        # 포지션별 청산 이력 초기화
+        if position_id not in self.tp_executed_levels:
+            self.tp_executed_levels[position_id] = [False] * len(self.tp_levels)
+        
+        try:
+            # 현재 수익률 계산
+            if position_type.lower() == 'long':
+                profit_pct = (current_price - entry_price) / entry_price
+            else:  # short
+                profit_pct = (entry_price - current_price) / entry_price
+        except (ZeroDivisionError, TypeError) as e:
+            logger.error(f"수익률 계산 오류: {e}, entry_price={entry_price}, current_price={current_price}")
+            return False, None, None, None
+        
+        # 가장 높은 수준부터 확인 (높은 목표가부터 체크)
+        for i in range(len(self.tp_levels) - 1, -1, -1):
+            # 이미 해당 수준에서 청산했으면 건너뜨
+            if self.tp_executed_levels[position_id][i]:
+                continue
+            
+            # 수익률이 해당 수준을 넘었는지 확인
+            if profit_pct >= self.tp_levels[i]:
+                self.tp_executed_levels[position_id][i] = True
+                reason = f"부분 이익실현: 현재 수익률({profit_pct:.2%})이 목표 수준({self.tp_levels[i]:.2%})에 도달"
+                logger.info(reason)
+                return True, i, self.tp_percentages[i], reason
+        
+        return False, None, None, None
     
     def check_stop_loss_take_profit(self, current_price, positions):
         """
