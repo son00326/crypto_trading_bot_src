@@ -279,21 +279,44 @@ class TradingAlgorithm:
             logger.error(f"포지션 크기 계산 중 오류 발생: {e}")
             return 0
     
-    def execute_buy(self, price, quantity):
+    def execute_buy(self, price, quantity, additional_info=None, close_position=False, position_id=None):
         """
         매수 주문 실행
         
         Args:
             price (float): 매수 가격
             quantity (float): 매수 수량
+            additional_info (dict, optional): 추가 정보 (자동 손절매/이익실현 등에 의한 포지션 종료 정보)
+            close_position (bool, optional): 숏 포지션 종료를 위한 매수인지 여부
+            position_id (str, optional): 포지션 ID (종료 시 사용)
         
         Returns:
             dict: 주문 결과
         """
         try:
             order_time = datetime.now()
+            
+            # 포지션 종료인지 여부 검사 (숏 포지션 청산)
+            if close_position:
+                # 포지션 ID가 지정된 경우 해당 포지션을 찾아서 종료 처리
+                if position_id and self.portfolio['positions']:
+                    for idx, pos in enumerate(self.portfolio['positions']):
+                        if pos.get('id') == position_id or pos.get('position_id') == position_id:
+                            logger.info(f"숏 포지션 청산: ID={position_id}, 가격={price}, 수량={quantity}")
+                            # 포지션 상태 업데이트
+                            self.portfolio['positions'][idx]['status'] = 'closed'
+                            self.portfolio['positions'][idx]['closed_at'] = order_time.isoformat()
+                            
+                            # 데이터베이스에 포지션 업데이트
+                            self.db.update_position(position_id, {
+                                'status': 'closed',
+                                'closed_at': order_time.isoformat(),
+                                'close_price': price
+                            })
+                            break
+                            
             if self.test_mode:
-                # 테스트 모드에서는 주문을 시뮬레이션
+                # 테스트 모드에서는 주문을 시뮤레이션
                 order = {
                     'id': f"test_buy_{order_time.timestamp()}",
                     'datetime': order_time.isoformat(),
@@ -311,24 +334,35 @@ class TradingAlgorithm:
                 self.portfolio['base_balance'] += quantity
                 self.portfolio['quote_balance'] -= (price * quantity) + (price * quantity * 0.001)
                 
-                # 포지션 추가
-                position = {
-                    'symbol': self.symbol,
-                    'side': 'long',
-                    'amount': quantity,
-                    'entry_price': price,
-                    'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
-                    'opened_at': order_time.isoformat(),
-                    'status': 'open',
-                    'additional_info': {
+                # 숏 포지션 청산이 아닌 경우에만 새 포지션 생성
+                if not close_position:
+                    # 추가 정보 처리
+                    position_additional_info = {
                         'order_id': order['id'],
                         'test_mode': True
                     }
-                }
-                self.portfolio['positions'].append(position)
-                
-                # 데이터베이스에 포지션 저장
-                position_id = self.db.save_position(position)
+                    
+                    # 사용자 정의 추가 정보가 있는 경우 병합
+                    if additional_info:
+                        position_additional_info.update(additional_info)
+                        
+                    # 포지션 추가
+                    position = {
+                        'id': f"pos_{int(time.time() * 1000)}",  # 고유 ID 생성
+                        'symbol': self.symbol,
+                        'side': 'long',
+                        'amount': quantity,
+                        'entry_price': price,
+                        'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
+                        'opened_at': order_time.isoformat(),
+                        'status': 'open',
+                        'additional_info': position_additional_info
+                    }
+                    self.portfolio['positions'].append(position)
+                    
+                    # 데이터베이스에 포지션 저장
+                    position_id = self.db.save_position(position)
+                    position['id'] = position_id  # 생성된 ID 업데이트
                 
                 # 거래 내역 추가
                 trade_record = {
@@ -340,12 +374,18 @@ class TradingAlgorithm:
                     'cost': price * quantity,
                     'fee': price * quantity * 0.001,
                     'timestamp': order_time.isoformat(),
-                    'position_id': position_id,
+                    'position_id': position_id if not close_position else None,
+                    'close_position_id': position_id if close_position else None,
                     'additional_info': {
                         'order_id': order['id'],
-                        'test_mode': True
+                        'test_mode': True,
+                        'close_position': close_position
                     }
                 }
+                
+                # 추가 정보가 있는 경우 병합
+                if additional_info:
+                    trade_record['additional_info'].update(additional_info)
                 self.portfolio['trade_history'].append(trade_record)
                 
                 # 데이터베이스에 거래 내역 저장
@@ -518,12 +558,16 @@ class TradingAlgorithm:
                     level_idx = additional_exit_info.get('level_index')
                     if level_idx is not None:
                         # RiskManager의 tp_executed_levels 업데이트
-                        if position_id in self.exchange_api.risk_manager.tp_executed_levels:
-                            try:
-                                self.exchange_api.risk_manager.tp_executed_levels[position_id][level_idx] = True
-                                logger.info(f"청산 이력 업데이트 성공: position_id={position_id}, level={level_idx}")
-                            except (IndexError, TypeError) as e:
-                                logger.error(f"tp_executed_levels 업데이트 실패: {e}")
+                        if hasattr(self.exchange_api, 'risk_manager') and \
+                           hasattr(self.exchange_api.risk_manager, 'tp_executed_levels'):
+                            if position_id in self.exchange_api.risk_manager.tp_executed_levels:
+                                try:
+                                    self.exchange_api.risk_manager.tp_executed_levels[position_id][level_idx] = True
+                                    logger.info(f"청산 이력 업데이트 성공: position_id={position_id}, level={level_idx}")
+                                except (IndexError, TypeError) as e:
+                                    logger.error(f"tp_executed_levels 업데이트 실패: {e}")
+                        else:
+                            logger.warning("위험 관리자의 tp_executed_levels를 찾을 수 없어 청산 이력을 업데이트할 수 없습니다.")
             
             # 포지션 잔여량 검증
             remaining = quantity - actual_quantity
@@ -1118,13 +1162,31 @@ class TradingAlgorithm:
             # 자동 손절매/이익실현 설정
             self.auto_sl_tp_enabled = auto_sl_tp
             self.partial_tp_enabled = partial_tp
-            self.auto_position_manager.set_auto_sl_tp(auto_sl_tp)
-            self.auto_position_manager.set_partial_tp(partial_tp)
             
-            # 포지션 모니터링 시작
-            if auto_sl_tp:
-                self.auto_position_manager.start_monitoring()
-                logger.info(f"자동 손절매/이익실현 기능 활성화 (부분 청산: {partial_tp})")
+            # auto_position_manager가 있는지 확인
+            if not hasattr(self, 'auto_position_manager') or self.auto_position_manager is None:
+                logger.warning("자동 포지션 관리자가 초기화되지 않음 - 새로 생성중...")
+                try:
+                    self.auto_position_manager = AutoPositionManager(self)
+                    logger.info("자동 포지션 관리자 새로 초기화 성공")
+                except Exception as e:
+                    logger.error(f"자동 포지션 관리자 초기화 실패: {e}")
+                    # 자동 손절매/이익실현 비활성화
+                    auto_sl_tp = False
+            
+            if auto_sl_tp and hasattr(self, 'auto_position_manager') and self.auto_position_manager is not None:
+                try:
+                    # 자동 포지션 관리 설정 적용
+                    self.auto_position_manager.set_auto_sl_tp(auto_sl_tp)
+                    self.auto_position_manager.set_partial_tp(partial_tp)
+                    
+                    # 포지션 모니터링 시작
+                    self.auto_position_manager.start_monitoring()
+                    logger.info(f"자동 손절매/이익실현 기능 활성화 (부분 청산: {partial_tp})")
+                except Exception as e:
+                    logger.error(f"자동 포지션 관리 시작 중 오류: {e}")
+            elif auto_sl_tp:
+                logger.warning("자동 포지션 관리자가 없어 자동 손절매/이익실현 기능을 사용할 수 없습니다")
             
             # 거래 스레드 시작
             trading_thread = threading.Thread(target=self.start_trading, args=(interval,))
@@ -1139,12 +1201,29 @@ class TradingAlgorithm:
             return None
     
     def stop_trading(self):
-        """자동 거래 중지"""
+        """자동 거래 중지 및 자동 포지션 관리 중지"""
         self.trading_active = False
         
-        # 자동 포지션 모니터링 중지
-        self.auto_position_manager.stop_monitoring()
-        logger.info("자동 거래를 중지합니다. 자동 포지션 관리 기능도 중지되었습니다.")
+        # 자동 포지션 모니터링 중지 (안전하게 처리)
+        if hasattr(self, 'auto_position_manager') and self.auto_position_manager is not None:
+            try:
+                self.auto_position_manager.stop_monitoring()
+                logger.info("자동 포지션 모니터링이 중지되었습니다.")
+            except Exception as e:
+                logger.error(f"자동 포지션 모니터링 중지 중 오류 발생: {e}")
+        
+        # 자동 손절매/이익실현 상태 초기화
+        self.auto_sl_tp_enabled = False
+        self.partial_tp_enabled = False
+        
+        # 최종 상태 저장
+        try:
+            self.save_state()
+            logger.info("현재 거래 상태가 저장되었습니다.")
+        except Exception as e:
+            logger.error(f"거래 상태 저장 중 오류 발생: {e}")
+        
+        logger.info("자동 거래를 중지했습니다.")
     
     def save_trade_history(self):
         """거래 기록 저장"""
