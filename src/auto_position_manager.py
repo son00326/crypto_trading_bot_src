@@ -462,44 +462,82 @@ class AutoPositionManager:
         """비상 상황에서 포지션 감소 조치 실행"""
         try:
             if not positions:
-                logger.warning("열린 포지션이 없습니다. 비상 조치를 건너뛽니다.")
+                logger.warning("현재 열린 포지션이 없습니다. 비상 청산 처리를 건너뛵니다.")
                 return
             
-            # 리스크가 가장 높은 포지션 식별
-            # 여기서는 가장 큰 포지션을 리스크가 가장 높다고 가정
-            # 실제 구현에서는 위험도 계산 로직을 추가해야 함
-            highest_risk_position = max(positions, key=lambda x: abs(float(x.get('size', 0))))
-            
-            # 청산할 양 계산
-            position_size = abs(float(highest_risk_position.get('size', 0)))
-            reduction_size = position_size * reduction_percentage
-            
-            # 최소 출력량 검사 (시장 최소 주문 금액 고려)
-            min_order_size = self.trading_algorithm.exchange_api.get_minimum_order_size(
-                highest_risk_position.get('symbol', ''))
-            
-            if reduction_size < min_order_size:
-                logger.warning(f"위험 포지션 감소가 최소 주문 금액({min_order_size})보다 작아 실행할 수 없습니다.")
+            # 현재 가격 조회
+            current_price = self.trading_algorithm.get_current_price()
+            if current_price <= 0:
+                logger.warning(f"유효하지 않은 현재 가격: {current_price}. 비상 청산 처리를 건너뛵니다.")
                 return
-                
-            # 중요: 여기서는 실제로 청산 주문 전송이 구현되어야 합니다.
-            # 실제 API를 통한 주문 전송 전에 테스트 모드 확인 추가 필요
             
-            result = self.trading_algorithm.execute_emergency_exit(
-                position_id=highest_risk_position.get('id', ''),
-                symbol=highest_risk_position.get('symbol', ''),
-                exit_percentage=reduction_percentage,
-                reason="마진 안전장치 비상 조치"
-            )
+            # 강제 청산 정보
+            exit_info = {
+                'exit_type': 'margin_safety',
+                'exit_reason': '마진 안전장치 강제 청산',
+                'auto_exit': True,
+                'emergency': True,
+                'timestamp': datetime.now().isoformat()
+            }
             
-            # 청산 결과 처리
-            if result:
-                logger.info(f"마진 안전장치: 위험 포지션 {reduction_percentage*100}% 기술적 청산 완료")
-            else:
-                logger.error(f"마진 안전장치: 위험 포지션 청산 실패")
+            # 각 포지션에 대해 청산 실행
+            successful_exits = 0
+            for position in positions:
+                # 포지션 정보 확인
+                position_id = position.get('id')
+                side = position.get('side')
+                size = position.get('size', position.get('amount', 0))  # size로 변수명 통일
                 
+                if not position_id or not side or size <= 0:
+                    logger.warning(f"포지션 정보 부족: ID={position_id}, side={side}, size={size}")
+                    continue
+                
+                # 청산할 수량 계산
+                exit_size = size * reduction_percentage
+                
+                # 최소 주문 사이즈 검사
+                min_order_size = self.trading_algorithm.exchange_api.get_minimum_order_size(position.get('symbol', ''))
+                if exit_size < min_order_size:
+                    logger.warning(f"포지션 {position_id}: 청산 사이즈({exit_size})가 최소 주문 사이즈({min_order_size})보다 작습니다.")
+                    continue
+                
+                logger.warning(f"마진 안전장치: 포지션 {position_id} 의 {reduction_percentage:.0%} 강제 청산 시도")
+                
+                try:
+                    # 롱 포지션 청산 (매도)
+                    if side.lower() == 'long':
+                        result = self.trading_algorithm.execute_sell(
+                            price=current_price,
+                            quantity=exit_size,
+                            additional_exit_info=exit_info,
+                            percentage=reduction_percentage,
+                            position_id=position_id
+                        )
+                    
+                    # 숏 포지션 청산 (매수)
+                    elif side.lower() == 'short':
+                        result = self.trading_algorithm.execute_buy(
+                            price=current_price,
+                            quantity=exit_size,
+                            additional_info=exit_info,
+                            close_position=True,
+                            position_id=position_id
+                        )
+                    
+                    if result:
+                        successful_exits += 1
+                        logger.info(f"포지션 {position_id} 청산 성공: {exit_size} {side}")
+                    else:
+                        logger.error(f"포지션 {position_id} 청산 실패")
+                        
+                except Exception as e:
+                    logger.error(f"포지션 {position_id} 청산 중 오류: {e}")
+                    logger.error(traceback.format_exc())
+            
+            logger.warning(f"마진 안전장치: 비상 청산 처리가 완료되었습니다. {len(positions)}개 포지션 중 {successful_exits}개 청산 성공")
+            
         except Exception as e:
-            logger.error(f"비상 포지션 조정 중 오류: {e}")
+            logger.error(f"비상 포지션 감소 조치 중 오류: {e}")
             logger.error(traceback.format_exc())
     
     def set_auto_sl_tp(self, enabled):
@@ -532,13 +570,9 @@ class AutoPositionManager:
                 risk_manager = self.trading_algorithm.exchange_api.risk_manager
                 risk_manager.margin_safety_enabled = self.margin_safety_enabled
             
-            # 안전 상태에서는 비상 조치 플래그 비활성화
-            elif safety_status == 'safe' and self.emergency_actions_taken:
-                self.emergency_actions_taken = False
-                logger.info("마진 레벨이 안전 상태로 회복되었습니다. 비상 조치 상태를 해제합니다.")
-            
         except Exception as e:
-            logger.error(f"마진 안전성 검사 중 오류: {e}")
+            logger.error(f"마진 안전장치 설정 오류: {e}")
+            logger.error(traceback.format_exc())
     
     def _handle_margin_safety_actions(self, safety_status, suggested_actions, positions, account_info):
         """마진 안전성 상태에 따른 조치 실행"""
@@ -547,6 +581,11 @@ class AutoPositionManager:
             if safety_status == 'emergency':
                 self.emergency_actions_taken = True
                 logger.critical("마진 안전장치: 비상 상태 - 주의가 필요한 자동 조치를 실행합니다.")
+            
+            # 안전 상태에서는 비상 조치 플래그 비활성화
+            elif safety_status == 'safe' and self.emergency_actions_taken:
+                self.emergency_actions_taken = False
+                logger.info("마진 레벨이 안전 상태로 회복되었습니다. 비상 조치 상태를 해제합니다.")
             
             # 제안된 조치가 없는 경우 처리
             if not suggested_actions:
@@ -567,66 +606,7 @@ class AutoPositionManager:
                 
         except Exception as e:
             logger.error(f"마진 안전 조치 실행 중 오류: {e}")
+            logger.error(traceback.format_exc())
     
-    def _emergency_reduce_positions(self, positions, reduction_percentage):
-        """비상 상황에서 포지션 감소 조치 실행"""
-        try:
-            if not positions:
-                logger.warning("현재 열린 포지션이 없습니다. 비상 청산 처리를 건너뛽니다.")
-                return
-            
-            # 현재 가격 조회
-            current_price = self.trading_algorithm.get_current_price()
-            if current_price <= 0:
-                logger.warning(f"유효하지 않은 현재 가격: {current_price}. 비상 청산 처리를 건너뛽니다.")
-                return
-            
-            # 강제 청산 정보
-            exit_info = {
-                'exit_type': 'margin_safety',
-                'exit_reason': '마진 안전장치 강제 청산',
-                'auto_exit': True,
-                'emergency': True,
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            # 각 포지션에 대해 청산 실행
-            for position in positions:
-                # 포지션 정보 확인
-                position_id = position.get('id')
-                side = position.get('side')
-                amount = position.get('amount', 0)
-                
-                if amount <= 0:
-                    continue
-                
-                # 청산할 수량 계산
-                exit_amount = amount * reduction_percentage
-                
-                logger.warning(f"마진 안전장치: 포지션 {position_id} 의 {reduction_percentage:.0%} 강제 청산 시도")
-                
-                # 롱 포지션 청산 (매도)
-                if side.lower() == 'long':
-                    self.trading_algorithm.execute_sell(
-                        price=current_price,
-                        quantity=exit_amount,
-                        additional_exit_info=exit_info,
-                        percentage=reduction_percentage,
-                        position_id=position_id
-                    )
-                
-                # 숙 포지션 청산 (매수)
-                elif side.lower() == 'short':
-                    self.trading_algorithm.execute_buy(
-                        price=current_price,
-                        quantity=exit_amount,
-                        additional_info=exit_info,
-                        close_position=True,
-                        position_id=position_id
-                    )
-            
-            logger.warning(f"마진 안전장치: 비상 청산 처리가 완료되었습니다. {len(positions)}개 포지션에 대해 {reduction_percentage:.0%} 청산 시도.")
-                
-        except Exception as e:
-            logger.error(f"비상 포지션 감소 조치 중 오류: {e}")
+
 
