@@ -11,13 +11,19 @@ import time
 import logging
 import threading
 from datetime import datetime
+import traceback
 
-# 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# 개선된 오류 처리 시스템 추가
+from src.error_handlers import (
+    network_error_handler, api_error_handler, trade_error_handler, safe_execution,
+    NetworkError, APIError, TradeError, PositionError, PositionNotFound, MarginLevelCritical
 )
-logger = logging.getLogger('auto_position_manager')
+
+# 개선된 로깅 설정 사용
+from src.logging_config import get_logger
+
+# 로거 가져오기
+logger = get_logger('crypto_bot.auto_position_manager')
 
 class AutoPositionManager:
     """포지션 자동 관리 클래스"""
@@ -38,104 +44,197 @@ class AutoPositionManager:
         # 설정값
         self.auto_sl_tp_enabled = False  # 자동 손절매/이익실현 활성화 여부
         self.partial_tp_enabled = False  # 부분 이익실현 활성화 여부
+        self.margin_safety_enabled = True  # 마진 안전장치 활성화 여부
+        
+        # 마진 안전장치 관련 상태 변수
+        self.last_margin_check_time = 0
+        self.margin_check_interval = 60  # 마진 레벨 검사 간격(초)
+        self.emergency_actions_taken = False  # 비상 조치 수행 여부
         
         logger.info("자동 포지션 관리자가 초기화되었습니다.")
+        logger.info("마진 안전장치 기능이 활성화되었습니다.")
     
+    @safe_execution
     def start_monitoring(self):
         """포지션 모니터링 시작"""
-        try:
-            if self.monitoring_active:
-                logger.warning("포지션 모니터링이 이미 활성화되어 있습니다.")
-                return
-            
-            # 필요한 속성이 있는지 확인
-            if not hasattr(self, 'trading_algorithm') or self.trading_algorithm is None:
-                logger.error("트레이딩 알고리즘이 초기화되지 않았습니다.")
-                return
-            
-            self.monitoring_active = True
-            self.monitor_thread = threading.Thread(target=self._monitor_positions_loop)
-            logger.info("포지션 모니터링이 시작되었습니다.")
-        except Exception as e:
-            logger.error(f"포지션 모니터링 시작 오류: {e}")
-            self.monitoring_active = False
+        if self.monitoring_active:
+            logger.warning("포지션 모니터링이 이미 활성화되어 있습니다.")
+            return
+        
+        # 필요한 속성이 있는지 확인
+        if not hasattr(self, 'trading_algorithm') or self.trading_algorithm is None:
+            logger.error("트레이딩 알고리즘이 초기화되지 않았습니다.")
+            raise ValueError("트레이딩 알고리즘이 초기화되지 않음")
+        
+        self.monitoring_active = True
+        self.monitor_thread = threading.Thread(target=self._monitor_positions_loop)
         self.monitor_thread.daemon = True
         self.monitor_thread.start()
         
         logger.info(f"포지션 모니터링을 시작합니다. 모니터링 간격: {self.monitor_interval}초")
+        return True
         
+    @safe_execution
     def stop_monitoring(self):
         """포지션 모니터링 중지"""
         if not self.monitoring_active:
             logger.warning("포지션 모니터링이 이미 비활성화되어 있습니다.")
-            return
+            return False
         
+        # 먼저 monitoring_active를 False로 설정하여 스레드가 자연스럽게 종료되도록 함
         self.monitoring_active = False
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=2.0)
+        logger.info("모니터링 플래그를 비활성화했습니다. 스레드 종료 대기 중...")
+        
+        # 스레드가 있으면 안전하게 종료 대기
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            try:
+                self.monitor_thread.join(timeout=2.0)
+                if self.monitor_thread.is_alive():
+                    logger.warning("모니터링 스레드가 시간 내에 종료되지 않았지만, 비활성화 플래그는 설정되었습니다.")
+            except Exception as e:
+                logger.error(f"스레드 종료 중 오류: {e}")
             
         logger.info("포지션 모니터링을 중지했습니다.")
+        return True
     
     def _monitor_positions_loop(self):
         """포지션 모니터링 루프"""
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+        last_success_time = time.time()
+        
         while self.monitoring_active:
             try:
-                if not self.auto_sl_tp_enabled:
-                    time.sleep(self.monitor_interval)
-                    continue
+                current_time = time.time()
                 
-                # 열린 포지션이 있는지 확인
-                has_open_positions = self._check_and_manage_positions()
+                # 자동 손절매/이익실현 활성화 확인
+                has_open_positions = False
+                if self.auto_sl_tp_enabled:
+                    # 열린 포지션이 있는지 확인 - 네트워크 오류에 대해 더 강화된 오류 처리 필요
+                    try:
+                        has_open_positions = self._check_and_manage_positions()
+                        # 성공적인 검사이면 오류 카운터 초기화
+                        consecutive_errors = 0
+                        last_success_time = current_time
+                    except NetworkError as e:
+                        consecutive_errors += 1
+                        logger.warning(f"포지션 검사 중 네트워크 오류 ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                        # 네트워크 오류 발생 시 기다리는 시간 조정
+                        sleep_interval = min(30, consecutive_errors * 5)  # 최대 30초, 오류 발생마다 5초씩 증가
+                        time.sleep(sleep_interval)
+                        continue
+                    except Exception as e:
+                        consecutive_errors += 1
+                        logger.error(f"포지션 검사 중 예상치 못한 오류 ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                
+                # 마진 안전장치 검사 (설정된 간격으로 실행)
+                if self.margin_safety_enabled and (current_time - self.last_margin_check_time >= self.margin_check_interval):
+                    try:
+                        self._check_margin_safety()
+                        self.last_margin_check_time = current_time
+                    except Exception as e:
+                        logger.error(f"마진 안전성 검사 오류: {e}")
+                        # 오류가 발생해도 마지막 검사 시간은 업데이트
+                        self.last_margin_check_time = current_time - (self.margin_check_interval // 2)  # 다음 검사 시간을 좀 빨리 설정
                 
                 # 열린 포지션이 없으면 모니터링 간격을 늘림
                 sleep_interval = self.monitor_interval
                 if not has_open_positions:
                     sleep_interval = self.monitor_interval * 2
+                # 비상 상태에서는 모니터링 간격을 줄임
+                elif self.emergency_actions_taken:
+                    sleep_interval = max(5, self.monitor_interval // 3)  # 최소 5초, 또는 기본 간격의 1/3
+                
+                # 지속적인 오류 또는 오랜 시간 성공적인 검사가 없을 때 환인 메시지 생성
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.critical(f"연속 {consecutive_errors}회 오류 발생: 모니터링 시스템을 재시작하는 것이 좋을 수 있습니다.")
+                    # 최대 연속 오류 횟수 초과 시 오류 카운터 초기화 (로그 스팸 방지)
+                    consecutive_errors = 0
+                
+                # 오랜 시간 성공적인 검사가 없을 때 (1시간 이상)
+                if (current_time - last_success_time) > 3600:
+                    logger.warning(f"마지막 성공 검사로부터 {(current_time - last_success_time) // 60:.0f}분 경과: 시스템 상태를 확인하세요.")
+                    last_success_time = current_time  # 로그 스팸 방지를 위해 시간 업데이트
                 
                 time.sleep(sleep_interval)
                 
             except Exception as e:
-                logger.error(f"포지션 모니터링 중 오류 발생: {e}")
-                time.sleep(self.monitor_interval)
+                logger.error(f"포지션 모니터링 중 예상치 못한 오류 발생: {e}")
+                logger.error(traceback.format_exc())  # 자세한 스택 트레이스 추가
+                # 오류 발생 시 안전한 재시도를 위해 짠시 대기
+                time.sleep(max(self.monitor_interval, 10))  # 최소 10초 이상 대기
     
+    @network_error_handler(retry_count=3, max_delay=30)
     def _check_and_manage_positions(self):
         """포지션 확인 및 관리"""
-        # 현재 포지션 가져오기
-        positions = self.trading_algorithm.get_open_positions()
-        if not positions:
-            return False
-        
-        # 현재 가격 조회
-        current_price = self.trading_algorithm.get_current_price()
-        if current_price <= 0:
-            logger.warning(f"유효하지 않은 현재 가격: {current_price}")
+        try:
+            # 현재 포지션 가져오기 - API 호출 실패 가능
+            positions = self.trading_algorithm.get_open_positions()
+            if not positions:
+                logger.debug("열린 포지션이 없습니다.")
+                return False
+            
+            # 현재 가격 조회 - API 호출 실패 가능
+            current_price = self.trading_algorithm.get_current_price()
+            if current_price <= 0:
+                logger.warning(f"유효하지 않은 현재 가격: {current_price}. 가격 조회 재시도 필요")
+                raise APIError(f"유효하지 않은 현재 가격: {current_price}")
+            
+            # 성공적으로 정보 수집 완료 - 로그 추가
+            position_count = len(positions)
+            logger.debug(f"현재 {position_count}개의 포지션 처리 중, 현재가: {current_price}")
+            
+            # 각 포지션에 대해 손절매/이익실현 조건 확인
+            for i, position in enumerate(positions):
+                try:
+                    position_id = position.get('id', f"unknown_position_{i}")
+                    logger.debug(f"포지션 {i+1}/{position_count} 검사 중: ID={position_id}")
+                    self._check_position_exit_conditions(position, current_price)
+                except Exception as e:
+                    # 개별 포지션 처리 오류가 전체 과정을 중단하지 않도록 처리
+                    logger.error(f"포지션 {position_id} 처리 중 오류: {e} - 다음 포지션으로 진행합니다.")
+            
             return True
-        
-        # 각 포지션에 대해 손절매/이익실현 조건 확인
-        for position in positions:
-            self._check_position_exit_conditions(position, current_price)
-        
-        return True
+            
+        except NetworkError as e:
+            # 네트워크 오류에 대한 특별 처리 - network_error_handler에 의해 재시도 처리됨
+            logger.warning(f"포지션 검사 중 네트워크 오류: {e}")
+            raise  # network_error_handler에서 재시도를 처리하도록 예외 전파
+        except APIError as e:
+            # API 오류에 대한 특별 처리
+            logger.warning(f"API 오류: {e}")
+            raise  # network_error_handler에서 재시도를 처리하도록 예외 전파
+        except Exception as e:
+            # 기타 예상치 못한 오류
+            logger.error(f"포지션 검사 중 예상치 못한 오류: {e}")
+            logger.error(traceback.format_exc())
+            return False  # 예상치 못한 오류는 False 반환
     
+    @trade_error_handler(retry_count=1)
     def _check_position_exit_conditions(self, position, current_price):
         """개별 포지션의 종료 조건 확인"""
+        # 포지션 ID 확인
+        position_id = position.get('id')
+        if not position_id:
+            logger.warning("포지션 ID가 없어 자동 관리할 수 없습니다.")
+            raise PositionError("포지션 ID가 없어 처리할 수 없음")
+        
+        # 포지션 정보 확인
+        side = position.get('side')
+        entry_price = position.get('entry_price')
+        if not side or not entry_price or entry_price <= 0:
+            logger.warning(f"포지션 {position_id}: 유효하지 않은 포지션 정보 side={side}, entry_price={entry_price}")
+            raise PositionError(f"유효하지 않은 포지션 정보: side={side}, entry_price={entry_price}")
+        
         try:
-            # 포지션 ID 확인
-            position_id = position.get('id')
-            if not position_id:
-                logger.warning("포지션 ID가 없어 자동 관리할 수 없습니다.")
-                return
-            
-            # 포지션 정보 확인
-            side = position.get('side')
-            entry_price = position.get('entry_price')
-            if not side or not entry_price or entry_price <= 0:
-                logger.warning(f"유효하지 않은 포지션 정보: side={side}, entry_price={entry_price}")
-                return
+            # 위험 관리 구성 가져오기
+            risk_config = self.trading_algorithm.risk_management
+            if not risk_config:
+                logger.warning(f"포지션 {position_id}: 위험 관리 구성이 없습니다. 기본값 사용")
+                # 기본 값 설정
+                risk_config = {'stop_loss_pct': 0.05, 'take_profit_pct': 0.1}
             
             # 손절매/이익실현 가격 계산
-            risk_config = self.trading_algorithm.risk_management
-            
             if side.lower() == 'long':
                 stop_loss_price = entry_price * (1 - risk_config['stop_loss_pct'])
                 take_profit_price = entry_price * (1 + risk_config['take_profit_pct'])
@@ -143,76 +242,265 @@ class AutoPositionManager:
                 stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
                 take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
             
-            # 종료 조건 확인
-            risk_manager = self.trading_algorithm.exchange_api.risk_manager
-            risk_manager.partial_tp_enabled = self.partial_tp_enabled
+            logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}")
             
-            exit_type, exit_reason, exit_percentage = risk_manager.check_exit_conditions(
-                current_price=current_price,
-                position_type=side,
-                entry_price=entry_price,
-                stop_loss_price=stop_loss_price,
-                take_profit_price=take_profit_price,
-                position_id=position_id,
-                check_partial=self.partial_tp_enabled
-            )
+            # 위험 관리자 가져오기
+            try:
+                risk_manager = self.trading_algorithm.exchange_api.risk_manager
+                risk_manager.partial_tp_enabled = self.partial_tp_enabled
+            except AttributeError as e:
+                logger.error(f"위험 관리자 가져오기 실패: {e}")
+                raise APIError("Risk Manager 가져오기 실패")
+            
+            # 종료 조건 확인 - API 오류 발생 가능
+            try:
+                exit_type, exit_reason, exit_percentage = risk_manager.check_exit_conditions(
+                    current_price=current_price,
+                    position_type=side,
+                    entry_price=entry_price,
+                    stop_loss_price=stop_loss_price,
+                    take_profit_price=take_profit_price,
+                    position_id=position_id,
+                    check_partial=self.partial_tp_enabled
+                )
+            except Exception as e:
+                logger.error(f"포지션 {position_id}: 종료 조건 검사 중 오류: {e}")
+                raise APIError(f"종료 조건 검사 실패: {e}")
             
             # 청산 조건 충족 시 처리
             if exit_type:
+                logger.info(f"포지션 {position_id}: {exit_type} 시그널 발생, 이유: {exit_reason}, 비율: {exit_percentage:.1%}")
                 self._execute_position_exit(position, current_price, exit_type, exit_reason, exit_percentage)
+                return True
                 
+            return False
+            
+        except NetworkError as e:
+            # 네트워크 오류 발생 - 재시도 가능
+            logger.warning(f"포지션 {position_id} 검사 중 네트워크 오류: {e}")
+            raise  # trade_error_handler에서 재시도 처리
         except Exception as e:
-            logger.error(f"포지션 종료 조건 확인 중 오류: {e}")
-    
+            # 기타 예상치 못한 오류
+            logger.error(f"포지션 {position_id} 검사 중 오류: {e}")
+            raise PositionError(f"포지션 검사 오류: {e}")
+            
+    @trade_error_handler(retry_count=3, max_delay=20)
     def _execute_position_exit(self, position, current_price, exit_type, exit_reason, exit_percentage):
-        """포지션 청산 실행"""
+        """
+        포지션 청산 실행
+        
+        Args:
+            position (dict): 청산할 포지션 정보
+            current_price (float): 현재 가격
+            exit_type (str): 청산 유형 (stop_loss, take_profit, manual, emergency)
+            exit_reason (str): 청산 이유
+            exit_percentage (float): 청산할 포지션 비율 (0.0-1.0)
+        
+        Returns:
+            bool: 성공 여부
+        """
         try:
-            logger.info(f"자동 포지션 청산: {exit_type}, 이유: {exit_reason}, 비율: {exit_percentage:.1%}")
-            
-            # 포지션 정보 확인
             position_id = position.get('id')
+            symbol = position.get('symbol')
             side = position.get('side')
-            amount = position.get('amount', 0)
+            size = position.get('size')
+            entry_price = position.get('entry_price')
             
-            if amount <= 0:
-                logger.warning(f"포지션 수량이 0 이하입니다: {amount}")
+            if not all([position_id, symbol, side, size, entry_price]):
+                logger.error(f"포지션 청산 실패: 필수 정보 부족 [ID={position_id}, symbol={symbol}, side={side}, size={size}, entry_price={entry_price}]")
+                raise PositionError(f"포지션 청산을 위한 필수 정보 부족")
+            
+            # 청산 사이즈 계산
+            exit_size = size
+            if 0 < exit_percentage < 1.0:
+                exit_size = size * exit_percentage
+                logger.info(f"포지션 {position_id}: 부분 청산 ({exit_percentage:.1%}, {exit_size}/{size})")
+            
+            # 청산 시도 전 로그
+            logger.info(f"포지션 {position_id} ({symbol}, {side}) 청산 시도: 이유={exit_reason}, 현재가={current_price}, 사이즈={exit_size}")
+            
+            # 청산 실행 - 네트워크 오류 발생 가능
+            try:
+                result = self.trading_algorithm.close_position(
+                    position_id=position_id,
+                    symbol=symbol,
+                    side=side,
+                    amount=exit_size,
+                    reason=exit_reason
+                )
+            except NetworkError as e:
+                logger.error(f"포지션 {position_id} 청산 중 네트워크 오류: {e}")
+                raise  # trade_error_handler에서 재시도 처리
+            except APIError as e:
+                logger.error(f"포지션 {position_id} 청산 중 API 오류: {e}")
+                raise  # trade_error_handler에서 재시도 처리
+            except Exception as e:
+                logger.error(f"포지션 {position_id} 청산 중 예상치 못한 오류: {e}")
+                raise TradeError(f"포지션 청산 중 오류: {e}")
+            
+            # 결과 처리
+            if result:
+                # 성공 시 수익/손실 계산
+                profit_loss = (current_price - entry_price) * exit_size if side.lower() == 'long' else (entry_price - current_price) * exit_size
+                profit_loss_pct = abs(current_price - entry_price) / entry_price * 100
+                pnl_direction = '+' if profit_loss > 0 else '-'
+                
+                # 성공 로그
+                logger.info(f"포지션 {position_id}: {exit_type} 실행 성공. 이유: {exit_reason}, PnL: {pnl_direction}{abs(profit_loss):.2f} ({profit_loss_pct:.2f}%)")
+                
+                # 비상 상태가 아니면 비상 조치 기록 초기화
+                if exit_type.lower() != 'emergency':
+                    self.emergency_actions_taken = False
+                
+                return True
+            else:
+                # 청산 실패 처리
+                error_msg = f"포지션 {position_id}: {exit_type} 실행 실패. 이유: {exit_reason}"
+                logger.error(error_msg)
+                raise TradeError(error_msg)
+                
+        except NetworkError as e:
+            # 네트워크 오류 - 재시도 가능
+            logger.warning(f"포지션 {position_id} 청산 중 네트워크 오류: {e}")
+            raise  # trade_error_handler에서 재시도 처리
+        except Exception as e:
+            # 기타 예상치 못한 오류
+            logger.error(f"포지션 {position_id} 청산 중 최종 오류: {e}")
+            logger.error(traceback.format_exc())
+            
+            # 중요한 청산 실패인 경우 비상 상태 플래그 설정
+            if exit_type.lower() in ['stop_loss', 'emergency']:
+                self.emergency_actions_taken = True
+                logger.critical(f"중요 포지션 청산 실패 ({exit_type}): 비상 상태 플래그 설정")
+            
+            return False
+            profit_loss_pct = abs(current_price - entry_price) / entry_price * 100
+            pnl_direction = '+' if profit_loss > 0 else '-'
+            
+            # 성공 로그
+            logger.info(f"포지션 {position_id}: {exit_type} 실행 성공. 이유: {exit_reason}, PnL: {pnl_direction}{abs(profit_loss):.2f} ({profit_loss_pct:.2f}%)")
+            
+            # 비상 상태가 아니면 중학성 조치 기록 초기화
+            if exit_type.lower() != 'emergency':
+                self.emergency_actions_taken = False
+            
+            return True
+        else:
+            # 청산 실패 처리
+            error_msg = f"포지션 {position_id}: {exit_type} 실행 실패. 이유: {exit_reason}"
+            logger.error(error_msg)
+            raise TradeError(error_msg)
+            
+    def _check_margin_safety(self):
+        """마진 안전성 검사 및 위험 상황에서 자동 대응"""
+        try:
+            # 마진 안전장치가 비활성화되었거나 현물 계정이 아닌 경우 스킵
+            if not self.margin_safety_enabled or self.trading_algorithm.market_type.lower() != 'futures':
                 return
             
-            # 청산할 수량 계산
-            exit_amount = amount * exit_percentage
+            # 계정 정보 가져오기
+            account_info = self.trading_algorithm.exchange_api.get_account_info()
+            if not account_info:
+                logger.warning("계정 정보를 가져오지 못했습니다. 마진 안전성 검사를 건너끻니다.")
+                return
             
-            # 청산 정보
-            exit_info = {
-                'exit_type': exit_type,
-                'exit_reason': exit_reason,
-                'auto_exit': True,
-                'timestamp': datetime.now().isoformat()
-            }
+            # 현재 포지션 가져오기
+            positions = self.trading_algorithm.get_open_positions()
             
-            # 롱 포지션 청산 (매도)
-            if side.lower() == 'long':
-                self.trading_algorithm.execute_sell(
-                    price=current_price,
-                    quantity=exit_amount,
-                    additional_exit_info=exit_info,
-                    percentage=exit_percentage,
-                    position_id=position_id
-                )
+            # 마진 안전성 검사
+            risk_manager = self.trading_algorithm.exchange_api.risk_manager
+            safety_status, message, suggested_actions = risk_manager.check_margin_safety(
+                account_info=account_info,
+                current_positions=positions,
+                market_type=self.trading_algorithm.market_type
+            )
             
-            # 숏 포지션 청산 (매수)
-            elif side.lower() == 'short':
-                self.trading_algorithm.execute_buy(
-                    price=current_price,
-                    quantity=exit_amount,
-                    additional_info=exit_info,
-                    close_position=True,
-                    position_id=position_id
-                )
+            # 반환된 경고 메시지 처리
+            if safety_status != 'safe' and message:
+                logger.warning(f"마진 안전장치 경고: {message}")
+                
+                # 위험 상태에 따른 조치 실행
+                self._handle_margin_safety_actions(safety_status, suggested_actions, positions, account_info)
             
-            logger.info(f"자동 포지션 청산 완료: {exit_type}, 포지션ID: {position_id}")
+            # 안전 상태에서는 비상 조치 플래그 비활성화
+            elif safety_status == 'safe' and self.emergency_actions_taken:
+                self.emergency_actions_taken = False
+                logger.info("마진 레벨이 안전 상태로 회복되었습니다. 비상 조치 상태를 해제합니다.")
             
         except Exception as e:
-            logger.error(f"포지션 청산 실행 중 오류: {e}")
+            logger.error(f"마진 안전성 검사 중 오류: {e}")
+    
+    def _handle_margin_safety_actions(self, safety_status, suggested_actions, positions, account_info):
+        """마진 안전성 상태에 따른 조치 실행"""
+        try:
+            # 비상 상태 표시
+            if safety_status == 'emergency':
+                self.emergency_actions_taken = True
+                logger.critical("마진 안전장치: 비상 상태 - 주의가 필요한 자동 조치를 실행합니다.")
+            
+            # 제안된 조치가 없는 경우 처리
+            if not suggested_actions:
+                return
+            
+            # 위험도에 따라 조치 실행
+            if "position_reduce_emergency" in suggested_actions:
+                # 긴급 상황: 가장 위험한 포지션의 50% 청산
+                self._emergency_reduce_positions(positions, 0.5)
+                
+            elif "position_reduce_partial" in suggested_actions:
+                # 심각 상황: 위험한 포지션의 30% 청산
+                self._emergency_reduce_positions(positions, 0.3)
+            
+            # 레버리지 감소 처리 (실제 적용은 관련 API가 필요하여 로그만 출력)
+            if "leverage_reduce" in suggested_actions:
+                logger.warning("마진 안전장치: 레버리지 감소가 권장됩니다. 수동 조절이 필요할 수 있습니다.")
+                    
+        except Exception as e:
+            logger.error(f"마진 안전 조치 실행 중 오류: {e}")
+    
+    def _emergency_reduce_positions(self, positions, reduction_percentage):
+        """비상 상황에서 포지션 감소 조치 실행"""
+        try:
+            if not positions:
+                logger.warning("열린 포지션이 없습니다. 비상 조치를 건너뛽니다.")
+                return
+            
+            # 리스크가 가장 높은 포지션 식별
+            # 여기서는 가장 큰 포지션을 리스크가 가장 높다고 가정
+            # 실제 구현에서는 위험도 계산 로직을 추가해야 함
+            highest_risk_position = max(positions, key=lambda x: abs(float(x.get('size', 0))))
+            
+            # 청산할 양 계산
+            position_size = abs(float(highest_risk_position.get('size', 0)))
+            reduction_size = position_size * reduction_percentage
+            
+            # 최소 출력량 검사 (시장 최소 주문 금액 고려)
+            min_order_size = self.trading_algorithm.exchange_api.get_minimum_order_size(
+                highest_risk_position.get('symbol', ''))
+            
+            if reduction_size < min_order_size:
+                logger.warning(f"위험 포지션 감소가 최소 주문 금액({min_order_size})보다 작아 실행할 수 없습니다.")
+                return
+                
+            # 중요: 여기서는 실제로 청산 주문 전송이 구현되어야 합니다.
+            # 실제 API를 통한 주문 전송 전에 테스트 모드 확인 추가 필요
+            
+            result = self.trading_algorithm.execute_emergency_exit(
+                position_id=highest_risk_position.get('id', ''),
+                symbol=highest_risk_position.get('symbol', ''),
+                exit_percentage=reduction_percentage,
+                reason="마진 안전장치 비상 조치"
+            )
+            
+            # 청산 결과 처리
+            if result:
+                logger.info(f"마진 안전장치: 위험 포지션 {reduction_percentage*100}% 기술적 청산 완료")
+            else:
+                logger.error(f"마진 안전장치: 위험 포지션 청산 실패")
+                
+        except Exception as e:
+            logger.error(f"비상 포지션 조정 중 오류: {e}")
+            logger.error(traceback.format_exc())
     
     def set_auto_sl_tp(self, enabled):
         """자동 손절매/이익실현 활성화/비활성화"""
@@ -231,3 +519,114 @@ class AutoPositionManager:
         except Exception as e:
             logger.error(f"부분 이익실현 설정 오류: {e}")
             self.partial_tp_enabled = False  # 오류 발생 시 안전하게 비활성화
+            
+    def set_margin_safety(self, enabled):
+        """마진 안전장치 활성화/비활성화"""
+        try:
+            self.margin_safety_enabled = bool(enabled)  # bool로 변환하여 안전하게 대입
+            logger.info(f"마진 안전장치 {'활성화' if self.margin_safety_enabled else '비활성화'}")
+            
+            # 마진 안전장치 활성화 시, risk_manager에도 설정 적용
+            if hasattr(self.trading_algorithm, 'exchange_api') and \
+               hasattr(self.trading_algorithm.exchange_api, 'risk_manager'):
+                risk_manager = self.trading_algorithm.exchange_api.risk_manager
+                risk_manager.margin_safety_enabled = self.margin_safety_enabled
+            
+            # 안전 상태에서는 비상 조치 플래그 비활성화
+            elif safety_status == 'safe' and self.emergency_actions_taken:
+                self.emergency_actions_taken = False
+                logger.info("마진 레벨이 안전 상태로 회복되었습니다. 비상 조치 상태를 해제합니다.")
+            
+        except Exception as e:
+            logger.error(f"마진 안전성 검사 중 오류: {e}")
+    
+    def _handle_margin_safety_actions(self, safety_status, suggested_actions, positions, account_info):
+        """마진 안전성 상태에 따른 조치 실행"""
+        try:
+            # 비상 상태 표시
+            if safety_status == 'emergency':
+                self.emergency_actions_taken = True
+                logger.critical("마진 안전장치: 비상 상태 - 주의가 필요한 자동 조치를 실행합니다.")
+            
+            # 제안된 조치가 없는 경우 처리
+            if not suggested_actions:
+                return
+            
+            # 위험도에 따라 조치 실행
+            if "position_reduce_emergency" in suggested_actions:
+                # 긴급 상황: 가장 위험한 포지션의 50% 청산
+                self._emergency_reduce_positions(positions, 0.5)
+                
+            elif "position_reduce_partial" in suggested_actions:
+                # 심각 상황: 위험한 포지션의 30% 청산
+                self._emergency_reduce_positions(positions, 0.3)
+            
+            # 레버리지 감소 처리 (실제 적용은 관련 API가 필요하여 로그만 출력)
+            if "leverage_reduce" in suggested_actions:
+                logger.warning("마진 안전장치: 레버리지 감소가 권장됩니다. 수동 조절이 필요할 수 있습니다.")
+                
+        except Exception as e:
+            logger.error(f"마진 안전 조치 실행 중 오류: {e}")
+    
+    def _emergency_reduce_positions(self, positions, reduction_percentage):
+        """비상 상황에서 포지션 감소 조치 실행"""
+        try:
+            if not positions:
+                logger.warning("현재 열린 포지션이 없습니다. 비상 청산 처리를 건너뛽니다.")
+                return
+            
+            # 현재 가격 조회
+            current_price = self.trading_algorithm.get_current_price()
+            if current_price <= 0:
+                logger.warning(f"유효하지 않은 현재 가격: {current_price}. 비상 청산 처리를 건너뛽니다.")
+                return
+            
+            # 강제 청산 정보
+            exit_info = {
+                'exit_type': 'margin_safety',
+                'exit_reason': '마진 안전장치 강제 청산',
+                'auto_exit': True,
+                'emergency': True,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # 각 포지션에 대해 청산 실행
+            for position in positions:
+                # 포지션 정보 확인
+                position_id = position.get('id')
+                side = position.get('side')
+                amount = position.get('amount', 0)
+                
+                if amount <= 0:
+                    continue
+                
+                # 청산할 수량 계산
+                exit_amount = amount * reduction_percentage
+                
+                logger.warning(f"마진 안전장치: 포지션 {position_id} 의 {reduction_percentage:.0%} 강제 청산 시도")
+                
+                # 롱 포지션 청산 (매도)
+                if side.lower() == 'long':
+                    self.trading_algorithm.execute_sell(
+                        price=current_price,
+                        quantity=exit_amount,
+                        additional_exit_info=exit_info,
+                        percentage=reduction_percentage,
+                        position_id=position_id
+                    )
+                
+                # 숙 포지션 청산 (매수)
+                elif side.lower() == 'short':
+                    self.trading_algorithm.execute_buy(
+                        price=current_price,
+                        quantity=exit_amount,
+                        additional_info=exit_info,
+                        close_position=True,
+                        position_id=position_id
+                    )
+            
+            logger.warning(f"마진 안전장치: 비상 청산 처리가 완료되었습니다. {len(positions)}개 포지션에 대해 {reduction_percentage:.0%} 청산 시도.")
+                
+        except Exception as e:
+            logger.error(f"비상 포지션 감소 조치 중 오류: {e}")
+

@@ -33,7 +33,7 @@ class RiskManager:
     """거래 위험 관리를 위한 클래스"""
     
     def __init__(self, exchange_id='binance', symbol='BTC/USDT', risk_config=None, auto_exit_enabled=True,
-                 partial_tp_enabled=False, tp_levels=None, tp_percentages=None):
+                 partial_tp_enabled=False, tp_levels=None, tp_percentages=None, margin_safety_enabled=True):
         """
         위험 관리자 초기화
         
@@ -45,6 +45,7 @@ class RiskManager:
             partial_tp_enabled (bool): 부분 이익실현 활성화 여부
             tp_levels (list): 이익실현 수준 목록 [0.05, 0.1, 0.2] (각각 5%, 10%, 20% 이익 시)
             tp_percentages (list): 각 이익실현 수준에서 청산할 비율 [0.3, 0.3, 0.4] (각각 30%, 30%, 40%)
+            margin_safety_enabled (bool): 마진 안전장치 활성화 여부
         """
         self.exchange_id = exchange_id
         self.symbol = symbol
@@ -56,6 +57,16 @@ class RiskManager:
         self.partial_tp_enabled = partial_tp_enabled
         self.tp_levels = tp_levels if tp_levels else [0.05, 0.1, 0.2]  # 기본 이익실현 단계: 5%, 10%, 20%
         self.tp_percentages = tp_percentages if tp_percentages else [0.3, 0.3, 0.4]  # 기본 청산 비율: 30%, 30%, 40%
+        
+        # 마진 안전장치 설정
+        self.margin_safety_enabled = margin_safety_enabled
+        self.margin_levels = {
+            'warning': 1.5,     # 경고 레벨: 마진 레벨 1.5
+            'critical': 1.2,   # 심각 경고 레벨: 마진 레벨 1.2
+            'emergency': 1.05,  # 비상 상황: 마진 레벨 1.05
+        }
+        self.last_margin_level_alert = {}
+        self.margin_alert_cooldown = 300  # 같은 레벨의 알림 간 최소 간격(초)
         
         # tp_levels와 tp_percentages 검증
         if len(self.tp_levels) != len(self.tp_percentages):
@@ -348,6 +359,7 @@ class RiskManager:
         # 포지션별 청산 이력 초기화
         if position_id not in self.tp_executed_levels:
             self.tp_executed_levels[position_id] = [False] * len(self.tp_levels)
+            logger.info(f"새 포지션 TP 추적 초기화: {position_id}, 추적 레벨: {len(self.tp_levels)}")
         
         try:
             # 현재 수익률 계산
@@ -355,13 +367,18 @@ class RiskManager:
                 profit_pct = (current_price - entry_price) / entry_price
             else:  # short
                 profit_pct = (entry_price - current_price) / entry_price
+                
+            # 수익률 로깅 (디버깅 목적)
+            if profit_pct > 0.01:  # 1% 이상 수익 시에만 로깅
+                executed_levels = sum(1 for level in self.tp_executed_levels.get(position_id, []) if level)
+                logger.debug(f"Position {position_id}: 현재 수익률 {profit_pct:.2%}, 이미 청산된 레벨: {executed_levels}/{len(self.tp_levels)}")
         except (ZeroDivisionError, TypeError) as e:
             logger.error(f"수익률 계산 오류: {e}, entry_price={entry_price}, current_price={current_price}")
             return False, None, None, None
         
         # 가장 높은 수준부터 확인 (높은 목표가부터 체크)
         for i in range(len(self.tp_levels) - 1, -1, -1):
-            # 이미 해당 수준에서 청산했으면 건너뜨
+            # 이미 해당 수준에서 청산했으면 건너듯
             if self.tp_executed_levels[position_id][i]:
                 continue
             
@@ -439,6 +456,161 @@ class RiskManager:
         except Exception as e:
             logger.error(f"손절매/이익실현 확인 중 오류 발생: {e}")
             return [], []
+    
+    def calculate_margin_level(self, account_info, market_type='futures'):
+        """
+        마진 레벨 계산
+        
+        Args:
+            account_info (dict): 계정 정보 (예치금, 포지션 수량 등)
+            market_type (str): 시장 유형 ('spot' 또는 'futures')
+        
+        Returns:
+            float: 마진 레벨 (0 < x < 무한대. 1.0에 가까울수록 청산 위험)
+        """
+        try:
+            # 현물 계정이 아닌 경우 계산하지 않음
+            if market_type.lower() != 'futures':
+                return float('inf')  # 무한대 값 반환 (안전함을 의미)
+            
+            # 계정 정보에서 필요한 값 추출
+            wallet_balance = account_info.get('wallet_balance', 0)
+            unrealized_pnl = account_info.get('unrealized_pnl', 0)
+            maintenance_margin = account_info.get('maintenance_margin', 0)
+            
+            # 유효성 검사
+            if wallet_balance <= 0 or maintenance_margin <= 0:
+                logger.error(f"마진 레벨 계산을 위한 유효하지 않은 값: wallet={wallet_balance}, margin={maintenance_margin}")
+                return float('inf')  # 무한대 값 반환 (안전함을 의미)
+            
+            # 마진 레벨 계산 = (Wallet Balance + Unrealized PnL) / Maintenance Margin
+            margin_level = (wallet_balance + unrealized_pnl) / maintenance_margin
+            
+            logger.info(f"마진 레벨 계산 결과: {margin_level:.2f} (wallet={wallet_balance}, unrealized_pnl={unrealized_pnl}, margin={maintenance_margin})")
+            return margin_level
+        
+        except Exception as e:
+            logger.error(f"마진 레벨 계산 중 오류: {e}")
+            return float('inf')  # 오류 발생 시 안전한 값 반환
+    
+    def check_margin_safety(self, account_info, current_positions=None, market_type='futures'):
+        """
+        마진 안전성 검사 및 경고 발생
+        
+        Args:
+            account_info (dict): 계정 정보
+            current_positions (list): 현재 포지션 목록
+            market_type (str): 시장 유형 ('spot' 또는 'futures')
+            
+        Returns:
+            tuple: (안전성 상태, 경고 메시지, 제안되는 조치)
+        """
+        try:
+            # 마진 안전장치가 비활성화되었거나 현물 계정이 아닌 경우
+            if not self.margin_safety_enabled or market_type.lower() != 'futures':
+                return 'safe', None, None
+            
+            # 마진 레벨 계산
+            margin_level = self.calculate_margin_level(account_info, market_type)
+            
+            # 안전성 상태 확인
+            now = time.time()
+            
+            # 비상 상태 (emergency level) - 청산 임박
+            if margin_level <= self.margin_levels['emergency']:
+                # 쿨다운 체크
+                if 'emergency' not in self.last_margin_level_alert or \
+                   (now - self.last_margin_level_alert.get('emergency', 0)) > self.margin_alert_cooldown:
+                    self.last_margin_level_alert['emergency'] = now
+                    message = f"환불일 수준의 마진 레벨 경고: {margin_level:.2f} - 포지션 청산 발생 위험!"
+                    suggested_actions = ["position_reduce_emergency", "leverage_reduce"]
+                    return 'emergency', message, suggested_actions
+            
+            # 심각 경고 (critical level)
+            elif margin_level <= self.margin_levels['critical']:
+                # 쿨다운 체크
+                if 'critical' not in self.last_margin_level_alert or \
+                   (now - self.last_margin_level_alert.get('critical', 0)) > self.margin_alert_cooldown:
+                    self.last_margin_level_alert['critical'] = now
+                    message = f"심각한 마진 레벨 경고: {margin_level:.2f} - 긴급 조치 필요!"
+                    suggested_actions = ["position_reduce_partial", "leverage_reduce"]
+                    return 'critical', message, suggested_actions
+            
+            # 일반 경고 (warning level)
+            elif margin_level <= self.margin_levels['warning']:
+                # 쿨다운 체크
+                if 'warning' not in self.last_margin_level_alert or \
+                   (now - self.last_margin_level_alert.get('warning', 0)) > self.margin_alert_cooldown:
+                    self.last_margin_level_alert['warning'] = now
+                    message = f"마진 레벨 경고: {margin_level:.2f} - 구성을 조정하세요."
+                    suggested_actions = ["monitor_closely"]
+                    return 'warning', message, suggested_actions
+            
+            # 안전한 상태
+            return 'safe', None, None
+            
+        except Exception as e:
+            logger.error(f"마진 안전성 검사 중 오류: {e}")
+            return 'unknown', f"마진 안전성 검사 오류: {e}", ["check_manually"]
+    
+    def suggest_risk_reduction_actions(self, margin_level, current_positions):
+        """
+        마진 레벨에 따른 위험 감소 조치 제안
+        
+        Args:
+            margin_level (float): 현재 마진 레벨
+            current_positions (list): 현재 포지션 목록
+            
+        Returns:
+            list: 제안되는 조치 목록
+        """
+        try:
+            # 출력할 추천 조치 목록
+            actions = []
+            
+            # 마진 레벨에 따른 대응
+            if margin_level <= self.margin_levels['emergency']:
+                # 매우 위험한 수준: 승로스가 가장 큰 포지션 청산 후 레버리지 감소
+                actions.append({
+                    'action': 'reduce_positions',
+                    'percentage': 0.5,  # 50% 포지션 촐정
+                    'target': 'highest_risk',
+                    'urgency': 'emergency'
+                })
+                actions.append({
+                    'action': 'reduce_leverage',
+                    'target_level': 5,  # 레버리지 5x로 제한
+                    'urgency': 'emergency'
+                })
+                
+            elif margin_level <= self.margin_levels['critical']:
+                # 심각한 수준: 일부 포지션 청산
+                actions.append({
+                    'action': 'reduce_positions',
+                    'percentage': 0.3,  # 30% 포지션 촐정
+                    'target': 'unprofitable',
+                    'urgency': 'high'
+                })
+                actions.append({
+                    'action': 'reduce_leverage',
+                    'target_level': 10,  # 레버리지 10x로 제한
+                    'urgency': 'high'
+                })
+                
+            elif margin_level <= self.margin_levels['warning']:
+                # 경고 수준: 좋지 않은 포지션 일부 청산 계획
+                actions.append({
+                    'action': 'reduce_positions',
+                    'percentage': 0.1,  # 10% 포지션 촐정
+                    'target': 'worst_performing',
+                    'urgency': 'medium'
+                })
+                
+            return actions
+        
+        except Exception as e:
+            logger.error(f"위험 감소 조치 제안 중 오류: {e}")
+            return [{'action': 'manual_check', 'urgency': 'medium'}]
     
     def implement_trailing_stop(self, current_price, position, activation_pct=0.01, trail_pct=0.02):
         """
