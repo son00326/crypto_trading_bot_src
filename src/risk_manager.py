@@ -473,7 +473,16 @@ class RiskManager:
             if market_type.lower() != 'futures':
                 return float('inf')  # 무한대 값 반환 (안전함을 의미)
             
-            # 계정 정보에서 필요한 값 추출
+            # 거래소별 마진 계산 유틸리티 사용
+            try:
+                from src.exchange_utils import MarginCalculator
+                margin_level = MarginCalculator.calculate_margin_level(self.exchange_id, account_info)
+                logger.info(f"{self.exchange_id} 거래소의 마진 레벨 계산 결과: {margin_level:.4f}")
+                return margin_level
+            except ImportError:
+                logger.warning("exchange_utils 모듈을 가져올 수 없습니다. 기본 마진 계산 방식을 사용합니다.")
+                
+            # 모듈 로드 실패 시 기본 계산 사용
             wallet_balance = account_info.get('wallet_balance', 0)
             unrealized_pnl = account_info.get('unrealized_pnl', 0)
             maintenance_margin = account_info.get('maintenance_margin', 0)
@@ -486,11 +495,12 @@ class RiskManager:
             # 마진 레벨 계산 = (Wallet Balance + Unrealized PnL) / Maintenance Margin
             margin_level = (wallet_balance + unrealized_pnl) / maintenance_margin
             
-            logger.info(f"마진 레벨 계산 결과: {margin_level:.2f} (wallet={wallet_balance}, unrealized_pnl={unrealized_pnl}, margin={maintenance_margin})")
+            logger.info(f"기본 마진 레벨 계산 결과: {margin_level:.4f} (wallet={wallet_balance}, unrealized_pnl={unrealized_pnl}, margin={maintenance_margin})")
             return margin_level
         
         except Exception as e:
             logger.error(f"마진 레벨 계산 중 오류: {e}")
+            logger.error(traceback.format_exc())
             return float('inf')  # 오류 발생 시 안전한 값 반환
     
     def check_margin_safety(self, account_info, current_positions=None, market_type='futures'):

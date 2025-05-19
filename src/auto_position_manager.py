@@ -451,9 +451,52 @@ class AutoPositionManager:
                 # 심각 상황: 위험한 포지션의 30% 청산
                 self._emergency_reduce_positions(positions, 0.3)
             
-            # 레버리지 감소 처리 (실제 적용은 관련 API가 필요하여 로그만 출력)
+            # 레버리지 감소 처리
             if "leverage_reduce" in suggested_actions:
-                logger.warning("마진 안전장치: 레버리지 감소가 권장됩니다. 수동 조절이 필요할 수 있습니다.")
+                try:
+                    # 자동 레버리지 조절 기능 사용
+                    from src.exchange_utils import LeverageManager, MarginCalculator
+                    
+                    # 현재 심볼 가져오기
+                    symbol = self.trading_algorithm.symbol if hasattr(self.trading_algorithm, 'symbol') else None
+                    
+                    if symbol and hasattr(self.trading_algorithm, 'exchange_api'):
+                        exchange_api = self.trading_algorithm.exchange_api
+                        
+                        # 현재 레버리지 가져오기
+                        current_leverage = LeverageManager.get_current_leverage(exchange_api, symbol)
+                        
+                        # 마진 레벨 가져오기
+                        margin_level = None
+                        if account_info:
+                            # 거래소 ID 가져오기
+                            exchange_id = exchange_api.exchange_id if hasattr(exchange_api, 'exchange_id') else 'unknown'
+                            margin_level = MarginCalculator.calculate_margin_level(exchange_id, account_info)
+                        
+                        # 안전한 레버리지 계산
+                        if margin_level and margin_level < float('inf'):
+                            safe_leverage = LeverageManager.calculate_safe_leverage(margin_level, current_leverage)
+                            
+                            # 레버리지 자동 조절
+                            if safe_leverage < current_leverage:
+                                result, new_leverage, message = LeverageManager.adjust_leverage(exchange_api, symbol, safe_leverage)
+                                
+                                if result:
+                                    logger.info(f"마진 안전장치: 레버리지 자동 조절 성공 - {current_leverage}x → {new_leverage}x")
+                                else:
+                                    logger.warning(f"마진 안전장치: 레버리지 자동 조절 실패 - {message}")
+                            else:
+                                logger.info(f"현재 레버리지({current_leverage}x)가 안전한 수준({safe_leverage}x) 이하입니다. 조정이 필요하지 않습니다.")
+                        else:
+                            logger.warning("마진 레벨을 계산할 수 없습니다. 레버리지 자동 조절을 건너뜁니다.")
+                    else:
+                        logger.warning("심볼 정보가 없거나 거래소 API를 사용할 수 없습니다. 수동 조절이 필요할 수 있습니다.")
+                        
+                except ImportError:
+                    logger.warning("레버리지 관리 모듈을 로드할 수 없습니다. 수동 레버리지 조절이 필요합니다.")
+                except Exception as e:
+                    logger.error(f"레버리지 자동 조절 중 오류: {e}")
+                    logger.error(traceback.format_exc())
                     
         except Exception as e:
             logger.error(f"마진 안전 조치 실행 중 오류: {e}")
@@ -574,31 +617,7 @@ class AutoPositionManager:
             logger.error(f"마진 안전장치 설정 오류: {e}")
             logger.error(traceback.format_exc())
     
-    def _handle_margin_safety_actions(self, safety_status, suggested_actions, positions, account_info):
-        """마진 안전성 상태에 따른 조치 실행"""
-        try:
-            # 비상 상태 표시
-            if safety_status == 'emergency':
-                self.emergency_actions_taken = True
-                logger.critical("마진 안전장치: 비상 상태 - 주의가 필요한 자동 조치를 실행합니다.")
-            
-            # 안전 상태에서는 비상 조치 플래그 비활성화
-            elif safety_status == 'safe' and self.emergency_actions_taken:
-                self.emergency_actions_taken = False
-                logger.info("마진 레벨이 안전 상태로 회복되었습니다. 비상 조치 상태를 해제합니다.")
-            
-            # 제안된 조치가 없는 경우 처리
-            if not suggested_actions:
-                return
-            
-            # 위험도에 따라 조치 실행
-            if "position_reduce_emergency" in suggested_actions:
-                # 긴급 상황: 가장 위험한 포지션의 50% 청산
-                self._emergency_reduce_positions(positions, 0.5)
-                
-            elif "position_reduce_partial" in suggested_actions:
-                # 심각 상황: 위험한 포지션의 30% 청산
-                self._emergency_reduce_positions(positions, 0.3)
+
             
             # 레버리지 감소 처리 (실제 적용은 관련 API가 필요하여 로그만 출력)
             if "leverage_reduce" in suggested_actions:
