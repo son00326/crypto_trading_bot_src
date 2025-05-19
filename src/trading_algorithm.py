@@ -16,6 +16,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
+from src.error_handlers import simple_error_handler
 
 from src.exchange_api import ExchangeAPI
 from src.data_manager import DataManager
@@ -23,6 +24,7 @@ from src.data_collector import DataCollector
 from src.data_analyzer import DataAnalyzer
 from src.db_manager import DatabaseManager
 from src.auto_position_manager import AutoPositionManager
+from src.risk_manager import RiskManager
 from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, CombinedStrategy
@@ -108,6 +110,9 @@ class TradingAlgorithm:
         
         # 위험 관리 설정
         self.risk_management = RISK_MANAGEMENT.copy()
+        
+        # 위험 관리자 초기화
+        self.risk_manager = RiskManager(exchange_id=exchange_id, symbol=symbol, risk_config=self.risk_management)
         
         # 이전 상태 복원
         if restore_state:
@@ -246,9 +251,50 @@ class TradingAlgorithm:
         except Exception as e:
             logger.error(f"포트폴리오 업데이트 중 오류 발생: {e}")
     
+    @simple_error_handler(default_return=False)
+    def update_portfolio_after_trade(self, trade_type, price, quantity, fee=None, is_test=None):
+        """
+        거래 후 포트폴리오 업데이트
+        
+        Args:
+            trade_type (str): 거래 유형 ('buy' 또는 'sell')
+            price (float): 거래 가격
+            quantity (float): 거래 수량
+            fee (float, optional): 수수료, None인 경우 기본값 사용
+            is_test (bool, optional): 테스트 모드 여부, None인 경우 현재 객체 상태 사용
+        """
+        # 테스트 모드 여부 확인
+        test_mode = is_test if is_test is not None else self.test_mode
+        
+        # 기본 수수료 계산 (0.1%)
+        if fee is None:
+            fee = price * quantity * 0.001
+            
+        # 거래 유형에 따른 포트폴리오 업데이트
+        if trade_type.lower() == 'buy':
+            # 매수 거래
+            self.portfolio['base_balance'] += quantity
+            self.portfolio['quote_balance'] -= (price * quantity) + fee
+        elif trade_type.lower() == 'sell':
+            # 매도 거래
+            self.portfolio['base_balance'] -= quantity
+            self.portfolio['quote_balance'] += (price * quantity) - fee
+        
+        # 실제 모드인 경우 실제 잔고 업데이트 시도
+        if not test_mode:
+            self.update_portfolio()
+        
+        # 데이터베이스에 잔고 정보 저장
+        self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
+        self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+        
+        logger.info(f"거래 후 포트폴리오 업데이트: {trade_type}, 가격={price}, 수량={quantity}, 수수료={fee}")
+        return True
+    
     def calculate_position_size(self, price):
         """
         위험 관리 설정에 따른 포지션 크기 계산
+        RiskManager의 계산 로직을 활용합니다.
         
         Args:
             price (float): 현재 가격
@@ -260,11 +306,8 @@ class TradingAlgorithm:
             # 사용 가능한 자산
             available_balance = self.portfolio['quote_balance']
             
-            # 최대 포지션 크기 (계좌 자산의 일정 비율)
-            max_position_size = available_balance * self.risk_management['max_position_size']
-            
-            # 수량 계산 (소수점 8자리까지)
-            quantity = round(max_position_size / price, 8)
+            # RiskManager를 통한 포지션 크기 계산
+            quantity = self.risk_manager.calculate_position_size(available_balance, price)
             
             # 최소 주문 수량 확인 (거래소마다 다름)
             min_quantity = 0.0001  # 예시 값, 실제로는 거래소별로 다름
@@ -331,8 +374,7 @@ class TradingAlgorithm:
                 }
                 
                 # 포트폴리오 업데이트
-                self.portfolio['base_balance'] += quantity
-                self.portfolio['quote_balance'] -= (price * quantity) + (price * quantity * 0.001)
+                self.update_portfolio_after_trade('buy', price, quantity, is_test=True)
                 
                 # 숏 포지션 청산이 아닌 경우에만 새 포지션 생성
                 if not close_position:
@@ -450,9 +492,7 @@ class TradingAlgorithm:
                     # 데이터베이스에 거래 내역 저장
                     self.db.save_trade(trade_record)
                     
-                    # 잔액 정보 저장
-                    self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
-                    self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+                    # 잔액 정보는 update_portfolio_after_trade에서 자동으로 저장됨
                     
                     # 현재 상태 저장
                     self.save_state()
@@ -778,9 +818,7 @@ class TradingAlgorithm:
             # 데이터베이스에 거래 내역 저장
             self.db.save_trade(trade_record)
             
-            # 잔액 정보 저장
-            self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
-            self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
+            # 잔액 정보는 update_portfolio_after_trade에서 자동으로 저장됨
             
             # 현재 상태 저장
             self.save_state()
@@ -907,13 +945,19 @@ class TradingAlgorithm:
                     logger.error(f"유효하지 않은 진입가격: {position.get('entry_price')}")
                     continue
                     
-                # 손절매 가격 계산
-                stop_loss_price = position['entry_price'] * (1 - self.risk_management['stop_loss_pct'])
-                # 이익실현 가격 계산
-                take_profit_price = position['entry_price'] * (1 + self.risk_management['take_profit_pct'])
+                # RiskManager를 통한 손절매/이익실현 가격 계산
+                stop_loss_price = self.risk_manager.calculate_stop_loss_price(
+                    position['entry_price'], 
+                    position['side']
+                )
+                take_profit_price = self.risk_manager.calculate_take_profit_price(
+                    position['entry_price'], 
+                    position['side']
+                )
                 
                 # RiskManager의 check_exit_conditions 메서드 활용 (부분 청산 지원 형식)
-                exit_type, exit_reason, exit_percentage = self.exchange_api.risk_manager.check_exit_conditions(
+                # 이제 자체 risk_manager 인스턴스를 사용
+                exit_type, exit_reason, exit_percentage = self.risk_manager.check_exit_conditions(
                     current_price=current_price,
                     position_type=position['side'],
                     entry_price=position['entry_price'],

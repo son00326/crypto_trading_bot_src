@@ -191,6 +191,45 @@ def handle_errors(retry_count=0, retry_delay=1, max_delay=60, log_level="error",
     return decorator
 
 # 자주 사용하는 데코레이터 미리 정의
+
+def simple_error_handler(default_return=None, log_level="error"):
+    """
+    오류 발생시 단순히 로깅하고 기본값을 반환하는 간단한 데코레이터
+    코드베이스에서 흔한 단순 try-except 패턴에 사용
+    
+    Args:
+        default_return: 예외 발생시 반환할 기본값
+        log_level (str): 로깅 레벨 (error, warning, info)
+    
+    Returns:
+        데코레이터 함수
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                # 스택 트레이스 가져오기
+                trace = traceback.format_exc()
+                
+                # 예외 유형 파악
+                exception_name = e.__class__.__name__
+                func_name = func.__name__
+                
+                # 로깅 레벨에 따라 로깅
+                logger = get_logger(func.__module__)
+                if log_level == "error":
+                    error_logger.error(f"Error in {func_name}: {exception_name}: {str(e)}\n{trace}")
+                elif log_level == "warning":
+                    logger.warning(f"Warning in {func_name}: {exception_name}: {str(e)}")
+                else:
+                    logger.info(f"Info in {func_name}: {exception_name}: {str(e)}")
+                
+                return default_return
+        return wrapper
+    return decorator
+
 def api_error_handler(func=None, retry_count=3, base_delay=2, max_delay=30):
     """
     API 호출 관련 오류를 처리하는 데코레이터

@@ -16,6 +16,8 @@ import requests
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from src.notification_service import NotificationService
+from src.error_handlers import simple_error_handler
 
 from src.config import (
     RISK_MANAGEMENT, DATA_DIR, 
@@ -95,9 +97,8 @@ class RiskManager:
         self.log_dir = os.path.join(DATA_DIR, 'risk_logs')
         os.makedirs(self.log_dir, exist_ok=True)
         
-        # 알림 설정
-        self.email_config = EMAIL_CONFIG.copy() if 'EMAIL_CONFIG' in globals() else None
-        self.telegram_config = TELEGRAM_CONFIG.copy() if 'TELEGRAM_CONFIG' in globals() else None
+        # 알림 서비스 초기화
+        self.notification_service = NotificationService()
         
         logger.info(f"{exchange_id} 거래소의 {symbol} 위험 관리자가 초기화되었습니다.")
         logger.info(f"위험 관리 설정: {self.risk_config}")
@@ -184,6 +185,7 @@ class RiskManager:
             logger.error(f"손절매 가격 계산 중 오류 발생: {e}")
             return None
     
+    @simple_error_handler(default_return=None)
     def calculate_take_profit_price(self, entry_price, side, custom_pct=None):
         """
         이익실현 가격 계산
@@ -220,6 +222,7 @@ class RiskManager:
             logger.error(f"이익실현 가격 계산 중 오류 발생: {e}")
             return None
     
+    @simple_error_handler(default_return=0)
     def calculate_risk_reward_ratio(self, entry_price, stop_loss_price, take_profit_price):
         """
         위험 대비 보상 비율 계산
@@ -232,27 +235,23 @@ class RiskManager:
         Returns:
             float: 위험 대비 보상 비율
         """
-        try:
-            # 손실 크기
-            risk = abs(entry_price - stop_loss_price)
-            
-            # 이익 크기
-            reward = abs(entry_price - take_profit_price)
-            
-            # 위험 대비 보상 비율
-            if risk > 0:
-                risk_reward_ratio = reward / risk
-            else:
-                logger.warning("위험이 0이므로 위험 대비 보상 비율을 계산할 수 없습니다.")
-                return 0
-            
-            logger.info(f"위험 대비 보상 비율: {risk_reward_ratio:.2f}")
-            return risk_reward_ratio
+        # 손실 크기
+        risk = abs(entry_price - stop_loss_price)
         
-        except Exception as e:
-            logger.error(f"위험 대비 보상 비율 계산 중 오류 발생: {e}")
+        # 이익 크기
+        reward = abs(entry_price - take_profit_price)
+        
+        # 위험 대비 보상 비율
+        if risk > 0:
+            risk_reward_ratio = reward / risk
+        else:
+            logger.warning("위험이 0이므로 위험 대비 보상 비율을 계산할 수 없습니다.")
             return 0
+        
+        logger.info(f"위험 대비 보상 비율: {risk_reward_ratio:.2f}")
+        return risk_reward_ratio
     
+    @simple_error_handler(default_return=(None, None, None))
     def check_exit_conditions(self, current_price, position_type, entry_price, stop_loss_price, take_profit_price, position_id=None, check_partial=True):
         """
         현재 가격이 손절매나 이익실현 조건을 만족하는지 확인
@@ -272,63 +271,58 @@ class RiskManager:
                    exit_reason: 종료 이유 설명
                    exit_percentage: 청산할 비율 (None 또는 0~1 사이 값)
         """
-        try:
-            # 안전성 검사 - 진입가격 및 현재 가격 유효성 검사
-            if entry_price is None or entry_price <= 0 or current_price is None or current_price <= 0:
-                logger.error(f"유효하지 않은 가격 데이터: entry_price={entry_price}, current_price={current_price}")
-                return None, None, None
+        # 안전성 검사 - 진입가격 및 현재 가격 유효성 검사
+        if entry_price is None or entry_price <= 0 or current_price is None or current_price <= 0:
+            logger.error(f"유효하지 않은 가격 데이터: entry_price={entry_price}, current_price={current_price}")
+            return None, None, None
+        
+        # 자동 손절매/이익실현이 비활성화된 경우 실행하지 않음
+        if not self.auto_exit_enabled:
+            logger.debug("자동 손절매/이익실현이 비활성화되어 체크하지 않음")
+            return None, None, None
             
-            # 자동 손절매/이익실현이 비활성화된 경우 실행하지 않음
-            if not self.auto_exit_enabled:
-                logger.debug("자동 손절매/이익실현이 비활성화되어 체크하지 않음")
-                return None, None, None
-                
-            # 부분 이익실현 확인 조건 검증
-            check_partial_tp = check_partial and self.partial_tp_enabled
-            
-            # position_id 유효성 검사
-            if check_partial_tp and (position_id is None or position_id == ''):
-                logger.warning("부분 청산 확인을 위한 position_id가 없음, 전체 청산만 검사합니다.")
-                check_partial_tp = False
-            
-            # 부분 이익실현 확인 (활성화 및 position_id가 있는 경우만)
-            if check_partial_tp and position_id:
-                try:
-                    is_partial, level_idx, percentage, reason = self.check_partial_take_profit(
-                        position_id, current_price, position_type, entry_price
-                    )
-                    if is_partial and percentage is not None and percentage > 0:
-                        logger.info(f"부분 청산 신호 발견: {percentage:.1%}, 이유: {reason}")
-                        return 'partial_tp', reason, percentage
-                except Exception as e:
-                    logger.error(f"부분 청산 검사 중 오류: {e}")
-                    # 부분 청산 오류 발생 시 일반 이익실현/손절매 검사로 진행
+        # 부분 이익실현 확인 조건 검증
+        check_partial_tp = check_partial and self.partial_tp_enabled
+        
+        # position_id 유효성 검사
+        if check_partial_tp and (position_id is None or position_id == ''):
+            logger.warning("부분 청산 확인을 위한 position_id가 없음, 전체 청산만 검사합니다.")
+            check_partial_tp = False
+        
+        # 부분 이익실현 확인 (활성화 및 position_id가 있는 경우만)
+        if check_partial_tp and position_id:
+            try:
+                is_partial, level_idx, percentage, reason = self.check_partial_take_profit(
+                    position_id, current_price, position_type, entry_price
+                )
+                if is_partial and percentage is not None and percentage > 0:
+                    logger.info(f"부분 청산 신호 발견: {percentage:.1%}, 이유: {reason}")
+                    return 'partial_tp', reason, percentage
+            except Exception as e:
+                logger.error(f"부분 청산 검사 중 오류: {e}")
+                # 부분 청산 오류 발생 시 일반 이익실현/손절매 검사로 진행
 
-            if position_type.lower() == 'long':
-                # 롱 포지션 체크
-                if current_price <= stop_loss_price:
-                    return 'stop_loss', f'현재 가격({current_price})이 손절매 가격({stop_loss_price}) 이하로 하락', 1.0
-                elif current_price >= take_profit_price:
-                    # 부분 이익실현이 활성화되지 않은 경우에만 전체 청산
-                    if not self.partial_tp_enabled:
-                        return 'take_profit', f'현재 가격({current_price})이 이익실현 가격({take_profit_price}) 이상으로 상승', 1.0
-            elif position_type.lower() == 'short':
-                # 숏 포지션 체크
-                if current_price >= stop_loss_price:
-                    return 'stop_loss', f'현재 가격({current_price})이 손절매 가격({stop_loss_price}) 이상으로 상승', 1.0
-                elif current_price <= take_profit_price:
-                    # 부분 이익실현이 활성화되지 않은 경우에만 전체 청산
-                    if not self.partial_tp_enabled:
-                        return 'take_profit', f'현재 가격({current_price})이 이익실현 가격({take_profit_price}) 이하로 하락', 1.0
-            else:
-                logger.warning(f"잘못된 포지션 타입: {position_type}")
-            
-            # 조건이 충족되지 않으면 None 반환
-            return None, None, None
-            
-        except Exception as e:
-            logger.error(f"종료 조건 확인 중 오류 발생: {e}")
-            return None, None, None
+        if position_type.lower() == 'long':
+            # 롱 포지션 체크
+            if current_price <= stop_loss_price:
+                return 'stop_loss', f'현재 가격({current_price})이 손절매 가격({stop_loss_price}) 이하로 하락', 1.0
+            elif current_price >= take_profit_price:
+                # 부분 이익실현이 활성화되지 않은 경우에만 전체 청산
+                if not self.partial_tp_enabled:
+                    return 'take_profit', f'현재 가격({current_price})이 이익실현 가격({take_profit_price}) 이상으로 상승', 1.0
+        elif position_type.lower() == 'short':
+            # 숏 포지션 체크
+            if current_price >= stop_loss_price:
+                return 'stop_loss', f'현재 가격({current_price})이 손절매 가격({stop_loss_price}) 이상으로 상승', 1.0
+            elif current_price <= take_profit_price:
+                # 부분 이익실현이 활성화되지 않은 경우에만 전체 청산
+                if not self.partial_tp_enabled:
+                    return 'take_profit', f'현재 가격({current_price})이 이익실현 가격({take_profit_price}) 이하로 하락', 1.0
+        else:
+            logger.warning(f"잘못된 포지션 타입: {position_type}")
+        
+        # 조건이 충족되지 않으면 None 반환
+        return None, None, None
     
     def check_partial_take_profit(self, position_id, current_price, position_type, entry_price):
         """
@@ -864,98 +858,9 @@ class RiskManager:
             logger.error(f"위험 한도 확인 중 오류 발생: {e}")
             return False, []
     
-    def send_email_alert(self, subject, message):
-        """
-        이메일 알림 전송
-        
-        Args:
-            subject (str): 이메일 제목
-            message (str): 이메일 내용
-        
-        Returns:
-            bool: 전송 성공 여부
-        """
-        try:
-            if not self.email_config:
-                logger.warning("이메일 설정이 없어 알림을 전송할 수 없습니다.")
-                return False
-            
-            # 이메일 설정
-            sender_email = self.email_config['sender_email']
-            receiver_email = self.email_config['receiver_email']
-            password = self.email_config['password']
-            smtp_server = self.email_config.get('smtp_server', 'smtp.gmail.com')
-            smtp_port = self.email_config.get('smtp_port', 587)
-            
-            # 이메일 메시지 생성
-            msg = MIMEMultipart()
-            msg['From'] = sender_email
-            msg['To'] = receiver_email
-            msg['Subject'] = f"[암호화폐 봇 알림] {subject}"
-            
-            # 메시지 본문 추가
-            msg.attach(MIMEText(message, 'plain'))
-            
-            # SMTP 서버 연결 및 이메일 전송
-            with smtplib.SMTP(smtp_server, smtp_port) as server:
-                server.starttls()
-                server.login(sender_email, password)
-                server.send_message(msg)
-            
-            logger.info(f"이메일 알림 전송 완료: {subject}")
-            return True
-        
-        except Exception as e:
-            logger.error(f"이메일 알림 전송 중 오류 발생: {e}")
-            return False
-    
-    def send_telegram_alert(self, message):
-        """
-        텔레그램 알림 전송
-        
-        Args:
-            message (str): 알림 메시지
-        
-        Returns:
-            bool: 전송 성공 여부
-        """
-        try:
-            if not self.telegram_config:
-                logger.warning("텔레그램 설정이 없어 알림을 전송할 수 없습니다.")
-                return False
-            
-            # 텔레그램 설정
-            bot_token = self.telegram_config['bot_token']
-            chat_id = self.telegram_config['chat_id']
-            
-            # 텔레그램 API URL
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            
-            # 요청 데이터
-            data = {
-                'chat_id': chat_id,
-                'text': f"[암호화폐 봇 알림]\n{message}",
-                'parse_mode': 'Markdown'
-            }
-            
-            # 요청 전송
-            response = requests.post(url, data=data)
-            
-            # 응답 확인
-            if response.status_code == 200:
-                logger.info("텔레그램 알림 전송 완료")
-                return True
-            else:
-                logger.warning(f"텔레그램 알림 전송 실패: {response.text}")
-                return False
-        
-        except Exception as e:
-            logger.error(f"텔레그램 알림 전송 중 오류 발생: {e}")
-            return False
-    
     def send_alert(self, subject, message, alert_type='all'):
         """
-        알림 전송
+        알림 전송 - NotificationService 사용
         
         Args:
             subject (str): 알림 제목
@@ -966,18 +871,8 @@ class RiskManager:
             bool: 전송 성공 여부
         """
         try:
-            success = False
-            
-            if alert_type in ['email', 'all'] and self.email_config:
-                email_success = self.send_email_alert(subject, message)
-                success = success or email_success
-            
-            if alert_type in ['telegram', 'all'] and self.telegram_config:
-                telegram_success = self.send_telegram_alert(message)
-                success = success or telegram_success
-            
-            return success
-        
+            # NotificationService를 통한 알림 전송
+            return self.notification_service.send_alert(subject, message, alert_type)
         except Exception as e:
             logger.error(f"알림 전송 중 오류 발생: {e}")
             return False
