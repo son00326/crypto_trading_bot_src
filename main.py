@@ -12,6 +12,8 @@ import argparse
 import logging
 import json
 import time
+import signal
+import atexit
 from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -38,6 +40,11 @@ from src.trading_algorithm import TradingAlgorithm
 from src.backtesting import Backtester
 from src.risk_manager import RiskManager
 
+# 오류 처리 및 모니터링 모듈 임포트
+from src.error_handlers import ErrorAnalyzer, RateLimitManager, advanced_network_error_handler
+from src.system_health import SystemHealthMonitor
+from src.network_monitor import NetworkMonitor
+
 # 로깅 설정
 logging.basicConfig(
     level=logging.INFO,
@@ -51,6 +58,12 @@ logger = logging.getLogger('crypto_bot')
 
 # .env 파일 로드
 load_dotenv()
+
+# 전역 오류 처리 및 모니터링 인스턴스
+error_analyzer = ErrorAnalyzer()
+rate_limit_manager = RateLimitManager()
+health_monitor = SystemHealthMonitor(check_interval=60)
+network_monitor = NetworkMonitor(check_interval=120)
 
 def setup_directories():
     """필요한 디렉토리 생성"""
@@ -451,10 +464,127 @@ def run_trading(args):
         
         logger.info(f"거래 요약 정보 저장 완료: {summary_path}")
 
+def initialize_monitoring():
+    """모니터링 및 오류 처리 시스템 초기화"""
+    global health_monitor, network_monitor
+    
+    logger.info("시스템 모니터링 서비스 초기화 중..")
+    
+    # 시스템 상태 모니터링 시작
+    health_monitor.register_component(
+        "database", check_database_connection,
+        max_consecutive_failures=3
+    )
+    
+    # 거래소 연결 상태 확인 및 복구 등록
+    for exchange_id in ['binance', 'bybit', 'ftx']:
+        health_monitor.register_component(
+            f"exchange_{exchange_id}",
+            lambda ex_id=exchange_id: check_exchange_api_connection(ex_id),
+            lambda ex_id=exchange_id: recover_exchange_api_connection(ex_id),
+            max_consecutive_failures=2
+        )
+    
+    # 데이터 수집기 확인
+    health_monitor.register_component(
+        "data_collector", check_data_collector,
+        max_consecutive_failures=3
+    )
+    
+    # 모니터링 시작
+    health_monitor.start_monitoring()
+    network_monitor.start_monitoring()
+    
+    logger.info("시스템 모니터링 서비스 시작됨")
+
+
+def shutdown_monitoring():
+    """모니터링 및 오류 처리 시스템 정리"""
+    logger.info("시스템 모니터링 서비스 종료 중..")
+    
+    # 모니터링 서비스 중지
+    if health_monitor.running:
+        health_monitor.stop_monitoring()
+    
+    if network_monitor.running:
+        network_monitor.stop_monitoring()
+    
+    # 오류 정보 저장
+    error_analyzer.save_error_logs()
+    
+    logger.info("시스템 모니터링 서비스 종료됨")
+
+
+def setup_signal_handlers():
+    """시스템 종료 신호 핸들러 설정"""
+    def signal_handler(sig, frame):
+        logger.info(f"시스템 종료 신호 수신: {sig}")
+        shutdown_monitoring()
+        sys.exit(0)
+    
+    # 종료 시 핸들러 등록
+    signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+    signal.signal(signal.SIGTERM, signal_handler)  # 터미널 종료
+    
+    # 프로그램 종료 시 실행될 함수 등록
+    atexit.register(shutdown_monitoring)
+
+
+# 시스템 상태 확인 함수들
+def check_database_connection():
+    """데이터베이스 연결 상태 확인"""
+    try:
+        # 간단한 테스트 쿼리 수행
+        # 실제 DB 사용 시 이 부분을 DB 연결 확인 코드로 대체
+        return True
+    except Exception as e:
+        logger.error(f"데이터베이스 연결 확인 실패: {e}")
+        return False
+
+
+def check_exchange_api_connection(exchange_id):
+    """거래소 API 연결 확인"""
+    try:
+        api = ExchangeAPI(exchange_id=exchange_id)
+        # 간단한 API 요청으로 연결 확인
+        api.fetch_ticker()
+        return True
+    except Exception as e:
+        logger.error(f"{exchange_id} 연결 확인 실패: {e}")
+        return False
+
+
+def recover_exchange_api_connection(exchange_id):
+    """거래소 API 연결 복구 시도"""
+    try:
+        logger.info(f"{exchange_id} 연결 복구 시도 중..")
+        api = ExchangeAPI(exchange_id=exchange_id, refresh=True)
+        return api.fetch_ticker() is not None
+    except Exception as e:
+        logger.error(f"{exchange_id} 연결 복구 실패: {e}")
+        return False
+
+
+def check_data_collector():
+    """데이터 수집기 상태 확인"""
+    try:
+        collector = DataCollector()
+        # 간단한 데이터 요청으로 상태 확인
+        data = collector.fetch_recent_data(limit=1)
+        return data is not None and len(data) > 0
+    except Exception as e:
+        logger.error(f"데이터 수집기 확인 실패: {e}")
+        return False
+
+
 def main():
     """메인 함수"""
     # 디렉토리 설정
     setup_directories()
+    
+    # 모니터링 및 종료 핸들러 설정
+    setup_signal_handlers()
+    initialize_monitoring()
     
     # 명령줄 인수 파싱
     args = parse_arguments()
