@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime
 import time
 import traceback
+import functools
 from src.config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     UPBIT_API_KEY, UPBIT_API_SECRET,
@@ -53,6 +54,80 @@ def measure_api_performance(func):
             self.logger.error(f"{method_name} 실패 (소요시간: {elapsed:.4f}초): {str(e)}")
             raise
     return wrapper
+
+# API 호출 로깅 데코레이터
+def log_api_request(endpoint_format=None, include_response=True):
+    """
+    API 요청 및 응답을 자동으로 로깅하는 데코레이터
+    
+    Args:
+        endpoint_format (str): 엔드포인트 형식 (메서드 파라미터로 포맷팅됨)
+        include_response (bool): 응답 데이터 로깅 여부
+    
+    Returns:
+        callable: API 로깅 기능이 추가된 래퍼 함수
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            # 요청 엔드포인트 구성
+            if endpoint_format:
+                # 파라미터 값으로 엔드포인트 포맷팅
+                # self를 제외한 첫 번째 인자는 보통 symbol
+                symbol = kwargs.get('symbol') or (args[0] if args else None) or self.symbol
+                symbol = self.format_symbol(symbol) if hasattr(self, 'format_symbol') else symbol
+                endpoint = endpoint_format.format(symbol=symbol)
+            else:
+                # 기본 엔드포인트는 메서드 이름 사용
+                endpoint = f"/{func.__name__}"
+                
+            # 요청 데이터 구성
+            request_data = {k: v for k, v in kwargs.items() if v is not None}
+            if args:
+                for i, arg in enumerate(args):
+                    request_data[f"arg{i}"] = arg
+                    
+            # API 호출 전 로깅
+            http_method = "GET" if func.__name__.startswith("get") else "POST"
+            log_api_call(endpoint, http_method, request_data=request_data)
+            
+            try:
+                # 함수 실행
+                result = func(self, *args, **kwargs)
+                
+                # 응답 로깅 (필요한 경우)
+                if include_response:
+                    # 대용량 데이터인 경우 요약 정보만 로깅
+                    if isinstance(result, pd.DataFrame):
+                        log_data = {
+                            "records": len(result),
+                            "columns": list(result.columns),
+                            "first_row": result.iloc[0].to_dict() if not result.empty else None
+                        }
+                    elif isinstance(result, dict):
+                        # 사전의 경우 최상위 키만 로깅
+                        log_data = {k: ("..." if isinstance(v, (dict, list)) else v) 
+                                   for k, v in list(result.items())[:5]}
+                    elif isinstance(result, list):
+                        # 리스트의 경우 길이와 첫 항목만 로깅
+                        log_data = {
+                            "count": len(result),
+                            "first_item": str(result[0])[:100] + "..." if result else None
+                        }
+                    else:
+                        log_data = {"result": str(result)[:100]}
+                        
+                    log_api_call(endpoint, http_method, response_data=log_data)
+                
+                return result
+                
+            except Exception as e:
+                # 오류 로깅
+                log_api_call(endpoint, http_method, error=e)
+                raise
+                
+        return wrapper
+    return decorator
 
 class ExchangeAPI:
     """암호화폐 거래소 API 연결 및 작업을 위한 클래스"""
@@ -210,33 +285,22 @@ class ExchangeAPI:
             self.logger.error(f"거래소 초기화 중 오류 발생: {str(e)}\n{traceback.format_exc()}")
             raise APIError(f"거래소 초기화 오류: {str(e)}", original_exception=e)
     
-    # _convert_symbol_format 함수는 format_symbol 함수로 대체되었습니다.
+
     
     @api_error_handler
     @measure_api_performance
+    @log_api_request(endpoint_format="/ticker/{symbol}")
     def get_ticker(self, symbol=None):
         """현재 시세 정보 조회"""
         symbol = self.format_symbol(symbol)
         
-        # API 호출 로깅
-        log_api_call(f"/ticker/{symbol}", "GET")
-        
-        # API 호출
+        # API 호출 (로깅은 데코레이터에서 자동으로 처리됨)
         ticker = self.exchange.fetch_ticker(symbol)
-        
-        # 응답 로깅
-        log_api_call(f"/ticker/{symbol}", "GET", response_data={
-            "price": ticker.get('last'),
-            "bid": ticker.get('bid'),
-            "ask": ticker.get('ask'),
-            "volume": ticker.get('volume'),
-            "timestamp": ticker.get('timestamp')
-        })
-        
         return ticker
     
     @api_error_handler
     @measure_api_performance
+    @log_api_request(endpoint_format="/ohlcv/{symbol}")
     def get_ohlcv(self, symbol=None, timeframe=None, limit=100):
         """OHLCV 데이터 조회 (봉 데이터)"""
         # 기본값 설정
@@ -244,22 +308,15 @@ class ExchangeAPI:
         if timeframe is None:
             timeframe = self.timeframe
         
-        # API 호출 로깅
-        log_api_call(f"/ohlcv/{symbol}", "GET", request_data={
-            "timeframe": timeframe,
-            "limit": limit,
-            "market_type": self.market_type
-        })
-        
         # 시장 타입에 따른 추가 설정
         params = {}
         if self.market_type == 'futures' and self.exchange_id == 'binance':
-            # 바이낸스 선물의 경우 필요한 추가 파라미터
+            # 바이났스 선물의 경우 필요한 추가 파라미터
             params = {
                 'contract': True,  # 선물 계약 데이터 지정
             }
         
-        # OHLCV 데이터 가져오기
+        # OHLCV 데이터 가져오기 (로깅은 데코레이터에서 처리)
         ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params=params)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -269,27 +326,19 @@ class ExchangeAPI:
         if self.market_type == 'futures':
             df['leverage'] = self.leverage
             
-        # 응답 로깅 (전체 데이터는 너무 크미로 요약 정보만)
-        log_api_call(f"/ohlcv/{symbol}", "GET", response_data={
-            "records": len(df),
-            "first_timestamp": df['timestamp'].iloc[0].isoformat() if not df.empty else None,
-            "last_timestamp": df['timestamp'].iloc[-1].isoformat() if not df.empty else None,
-            "min_price": df['low'].min() if not df.empty else None,
-            "max_price": df['high'].max() if not df.empty else None
-        })
-        
         return df
     
     @api_error_handler
     @measure_api_performance
+    @log_api_request(endpoint_format="/balance")
     def get_balance(self, balance_type=None):
-        """계정 잠고 조회
+        """계정 잔고 조회
         
         Args:
-            balance_type (str, optional): 잠고 유형 ('spot', 'future', 'all'). 기본값은 인스턴스의 market_type 값
+            balance_type (str, optional): 잔고 유형 ('spot', 'future', 'all'). 기본값은 인스턴스의 market_type 값
         
         Returns:
-            dict: 잠고 정보. balance_type이 'all'인 경우 spot과 future 모두 포함
+            dict: 잔고 정보. balance_type이 'all'인 경우 spot과 future 모두 포함
             
         Raises:
             ValueError: 잘못된 balance_type 지정 발생 시
@@ -308,104 +357,63 @@ class ExchangeAPI:
         if balance_type == 'futures':
             balance_type = 'future'
             
-        # 기본 잠고 유형 설정
+        # 기본 잔고 유형 설정
         if balance_type is None:
             balance_type = self.market_type
-            self.logger.debug(f"기본 잠고 유형 사용: {balance_type}")
+            self.logger.debug(f"기본 잔고 유형 사용: {balance_type}")
         
-        # API 호출 로깅
-        log_api_call(f"/balance", "GET", request_data={"type": balance_type})
-        
-        try:
-            # 모든 잠고 가져오기
-            if balance_type == 'all':
-                # 현물 잠고 조회
-                spot_balance = None
-                future_balance = None
-                
-                try:
-                    spot_balance = self.exchange.fetch_balance()
-                    self.logger.debug(f"현물 잠고 조회 성공: {self.exchange_id}")
-                except Exception as e:
-                    self.logger.warning(f"현물 잠고 조회 실패: {str(e)}")
-                
-                try:
-                    # 선물 잠고 파라미터
-                    params = {'type': 'future'} if self.exchange_id == 'binance' else {}
-                    future_balance = self.exchange.fetch_balance(params=params)
-                    self.logger.debug(f"선물 잠고 조회 성공: {self.exchange_id}")
-                except Exception as e:
-                    self.logger.warning(f"선물 잠고 조회 실패: {str(e)}")
-                
-                # 결과 병합
-                result = {
-                    'spot': {
-                        'total': spot_balance.get('total', {}) if spot_balance else {},
-                        'free': spot_balance.get('free', {}) if spot_balance else {},
-                        'used': spot_balance.get('used', {}) if spot_balance else {}
-                    },
-                    'future': {
-                        'total': future_balance.get('total', {}) if future_balance else {},
-                        'free': future_balance.get('free', {}) if future_balance else {},
-                        'used': future_balance.get('used', {}) if future_balance else {}
-                    }
-                }
-                
-                # 성공적인 응답 로깅
-                try:
-                    # 안전하게 'total' 키 접근 - 구조에 따라 다른 처리
-                    if 'spot' in result and 'total' in result['spot']:
-                        currencies = list(result['spot']['total'].keys())[:5] if result['spot']['total'] else []
-                    elif 'total' in result:
-                        currencies = list(result['total'].keys())[:5] if result['total'] else []
-                    else:
-                        currencies = []
-                        self.logger.warning(f"잠고 정보에 'total' 키가 없습니다: {list(result.keys()) if isinstance(result, dict) else type(result)}")
-                except Exception as e:
-                    currencies = []
-                    self.logger.warning(f"잠고 정보 처리 중 오류: {str(e)}")
-                    
-                log_api_call("/balance", "GET", response_data={
-                    "spot_available": True if spot_balance else False,
-                    "future_available": True if future_balance else False,
-                    "currencies": currencies  # 처음 5개 통화만 로그
-                })
-                
-                return result
+        # 모든 잔고 가져오기
+        if balance_type == 'all':
+            # 현물 잔고 조회
+            spot_balance = None
+            future_balance = None
             
-            # 선물 잠고만 가져오기
-            elif balance_type == 'future':
+            try:
+                spot_balance = self.exchange.fetch_balance()
+                self.logger.debug(f"현물 잔고 조회 성공: {self.exchange_id}")
+            except Exception as e:
+                self.logger.warning(f"현물 잔고 조회 실패: {str(e)}")
+            
+            try:
+                # 선물 잔고 파라미터
                 params = {'type': 'future'} if self.exchange_id == 'binance' else {}
-                balance = self.exchange.fetch_balance(params=params)
-                
-                # 성공적인 응답 로깅
-                currencies = list(balance['total'].keys())[:5] if 'total' in balance else []
-                log_api_call("/balance/future", "GET", response_data={
-                    "currencies": currencies  # 처음 5개 통화만 로그
-                })
-                
-                self.logger.info(f"선물 잠고 조회 성공: {self.exchange_id}")
-                return balance
+                future_balance = self.exchange.fetch_balance(params=params)
+                self.logger.debug(f"선물 잔고 조회 성공: {self.exchange_id}")
+            except Exception as e:
+                self.logger.warning(f"선물 잔고 조회 실패: {str(e)}")
             
-            # 현물 잠고만 가져오기 (기본값)
-            else:  # 기본값 또는 'spot'
-                balance = self.exchange.fetch_balance()
-                
-                # 성공적인 응답 로깅
-                currencies = list(balance['total'].keys())[:5] if 'total' in balance else []
-                log_api_call("/balance/spot", "GET", response_data={
-                    "currencies": currencies  # 처음 5개 통화만 로그
-                })
-                
-                self.logger.info(f"현물 잠고 조회 성공: {self.exchange_id}")
-                return balance
-                
-        except Exception as e:
-            log_api_call("/balance", "GET", error=e)
-            self.logger.error(f"잠고 조회 중 오류 발생: {e}\n{traceback.format_exc()}")
-            raise APIError(f"잠고 조회 중 오류: {str(e)}", original_exception=e)
+            # 결과 병합
+            result = {
+                'spot': {
+                    'total': spot_balance.get('total', {}) if spot_balance else {},
+                    'free': spot_balance.get('free', {}) if spot_balance else {},
+                    'used': spot_balance.get('used', {}) if spot_balance else {}
+                },
+                'future': {
+                    'total': future_balance.get('total', {}) if future_balance else {},
+                    'free': future_balance.get('free', {}) if future_balance else {},
+                    'used': future_balance.get('used', {}) if future_balance else {}
+                }
+            }
+            
+            return result
+        
+        # 선물 잔고만 가져오기
+        elif balance_type == 'future':
+            params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+            balance = self.exchange.fetch_balance(params=params)
+            self.logger.info(f"선물 잔고 조회 성공: {self.exchange_id}")
+            return balance
+        
+        # 현물 잔고만 가져오기 (기본값)
+        else:  # 기본값 또는 'spot'
+            balance = self.exchange.fetch_balance()
+            self.logger.info(f"현물 잔고 조회 성공: {self.exchange_id}")
+            return balance
             
     @api_error_handler
+    @measure_api_performance
+    @log_api_request(endpoint_format="/positions/{symbol}")
     def get_positions(self, symbol=None):
         """현재 포지션 정보 조회
         
@@ -420,87 +428,63 @@ class ExchangeAPI:
             APIError: API 호출 오류
             MarketTypeError: 현물 계좌에서 포지션 조회 시 발생
         """
+        if self.market_type != 'futures':
+            # 현물 계좌에서는 포지션을 반환하지 않음
+            error_msg = f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_id}"
+            self.logger.warning(error_msg)
+            raise MarketTypeError(error_msg)
+        
+        # 심볼 처리
+        original_symbol = symbol or self.symbol
+        symbol = self.format_symbol(original_symbol)
+            
+        # 거래소별 특수 처리
+        params = {}
+        if self.exchange_id == 'binance':
+            # 바이났스 특정 파라미터
+            params = {'type': 'future'}
+            self.logger.debug(f"바이났스 선물 포지션 조회 추가 파라미터 적용")
+        elif self.exchange_id == 'bybit':
+            # 바이빗 특정 파라미터
+            params = {'type': 'swap'}
+            self.logger.debug(f"바이빗 선물 포지션 조회 추가 파라미터 적용")
+        elif self.exchange_id == 'bithumb':
+            # 빗썸의 경우 선물 거래 지원 확인
+            self.logger.warning(f"빗썸에서는 포지션 조회가 제한될 수 있습니다")
+        
         try:
-            if self.market_type != 'futures':
-                # 현물 계좌에서는 포지션을 반환하지 않음
-                error_msg = f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_id}"
-                self.logger.warning(error_msg)
-                raise MarketTypeError(error_msg)
+            # 바이났스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
+            if self.exchange_id == 'binance' and self.market_type == 'futures':
+                self.logger.info(f"바이났스 선물 API 요구사항에 따라 배열로 심볼 전달: [{symbol}]")
+                positions = self.exchange.fetch_positions([symbol], params=params)
+            else:
+                positions = self.exchange.fetch_positions(symbol, params=params)
+        except Exception as e:
+            # 오류 발생시 다른 형식 시도
+            error_msg = str(e)
+            self.logger.error(f"포지션 조회 오류: {error_msg}")
             
-            # 심볼 처리
-            original_symbol = symbol or self.symbol
-            symbol = self.format_symbol(original_symbol)
-            
-            # API 호출 로깅
-            log_api_call(f"/positions/{symbol}", "GET", request_data={
-                "exchange": self.exchange_id,
-                "market_type": self.market_type,
-                "symbol": symbol,
-                "leverage": self.leverage
-            })
-            
-            # 시작 시간 기록
-            start_time = time.time()
-                
-            # 거래소별 특수 처리
-            params = {}
-            if self.exchange_id == 'binance':
-                # 바이낸스 특정 파라미터
-                params = {'type': 'future'}
-                self.logger.debug(f"바이낸스 선물 포지션 조회 추가 파라미터 적용")
-            elif self.exchange_id == 'bybit':
-                # 바이빗 특정 파라미터
-                params = {'type': 'swap'}
-                self.logger.debug(f"바이빗 선물 포지션 조회 추가 파라미터 적용")
-            elif self.exchange_id == 'bithumb':
-                # 빗썸의 경우 선물 거래 지원 확인
-                self.logger.warning(f"빗썸에서는 포지션 조회가 제한될 수 있습니다")
-            
-            try:
-                # 바이낸스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
-                if self.exchange_id == 'binance' and self.market_type == 'futures':
-                    self.logger.info(f"바이낸스 선물 API 요구사항에 따라 배열로 심볼 전달: [{symbol}]")
+            # 심볼 형식 관련 오류인 경우
+            if "requires an array argument for symbols" in error_msg and self.exchange_id == 'binance':
+                try:
+                    # 배열 형태로 다시 시도
+                    self.logger.info(f"배열 형태로 다시 시도: [{symbol}]")
                     positions = self.exchange.fetch_positions([symbol], params=params)
-                else:
-                    positions = self.exchange.fetch_positions(symbol, params=params)
-            except Exception as e:
-                # 오류 발생시 다른 형식 시도
-                error_msg = str(e)
-                self.logger.error(f"포지션 조회 오류: {error_msg}")
-                
-                # 심볼 형식 관련 오류인 경우
-                if "requires an array argument for symbols" in error_msg and self.exchange_id == 'binance':
-                    try:
-                        # 배열 형태로 다시 시도
-                        self.logger.info(f"배열 형태로 다시 시도: [{symbol}]")
-                        positions = self.exchange.fetch_positions([symbol], params=params)
-                    except Exception as e2:
-                        # 다시 실패하면 원래 오류 발생
-                        raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
-                # 다른 심볼 형식 오류인 경우
-                elif "does not have market symbol" in error_msg and '/' in original_symbol:
-                    try:
-                        # 슬래시 제거한 형식 시도
-                        alt_symbol = original_symbol.replace('/', '')
-                        self.logger.info(f"대체 심볼 형식 시도: {symbol} -> {alt_symbol}")
-                        positions = self.exchange.fetch_positions(alt_symbol, params=params)
-                    except Exception as e2:
-                        # 다시 실패하면 원래 오류 발생
-                        raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
-                else:
-                    # 다른 종류의 오류면 그대로 발생
-                    raise
+                except Exception as e2:
+                    # 다시 실패하면 원래 오류 발생
+                    raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
+            # 다른 심볼 형식 오류인 경우
+            return []
+
+        try:
+            # API 요청 전송
+            positions = self.exchange.fetch_positions(symbol) if symbol else self.exchange.fetch_positions()
             
-            # 완료 시간 및 성능 로깅
-            elapsed = time.time() - start_time
-            self.logger.debug(f"포지션 정보 조회 완료: {symbol} (소요시간: {elapsed:.4f}초)")
-            
-            # 포지션 정보 없을 경우 빈 리스트 반환
-            if not positions:
-                self.logger.info(f"현재 포지션 없음: {symbol}")
-                log_api_call(f"/positions/{symbol}", "GET", response_data={"count": 0})
+            # 반환된 데이터가 없는 경우
+            if positions is None or not positions:
+                self.logger.info(f"현재 열린 포지션이 없습니다: {self.exchange_id}, {symbol}")
                 return []
-                
+            
             # 필요한 추가 계산 수행
             processed_positions = []
             for position in positions:
