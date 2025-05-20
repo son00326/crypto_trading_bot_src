@@ -1189,7 +1189,7 @@ class TradingAlgorithm:
             logger.error(f"거래 시작 중 오류 발생: {e}")
             self.stop_trading()
     
-    def start_trading_thread(self, interval=60, auto_sl_tp=False, partial_tp=False):
+    def start_trading_thread(self, interval=60, auto_sl_tp=False, partial_tp=False, sl_percentage=None, tp_percentage=None):
         """
         별도 스레드에서 자동 거래 시작
         
@@ -1197,6 +1197,8 @@ class TradingAlgorithm:
             interval (int): 거래 사이클 간격 (초)
             auto_sl_tp (bool): 자동 손절매/이익실현 활성화 여부
             partial_tp (bool): 부분 이익실현 활성화 여부
+            sl_percentage (float): 손절매 비율 (기본값: 0.05)
+            tp_percentage (float): 이익실현 비율 (기본값: 0.1)
         """
         try:
             if self.trading_active:
@@ -1206,6 +1208,13 @@ class TradingAlgorithm:
             # 자동 손절매/이익실현 설정
             self.auto_sl_tp_enabled = auto_sl_tp
             self.partial_tp_enabled = partial_tp
+            
+            # 위험 관리 설정에 손절매/이익실현 비율 설정
+            if sl_percentage is not None and sl_percentage > 0:
+                self.risk_management['stop_loss_pct'] = sl_percentage
+            
+            if tp_percentage is not None and tp_percentage > 0:
+                self.risk_management['take_profit_pct'] = tp_percentage
             
             # auto_position_manager가 있는지 확인
             if not hasattr(self, 'auto_position_manager') or self.auto_position_manager is None:
@@ -1220,15 +1229,20 @@ class TradingAlgorithm:
             
             if auto_sl_tp and hasattr(self, 'auto_position_manager') and self.auto_position_manager is not None:
                 try:
-                    # 자동 포지션 관리 설정 적용
-                    self.auto_position_manager.set_auto_sl_tp(auto_sl_tp)
-                    self.auto_position_manager.set_partial_tp(partial_tp)
+                    # 자동 포지션 관리 설정 적용 - 새로 추가한 set_auto_sl_tp 메서드 사용
+                    self.auto_position_manager.set_auto_sl_tp(
+                        enabled=auto_sl_tp,
+                        partial_tp=partial_tp,
+                        sl_percentage=self.risk_management.get('stop_loss_pct', 0.05),
+                        tp_percentage=self.risk_management.get('take_profit_pct', 0.1)
+                    )
                     
-                    # 포지션 모니터링 시작
-                    self.auto_position_manager.start_monitoring()
-                    logger.info(f"자동 손절매/이익실현 기능 활성화 (부분 청산: {partial_tp})")
+                    # 포지션 모니터링이 자동으로 시작됨 (set_auto_sl_tp 안에서 처리)
+                    logger.info(f"자동 손절매/이익실현 기능 활성화 (부분 청산: {partial_tp}, 손절: {self.risk_management.get('stop_loss_pct', 0.05):.1%}, 이익실현: {self.risk_management.get('take_profit_pct', 0.1):.1%})")
                 except Exception as e:
                     logger.error(f"자동 포지션 관리 시작 중 오류: {e}")
+            elif auto_sl_tp:
+                logger.warning("자동 포지션 관리자가 없어 자동 손절매/이익실현 기능을 사용할 수 없습니다")
             elif auto_sl_tp:
                 logger.warning("자동 포지션 관리자가 없어 자동 손절매/이익실현 기능을 사용할 수 없습니다")
             
@@ -1286,6 +1300,212 @@ class TradingAlgorithm:
         
         except Exception as e:
             logger.error(f"거래 기록 저장 중 오류 발생: {e}")
+    
+    @simple_error_handler(default_return=None)
+    def get_current_price(self):
+        """현재 가격 조회"""
+        try:
+            ticker = self.exchange_api.get_ticker(self.symbol)
+            if ticker and 'last' in ticker:
+                return float(ticker['last'])
+            else:
+                logger.warning("현재 가격 정보를 찾을 수 없습니다.")
+                return 0
+        except Exception as e:
+            logger.error(f"현재 가격 조회 중 오류: {e}")
+            return 0
+    
+    @simple_error_handler(default_return=[])
+    def get_open_positions(self, symbol=None):
+        """
+        현재 열린 포지션 목록 조회
+        
+        Args:
+            symbol (str, optional): 특정 심볼에 대한 포지션만 조회. None이면 모든 포지션 조회
+        
+        Returns:
+            list: 포지션 정보 목록
+        """
+        try:
+            target_symbol = symbol or self.symbol
+            
+            if self.test_mode:
+                # 테스트 모드에서는 내부 저장된 포트폴리오 정보 사용
+                open_positions = []
+                for position in self.portfolio['positions']:
+                    if position['status'] == 'open':
+                        if symbol is None or position['symbol'] == target_symbol:
+                            open_positions.append(position)
+                
+                logger.debug(f"테스트 모드에서 {len(open_positions)}개의 열린 포지션 발견")
+                return open_positions
+            else:
+                # 실제 거래소에서 포지션 정보 조회
+                try:
+                    # 거래소 API를 통해 포지션 조회
+                    positions = self.exchange_api.get_positions(target_symbol)
+                    
+                    if not positions:
+                        logger.debug(f"심볼 {target_symbol}에 대한 열린 포지션 없음")
+                        return []
+                    
+                    # 필요한 정보만 선택하여 반환
+                    formatted_positions = []
+                    for position in positions:
+                        # 필수 정보 확인
+                        if 'side' not in position or 'entryPrice' not in position or position.get('size', 0) == 0:
+                            continue
+                            
+                        # 포지션 정보 포맷팅
+                        formatted_position = {
+                            'id': position.get('id', f"{target_symbol}_{position['side']}_{int(time.time())}"),
+                            'symbol': target_symbol,
+                            'side': position['side'],
+                            'amount': float(position.get('size', position.get('contracts', position.get('positionAmt', 0)))),
+                            'entry_price': float(position['entryPrice']),
+                            'mark_price': float(position.get('markPrice', 0)),
+                            'pnl_percent': position.get('pnl_percent', 0),
+                            'liquidation_price': float(position.get('liquidationPrice', 0)),
+                            'leverage': position.get('leverage', self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1),
+                            'status': 'open',
+                            'warning_level': position.get('warning_level', 'normal')
+                        }
+                        
+                        formatted_positions.append(formatted_position)
+                    
+                    logger.debug(f"거래소에서 {len(formatted_positions)}개의 열린 포지션 조회 성공: {target_symbol}")
+                    return formatted_positions
+                    
+                except Exception as e:
+                    logger.error(f"거래소에서 포지션 조회 중 오류: {e}")
+                    
+                    # 실패 시 데이터베이스의 저장된 포지션 정보 사용
+                    if hasattr(self, 'db') and self.db is not None:
+                        try:
+                            db_positions = self.db.get_open_positions(target_symbol)
+                            logger.info(f"데이터베이스에서 {len(db_positions)}개의 열린 포지션 조회")
+                            return db_positions
+                        except Exception as db_error:
+                            logger.error(f"데이터베이스에서 포지션 조회 중 오류: {db_error}")
+                    
+                    # 데이터베이스 조회도 실패하면 빈 리스트 반환
+                    return []
+        except Exception as e:
+            logger.error(f"포지션 조회 과정에서 예상치 못한 오류: {e}")
+            return []
+    
+    def close_position(self, position_id, symbol=None, side=None, amount=None, reason=None):
+        """
+        포지션 청산
+        
+        Args:
+            position_id (str): 청산할 포지션 ID
+            symbol (str, optional): 거래 심볼, None이면 현재 설정된 심볼 사용
+            side (str, optional): 포지션 방향 ('long' 또는 'short'), None이면 포지션 ID로 자동 찾기
+            amount (float, optional): 청산할 수량, None이면 전체 포지션 청산
+            reason (str, optional): 청산 이유 (로깅용)
+        
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            # 심볼 설정 (지정되지 않은 경우 현재 심볼 사용)
+            target_symbol = symbol or self.symbol
+            
+            # position_id로 포지션 정보 찾기
+            position = None
+            positions = self.get_open_positions(symbol=target_symbol)
+            
+            for pos in positions:
+                if pos.get('id') == position_id:
+                    position = pos
+                    break
+            
+            # 포지션을 찾지 못한 경우
+            if not position:
+                logger.error(f"포지션 청산 실패: ID {position_id}에 해당하는 포지션을 찾을 수 없음")
+                return False
+            
+            # 포지션 정보 추출
+            position_side = side or position.get('side', '').lower()
+            position_amount = position.get('amount', 0)
+            
+            # 청산할 수량 (지정되지 않은 경우 전체 포지션 청산)
+            exit_amount = amount if amount is not None else position_amount
+            
+            # 비율 계산 (로깅용)
+            exit_percentage = exit_amount / position_amount if position_amount > 0 else 1.0
+            
+            # 현재 가격 조회
+            current_price = self.get_current_price()
+            if not current_price or current_price <= 0:
+                logger.error(f"포지션 청산 실패: 현재 가격 조회 실패 ({current_price})")
+                return False
+            
+            # 실행 전 로그
+            logger.info(f"포지션 {position_id} 청산 실행: {position_side} 포지션, {exit_amount}/{position_amount} ({exit_percentage:.1%})"
+                      f", 청산가: {current_price}, 이유: {reason or '수동 청산'}")
+            
+            # 포지션 방향에 따라 적절한 메서드 실행
+            result = False
+            if position_side == 'long':
+                # 롱 포지션은 매도로 청산
+                result = self.execute_sell(
+                    price=current_price,
+                    quantity=exit_amount,
+                    additional_exit_info={'exit_reason': reason} if reason else None,
+                    percentage=exit_percentage,
+                    position_id=position_id
+                )
+            elif position_side == 'short':
+                # 숏 포지션은 매수로 청산
+                result = self.execute_buy(
+                    price=current_price,
+                    quantity=exit_amount,
+                    additional_info={'exit_reason': reason} if reason else None,
+                    close_position=True,
+                    position_id=position_id
+                )
+            else:
+                logger.error(f"포지션 청산 실패: 알 수 없는 포지션 방향 '{position_side}'")
+                return False
+            
+            # 결과 처리
+            if result:
+                logger.info(f"포지션 {position_id} 청산 성공 ({exit_percentage:.1%})")
+                
+                # 포트폴리오 정보 업데이트
+                self.update_portfolio()
+                
+                # 부분 청산인 경우 포지션 정보 업데이트
+                if exit_percentage < 1.0:
+                    logger.info(f"포지션 {position_id}의 일부만 청산됨 ({exit_percentage:.1%})")
+                    
+                    # 내부 포트폴리오 데이터 업데이트
+                    for i, pos in enumerate(self.portfolio['positions']):
+                        if pos.get('id') == position_id and pos.get('status') == 'open':
+                            # 남은 수량 계산
+                            remaining_amount = pos['amount'] - exit_amount
+                            if remaining_amount > 0:
+                                # 수량 업데이트
+                                self.portfolio['positions'][i]['amount'] = remaining_amount
+                                logger.info(f"포지션 {position_id}의 남은 수량: {remaining_amount}")
+                            else:
+                                # 완전히 청산된 경우 상태 변경
+                                self.portfolio['positions'][i]['status'] = 'closed'
+                                self.portfolio['positions'][i]['exit_price'] = current_price
+                                self.portfolio['positions'][i]['exit_time'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                                logger.info(f"포지션 {position_id} 완전히 청산됨")
+                return True
+            else:
+                logger.error(f"포지션 {position_id} 청산 실패")
+                return False
+                
+        except Exception as e:
+            logger.error(f"포지션 청산 중 예상치 못한 오류: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     
     def get_portfolio_summary(self):
         """

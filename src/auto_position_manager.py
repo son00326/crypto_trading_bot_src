@@ -46,6 +46,10 @@ class AutoPositionManager:
         self.partial_tp_enabled = False  # 부분 이익실현 활성화 여부
         self.margin_safety_enabled = True  # 마진 안전장치 활성화 여부
         
+        # 손절매/이익실현 설정
+        self.sl_percentage = 0.05  # 기본 손절매 비율 (5%)
+        self.tp_percentage = 0.1   # 기본 이익실현 비율 (10%)
+        
         # 마진 안전장치 관련 상태 변수
         self.last_margin_check_time = 0
         self.margin_check_interval = 60  # 마진 레벨 검사 간격(초)
@@ -96,6 +100,52 @@ class AutoPositionManager:
             
         logger.info("포지션 모니터링을 중지했습니다.")
         return True
+        
+    @safe_execution
+    def set_auto_sl_tp(self, enabled=True, partial_tp=False, sl_percentage=None, tp_percentage=None):
+        """
+        자동 손절매/이익실현 기능 설정
+        
+        Args:
+            enabled (bool): 자동 손절매/이익실현 활성화 여부
+            partial_tp (bool): 부분 이익실현 활성화 여부
+            sl_percentage (float): 손절매 비율 (None이면 현재 설정 유지)
+            tp_percentage (float): 이익실현 비율 (None이면 현재 설정 유지)
+        
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            # 기능 활성화 여부 설정
+            self.auto_sl_tp_enabled = enabled
+            self.partial_tp_enabled = partial_tp
+            
+            # 비율 설정 (지정한 경우에만 변경)
+            if sl_percentage is not None and 0 < sl_percentage < 1.0:
+                self.sl_percentage = sl_percentage
+            
+            if tp_percentage is not None and 0 < tp_percentage < 1.0:
+                self.tp_percentage = tp_percentage
+            
+            # 설정 적용 확인
+            if self.auto_sl_tp_enabled:
+                logger.info(f"자동 손절매/이익실현 기능이 활성화됨. 손절비율={self.sl_percentage:.1%}, 이익실현비율={self.tp_percentage:.1%}")
+                
+                # 부분 이익실현 설정 확인
+                if self.partial_tp_enabled:
+                    logger.info("부분 이익실현 기능이 활성화됨")
+                
+                # 모니터링이 활성화되지 않은 경우 자동으로 시작
+                if not self.monitoring_active:
+                    logger.info("손절매/이익실현 기능 활성화로 모니터링 자동 시작")
+                    self.start_monitoring()
+            else:
+                logger.info("자동 손절매/이익실현 기능이 비활성화됨")
+            
+            return True
+        except Exception as e:
+            logger.error(f"자동 손절매/이익실현 기능 설정 중 오류: {e}")
+            return False
     
     def _monitor_positions_loop(self):
         """포지션 모니터링 루프"""
@@ -179,6 +229,10 @@ class AutoPositionManager:
             if current_price <= 0:
                 logger.warning(f"유효하지 않은 현재 가격: {current_price}. 가격 조회 재시도 필요")
                 raise APIError(f"유효하지 않은 현재 가격: {current_price}")
+                
+            # 로그에 현재 설정 표시
+            if self.auto_sl_tp_enabled:
+                logger.debug(f"자동 손절매/이익실현 활성화됨: 손절={self.sl_percentage:.1%}, 이익실현={self.tp_percentage:.1%}, 부분 이익실현: {self.partial_tp_enabled}")
             
             # 성공적으로 정보 수집 완료 - 로그 추가
             position_count = len(positions)
@@ -231,8 +285,8 @@ class AutoPositionManager:
             risk_config = self.trading_algorithm.risk_management
             if not risk_config:
                 logger.warning(f"포지션 {position_id}: 위험 관리 구성이 없습니다. 기본값 사용")
-                # 기본 값 설정
-                risk_config = {'stop_loss_pct': 0.05, 'take_profit_pct': 0.1}
+                # 기본 값 설정 (자체 설정 사용)
+                risk_config = {'stop_loss_pct': self.sl_percentage, 'take_profit_pct': self.tp_percentage}
             
             # 손절매/이익실현 가격 계산
             if side.lower() == 'long':
@@ -247,7 +301,17 @@ class AutoPositionManager:
             # 위험 관리자 가져오기
             try:
                 risk_manager = self.trading_algorithm.exchange_api.risk_manager
+                # 위험 관리자 설정 업데이트
                 risk_manager.partial_tp_enabled = self.partial_tp_enabled
+                risk_manager.auto_exit_enabled = self.auto_sl_tp_enabled
+                
+                # 현재 설정으로 위험 관리자 업데이트
+                if not hasattr(risk_manager, 'risk_config'):
+                    risk_manager.risk_config = {}
+                    
+                risk_manager.risk_config['stop_loss_pct'] = self.sl_percentage
+                risk_manager.risk_config['take_profit_pct'] = self.tp_percentage
+                
             except AttributeError as e:
                 logger.error(f"위험 관리자 가져오기 실패: {e}")
                 raise APIError("Risk Manager 가져오기 실패")
@@ -616,16 +680,3 @@ class AutoPositionManager:
         except Exception as e:
             logger.error(f"마진 안전장치 설정 오류: {e}")
             logger.error(traceback.format_exc())
-    
-
-            
-            # 레버리지 감소 처리 (실제 적용은 관련 API가 필요하여 로그만 출력)
-            if "leverage_reduce" in suggested_actions:
-                logger.warning("마진 안전장치: 레버리지 감소가 권장됩니다. 수동 조절이 필요할 수 있습니다.")
-                
-        except Exception as e:
-            logger.error(f"마진 안전 조치 실행 중 오류: {e}")
-            logger.error(traceback.format_exc())
-    
-
-
