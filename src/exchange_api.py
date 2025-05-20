@@ -24,6 +24,36 @@ from src.error_handlers import api_error_handler, APIError, MarketTypeError, Ord
 # 로거 설정
 logger = get_logger('crypto_bot.exchange')
 
+# API 성능 측정 데코레이터
+def measure_api_performance(func):
+    """
+    API 호출 시간을 측정하고 로깅하는 데코레이터
+    
+    Args:
+        func (callable): 데코레이트할 메서드
+        
+    Returns:
+        callable: 성능 측정 기능이 추가된 래퍼 함수
+    """
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        method_name = func.__name__
+        # 시작 시간 기록
+        start_time = time.time()
+        try:
+            # 원본 함수 실행
+            result = func(self, *args, **kwargs)
+            # 완료 시간 기록 및 성능 로깅
+            elapsed = time.time() - start_time
+            self.logger.debug(f"{method_name} 완료 (소요시간: {elapsed:.4f}초)")
+            return result
+        except Exception as e:
+            # 예외 발생 시에도 소요 시간 기록
+            elapsed = time.time() - start_time
+            self.logger.error(f"{method_name} 실패 (소요시간: {elapsed:.4f}초): {str(e)}")
+            raise
+    return wrapper
+
 class ExchangeAPI:
     """암호화폐 거래소 API 연결 및 작업을 위한 클래스"""
     
@@ -183,93 +213,75 @@ class ExchangeAPI:
     # _convert_symbol_format 함수는 format_symbol 함수로 대체되었습니다.
     
     @api_error_handler
+    @measure_api_performance
     def get_ticker(self, symbol=None):
         """현재 시세 정보 조회"""
-        try:
-            symbol = self.format_symbol(symbol)
-            
-            # API 호출 로깅
-            log_api_call(f"/ticker/{symbol}", "GET")
-            
-            # 시작 시간 기록
-            start_time = time.time()
-            
-            ticker = self.exchange.fetch_ticker(symbol)
-            
-            # 완료 시간 및 응답 로깅
-            elapsed = time.time() - start_time
-            self.logger.debug(f"시세 정보 조회 완료: {symbol} (소요시간: {elapsed:.4f}초)")
-            
-            # 응답 로깅
-            log_api_call(f"/ticker/{symbol}", "GET", response_data={
-                "price": ticker.get('last'),
-                "bid": ticker.get('bid'),
-                "ask": ticker.get('ask'),
-                "volume": ticker.get('volume'),
-                "timestamp": ticker.get('timestamp')
-            })
-            
-            return ticker
-        except Exception as e:
-            log_api_call(f"/ticker/{symbol}", "GET", error=e)
-            self.logger.error(f"시세 정보 조회 중 오류 발생: {e}")
-            raise APIError(f"시세 정보 조회 오류: {str(e)}", original_exception=e)
+        symbol = self.format_symbol(symbol)
+        
+        # API 호출 로깅
+        log_api_call(f"/ticker/{symbol}", "GET")
+        
+        # API 호출
+        ticker = self.exchange.fetch_ticker(symbol)
+        
+        # 응답 로깅
+        log_api_call(f"/ticker/{symbol}", "GET", response_data={
+            "price": ticker.get('last'),
+            "bid": ticker.get('bid'),
+            "ask": ticker.get('ask'),
+            "volume": ticker.get('volume'),
+            "timestamp": ticker.get('timestamp')
+        })
+        
+        return ticker
     
     @api_error_handler
+    @measure_api_performance
     def get_ohlcv(self, symbol=None, timeframe=None, limit=100):
         """OHLCV 데이터 조회 (봉 데이터)"""
-        try:
-            symbol = self.format_symbol(symbol)
-            timeframe = timeframe or self.timeframe
-            
-            # API 호출 로깅
-            log_api_call(f"/ohlcv/{symbol}", "GET", request_data={
-                "timeframe": timeframe,
-                "limit": limit,
-                "market_type": self.market_type
-            })
-            
-            # 시작 시간 기록
-            start_time = time.time()
-            
-            # 시장 타입에 따른 추가 설정
-            params = {}
-            if self.market_type == 'futures' and self.exchange_id == 'binance':
-                # 바이낸스 선물의 경우 필요한 추가 파라미터
-                params = {
-                    'contract': True,  # 선물 계약 데이터 지정
-                }
-            
-            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params=params)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            
-            # 시장 유형 정보 추가
-            df['market_type'] = self.market_type
-            if self.market_type == 'futures':
-                df['leverage'] = self.leverage
-            
-            # 완료 시간 및 응답 로깅
-            elapsed = time.time() - start_time
-            self.logger.debug(f"OHLCV 데이터 조회 완료: {symbol}, {timeframe}, {limit}개 (소요시간: {elapsed:.4f}초)")
-            
-            # 응답 로깅 (전체 데이터는 너무 크므로 요약 정보만)
-            log_api_call(f"/ohlcv/{symbol}", "GET", response_data={
-                "records": len(df),
-                "first_timestamp": df['timestamp'].iloc[0].isoformat() if not df.empty else None,
-                "last_timestamp": df['timestamp'].iloc[-1].isoformat() if not df.empty else None,
-                "min_price": df['low'].min() if not df.empty else None,
-                "max_price": df['high'].max() if not df.empty else None
-            })
-                
-            return df
+        # 기본값 설정
+        symbol = self.format_symbol(symbol)
+        if timeframe is None:
+            timeframe = self.timeframe
         
-        except Exception as e:
-            log_api_call(f"/ohlcv/{symbol}", "GET", error=e)
-            self.logger.error(f"OHLCV 데이터 조회 중 오류 발생: {e}\n{traceback.format_exc()}")
-            raise APIError(f"OHLCV 데이터 조회 오류: {str(e)}", original_exception=e)
+        # API 호출 로깅
+        log_api_call(f"/ohlcv/{symbol}", "GET", request_data={
+            "timeframe": timeframe,
+            "limit": limit,
+            "market_type": self.market_type
+        })
+        
+        # 시장 타입에 따른 추가 설정
+        params = {}
+        if self.market_type == 'futures' and self.exchange_id == 'binance':
+            # 바이낸스 선물의 경우 필요한 추가 파라미터
+            params = {
+                'contract': True,  # 선물 계약 데이터 지정
+            }
+        
+        # OHLCV 데이터 가져오기
+        ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params=params)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        # 시장 유형 정보 추가
+        df['market_type'] = self.market_type
+        if self.market_type == 'futures':
+            df['leverage'] = self.leverage
+            
+        # 응답 로깅 (전체 데이터는 너무 크미로 요약 정보만)
+        log_api_call(f"/ohlcv/{symbol}", "GET", response_data={
+            "records": len(df),
+            "first_timestamp": df['timestamp'].iloc[0].isoformat() if not df.empty else None,
+            "last_timestamp": df['timestamp'].iloc[-1].isoformat() if not df.empty else None,
+            "min_price": df['low'].min() if not df.empty else None,
+            "max_price": df['high'].max() if not df.empty else None
+        })
+        
+        return df
     
     @api_error_handler
+    @measure_api_performance
     def get_balance(self, balance_type=None):
         """계정 잠고 조회
         
@@ -285,48 +297,45 @@ class ExchangeAPI:
             AuthenticationError: 인증 오류 발생 시
             RateLimitExceeded: 요청 제한 초과 시
         """
+        # 유효한 balance_type 값 확인
+        valid_types = ['spot', 'future', 'futures', 'all', None]
+        if balance_type not in valid_types:
+            error_msg = f"잘못된 balance_type: {balance_type}, 유효한 값: {valid_types}"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+            
+        # futures를 future로 통일
+        if balance_type == 'futures':
+            balance_type = 'future'
+            
+        # 기본 잠고 유형 설정
+        if balance_type is None:
+            balance_type = self.market_type
+            self.logger.debug(f"기본 잠고 유형 사용: {balance_type}")
+        
+        # API 호출 로깅
+        log_api_call(f"/balance", "GET", request_data={"type": balance_type})
+        
         try:
-            # 유효한 balance_type 값 확인
-            valid_types = ['spot', 'future', 'futures', 'all', None]
-            if balance_type not in valid_types:
-                error_msg = f"잘못된 balance_type: {balance_type}, 유효한 값: {valid_types}"
-                self.logger.error(error_msg)
-                raise ValueError(error_msg)
-                
-            # futures를 future로 통일
-            if balance_type == 'futures':
-                balance_type = 'future'
-                
-            # 기본 잠고 유형 설정
-            if balance_type is None:
-                balance_type = self.market_type
-                self.logger.debug(f"기본 잠고 유형 사용: {balance_type}")
-            
-            # API 호출 로깅
-            log_api_call(f"/balance", "GET", request_data={"type": balance_type})
-            
-            # 시작 시간 기록
-            start_time = time.time()
-            
-            # 모든 잔고 가져오기
+            # 모든 잠고 가져오기
             if balance_type == 'all':
-                # 현물 잔고 조회
+                # 현물 잠고 조회
                 spot_balance = None
                 future_balance = None
                 
                 try:
                     spot_balance = self.exchange.fetch_balance()
-                    self.logger.debug(f"현물 잔고 조회 성공: {self.exchange_id}")
+                    self.logger.debug(f"현물 잠고 조회 성공: {self.exchange_id}")
                 except Exception as e:
-                    self.logger.warning(f"현물 잔고 조회 실패: {str(e)}")
+                    self.logger.warning(f"현물 잠고 조회 실패: {str(e)}")
                 
                 try:
-                    # 선물 잔고 파라미터
+                    # 선물 잠고 파라미터
                     params = {'type': 'future'} if self.exchange_id == 'binance' else {}
                     future_balance = self.exchange.fetch_balance(params=params)
-                    self.logger.debug(f"선물 잔고 조회 성공: {self.exchange_id}")
+                    self.logger.debug(f"선물 잠고 조회 성공: {self.exchange_id}")
                 except Exception as e:
-                    self.logger.warning(f"선물 잔고 조회 실패: {str(e)}")
+                    self.logger.warning(f"선물 잠고 조회 실패: {str(e)}")
                 
                 # 결과 병합
                 result = {
@@ -342,10 +351,6 @@ class ExchangeAPI:
                     }
                 }
                 
-                # 완료 시간 기록 및 성능 로깅
-                elapsed = time.time() - start_time
-                self.logger.debug(f"전체 잔고 조회 완료 (소요시간: {elapsed:.4f}초)")
-                
                 # 성공적인 응답 로깅
                 try:
                     # 안전하게 'total' 키 접근 - 구조에 따라 다른 처리
@@ -355,10 +360,10 @@ class ExchangeAPI:
                         currencies = list(result['total'].keys())[:5] if result['total'] else []
                     else:
                         currencies = []
-                        self.logger.warning(f"잔고 정보에 'total' 키가 없습니다: {list(result.keys()) if isinstance(result, dict) else type(result)}")
+                        self.logger.warning(f"잠고 정보에 'total' 키가 없습니다: {list(result.keys()) if isinstance(result, dict) else type(result)}")
                 except Exception as e:
                     currencies = []
-                    self.logger.warning(f"잔고 정보 처리 중 오류: {str(e)}")
+                    self.logger.warning(f"잠고 정보 처리 중 오류: {str(e)}")
                     
                 log_api_call("/balance", "GET", response_data={
                     "spot_available": True if spot_balance else False,
@@ -368,14 +373,10 @@ class ExchangeAPI:
                 
                 return result
             
-            # 선물 잔고만 가져오기
+            # 선물 잠고만 가져오기
             elif balance_type == 'future':
                 params = {'type': 'future'} if self.exchange_id == 'binance' else {}
                 balance = self.exchange.fetch_balance(params=params)
-                
-                # 완료 시간 기록 및 성능 로깅
-                elapsed = time.time() - start_time
-                self.logger.debug(f"선물 잔고 조회 완료 (소요시간: {elapsed:.4f}초)")
                 
                 # 성공적인 응답 로깅
                 currencies = list(balance['total'].keys())[:5] if 'total' in balance else []
@@ -383,16 +384,12 @@ class ExchangeAPI:
                     "currencies": currencies  # 처음 5개 통화만 로그
                 })
                 
-                self.logger.info(f"선물 잔고 조회 성공: {self.exchange_id}")
+                self.logger.info(f"선물 잠고 조회 성공: {self.exchange_id}")
                 return balance
             
-            # 현물 잔고만 가져오기 (기본값)
-            else:
+            # 현물 잠고만 가져오기 (기본값)
+            else:  # 기본값 또는 'spot'
                 balance = self.exchange.fetch_balance()
-                
-                # 완료 시간 기록 및 성능 로깅
-                elapsed = time.time() - start_time
-                self.logger.debug(f"현물 잔고 조회 완료 (소요시간: {elapsed:.4f}초)")
                 
                 # 성공적인 응답 로깅
                 currencies = list(balance['total'].keys())[:5] if 'total' in balance else []
@@ -400,13 +397,13 @@ class ExchangeAPI:
                     "currencies": currencies  # 처음 5개 통화만 로그
                 })
                 
-                self.logger.info(f"현물 잔고 조회 성공: {self.exchange_id}")
+                self.logger.info(f"현물 잠고 조회 성공: {self.exchange_id}")
                 return balance
                 
         except Exception as e:
             log_api_call("/balance", "GET", error=e)
-            self.logger.error(f"잔고 조회 중 오류 발생: {e}\n{traceback.format_exc()}")
-            raise APIError(f"잔고 조회 중 오류: {str(e)}", original_exception=e)
+            self.logger.error(f"잠고 조회 중 오류 발생: {e}\n{traceback.format_exc()}")
+            raise APIError(f"잠고 조회 중 오류: {str(e)}", original_exception=e)
             
     @api_error_handler
     def get_positions(self, symbol=None):
