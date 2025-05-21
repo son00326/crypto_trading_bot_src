@@ -13,6 +13,7 @@ from src.error_handlers import (
     simple_error_handler, safe_execution, api_error_handler,
     network_error_handler, db_error_handler, trade_error_handler
 )
+from src.event_manager import get_event_manager, EventType
 
 # 로거 설정
 logger = logging.getLogger('portfolio_manager')
@@ -50,6 +51,9 @@ class PortfolioManager:
             'trade_history': []
         }
         
+        # 이벤트 관리자 참조
+        self.event_manager = get_event_manager()
+        
         # 초기 포트폴리오 상태 업데이트
         self.update_portfolio()
     
@@ -82,14 +86,19 @@ class PortfolioManager:
                     self.portfolio['quote_balance'] = float(balance['free'][quote_currency])
                 
                 logger.info(f"포트폴리오 업데이트: {base_currency}={self.portfolio['base_balance']}, {quote_currency}={self.portfolio['quote_balance']}")
-                return True
-            else:
-                logger.warning("잔고 정보를 가져오지 못했습니다.")
-                return False
-        
+            
+            # 포트폴리오 업데이트 이벤트 발행
+            self.event_manager.publish(EventType.PORTFOLIO_UPDATED, {
+                'portfolio': self.portfolio,
+                'symbol': self.symbol,
+                'updated_at': datetime.now().isoformat()
+            })
+            
         except Exception as e:
             logger.error(f"포트폴리오 업데이트 중 오류 발생: {e}")
             return False
+        
+        return True
     
     @simple_error_handler(default_return=False)
     def update_portfolio_after_trade(self, trade_type, price, quantity, fee=None, is_test=None):
@@ -131,7 +140,21 @@ class PortfolioManager:
         self.db.save_balance(self.portfolio['base_currency'], self.portfolio['base_balance'])
         self.db.save_balance(self.portfolio['quote_currency'], self.portfolio['quote_balance'])
         
-        logger.info(f"거래 후 포트폴리오 업데이트: {trade_type}, 가격={price}, 수량={quantity}, 수수료={fee}")
+        logger.info(f"거래 후 포트폴리오 업데이트: {trade_type}, 가격={price}, 수량={quantity}, 수수료={fee if fee else '기본값'}")
+        
+        # 거래 실행 이벤트 발행
+        self.event_manager.publish(EventType.TRADE_EXECUTED, {
+            'trade': {
+                'type': trade_type,
+                'price': price,
+                'quantity': quantity,
+                'fee': fee,
+                'symbol': self.symbol,
+                'timestamp': datetime.now().isoformat()
+            },
+            'portfolio': self.portfolio
+        })
+        
         return True
     
     @db_error_handler(retry_count=3)
@@ -285,6 +308,44 @@ class PortfolioManager:
     
     @simple_error_handler(default_return=[])
     @api_error_handler(retry_count=3, max_delay=20)
+    def get_open_positions_data(self):
+        """
+        현재 열린 포지션 데이터 반환 (백업용)
+        
+        Returns:
+            Dict: 열린 포지션 정보
+        """
+        try:
+            symbol = self.symbol  # 현재 설정된 심볼 사용
+            open_positions = self.get_open_positions(symbol)
+            
+            return {
+                'count': len(open_positions),
+                'positions': open_positions,
+                'symbol': symbol,
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"열린 포지션 데이터 수집 중 오류: {e}")
+            return {'count': 0, 'positions': []}
+    
+    def get_recent_trades(self, limit=50):
+        """
+        최근 거래 내역 반환 (백업용)
+        
+        Args:
+            limit: 반환할 거래 수
+            
+        Returns:
+            List: 거래 내역 목록
+        """
+        try:
+            trades = self.db.get_trades(self.symbol, limit=limit)
+            return trades
+        except Exception as e:
+            logger.error(f"최근 거래 내역 조회 중 오류: {e}")
+            return []
+    
     def get_open_positions(self, symbol=None):
         """
         현재 열린 포지션 목록 조회
@@ -383,6 +444,14 @@ class PortfolioManager:
             # 새 포지션 추가
             self.portfolio['positions'].append(position)
             logger.info(f"새 포지션 추가됨: {position.get('id')}, 심볼: {position.get('symbol')}, 수량: {position.get('amount')}")
+            
+            # 포지션 오픈 이벤트 발행
+            self.event_manager.publish(EventType.POSITION_OPENED, {
+                'position': position,
+                'position_id': position.get('id'),
+                'timestamp': datetime.now().isoformat()
+            })
+            
             return True
         except Exception as e:
             logger.error(f"포지션 추가 중 오류 발생: {e}")

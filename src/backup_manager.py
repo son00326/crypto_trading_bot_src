@@ -15,6 +15,7 @@ from pathlib import Path
 
 from src.logging_config import get_logger
 from src.config import DATA_DIR
+from src.event_manager import get_event_manager, EventType
 
 class BackupManager:
     """
@@ -75,6 +76,12 @@ class BackupManager:
         # 백업 잠금
         self.backup_lock = threading.Lock()
         
+        # 이벤트 관리자 참조
+        self.event_manager = get_event_manager()
+        
+        # 이벤트 구독 등록
+        self._register_event_handlers()
+        
         # 초기화 로그
         self.logger.info(f"백업 관리자 초기화 완료. 백업 디렉토리: {self.backup_dir}")
         
@@ -94,6 +101,26 @@ class BackupManager:
             os.makedirs(type_dir, exist_ok=True)
             
         self.logger.debug("백업 디렉토리 구조 생성 완료")
+    
+    def _register_event_handlers(self):
+        """
+        이벤트 관리자에 백업 관련 이벤트 핸들러 등록
+        """
+        # 포트폴리오 업데이트 이벤트 -> 상태 백업 생성
+        self.event_manager.subscribe(EventType.PORTFOLIO_UPDATED, self._handle_portfolio_update)
+        
+        # 포지션 관련 이벤트 -> 상태 백업 생성
+        self.event_manager.subscribe(EventType.POSITION_OPENED, self._handle_position_update)
+        self.event_manager.subscribe(EventType.POSITION_CLOSED, self._handle_position_update)
+        self.event_manager.subscribe(EventType.POSITION_UPDATED, self._handle_position_update)
+        
+        # 주문 관련 이벤트 -> 거래 백업 생성
+        self.event_manager.subscribe(EventType.TRADE_EXECUTED, self._handle_trade_executed)
+        
+        # 시스템 이벤트 -> 전체 백업 생성
+        self.event_manager.subscribe(EventType.SYSTEM_SHUTDOWN, self._handle_system_shutdown)
+        
+        self.logger.debug("백업 관리자: 이벤트 핸들러 등록 완료")
     
     def start_backup_scheduler(self):
         """자동 백업 스케줄러 시작"""
@@ -190,6 +217,14 @@ class BackupManager:
                 self._cleanup_old_backups(backup_type)
                 
                 self.logger.info(f"{backup_type} 백업 생성 완료: {backup_path}")
+                
+                # 백업 생성 이벤트 발행
+                self.event_manager.publish(EventType.BACKUP_CREATED, {
+                    'backup_type': backup_type,
+                    'backup_path': backup_path,
+                    'backup_size': os.path.getsize(backup_path)
+                })
+                
                 return backup_path
                 
             except Exception as e:
@@ -207,45 +242,152 @@ class BackupManager:
         Returns:
             Dict[str, Any]: 수집된 데이터
         """
-        # TODO: 실제 데이터 수집 로직 구현
-        # 현재는 기본 구조만 반환
-        
         # 공통 기본 데이터
         data = {
             'timestamp': datetime.now().isoformat(),
-            'backup_type': backup_type
+            'backup_type': backup_type,
+            'version': '1.1',
+            'system_info': self._get_system_info()
         }
         
         # 백업 유형에 따른 데이터 추가
+        # 현재 실행 중인 TradingAlgorithm 인스턴스가 없어 직접 가져올 수 없으니
+        # 최근 이벤트에서 수집한 데이터를 활용
+        
+        # 최근 이벤트에서 수집한 데이터
+        recent_events = self.event_manager.get_recent_events(50)
+        
+        # 최근 포트폴리오 업데이트 이벤트 찾기
+        portfolio_events = [e for e in recent_events if e['type'] == 'PORTFOLIO_UPDATED']
+        last_portfolio = portfolio_events[-1]['data'] if portfolio_events else {}
+        
+        # 최근 포지션 관련 이벤트 찾기
+        position_events = [e for e in recent_events 
+                          if e['type'] in ['POSITION_OPENED', 'POSITION_CLOSED', 'POSITION_UPDATED']]
+        positions_data = [e['data'] for e in position_events] if position_events else []
+        
+        # 최근 거래 이벤트 찾기
+        trade_events = [e for e in recent_events if e['type'] == 'TRADE_EXECUTED']
+        trades_data = [e['data'].get('trade', {}) for e in trade_events] if trade_events else []
+        
+        # 백업 유형별 데이터 수집
         if backup_type == self.BACKUP_TYPE_FULL:
             # 전체 데이터 백업
+            from src.db_manager import DatabaseManager
+            db = DatabaseManager()
+            
             data.update({
-                'state': {},  # 거래 상태 데이터
-                'config': {},  # 설정 데이터
-                'trades': {},  # 거래 내역 데이터
-                'positions': {},  # 포지션 데이터
+                'portfolio': last_portfolio.get('portfolio', {}),
+                'positions': {
+                    'open': db.get_open_positions(),
+                    'recent_updates': positions_data[-10:] if positions_data else []  # 최근 10개
+                },
+                'trades': db.get_trades(limit=50),  # 최근 50개 거래
+                'settings': self._get_app_settings(),
+                'system_state': self._get_system_state()
             })
         
         elif backup_type == self.BACKUP_TYPE_STATE:
             # 거래 상태 백업
             data.update({
-                'state': {},  # 거래 상태 데이터
-                'positions': {},  # 현재 포지션 데이터
+                'portfolio': last_portfolio.get('portfolio', {}),
+                'positions': {
+                    'recent_events': positions_data[-5:] if positions_data else []  # 최근 5개
+                },
+                'trading_state': self._get_trading_state()
             })
         
         elif backup_type == self.BACKUP_TYPE_CONFIG:
             # 설정 백업
             data.update({
-                'config': {},  # 설정 데이터
+                'settings': self._get_app_settings()
             })
         
         elif backup_type == self.BACKUP_TYPE_TRADES:
             # 거래 내역 백업
             data.update({
-                'trades': {},  # 거래 내역 데이터
+                'trades': trades_data[-20:] if trades_data else []  # 최근 20개
             })
         
         return data
+        
+    def _get_system_info(self) -> Dict[str, Any]:
+        """
+        시스템 정보 수집
+        """
+        import platform
+        import psutil
+        
+        try:
+            return {
+                'os': platform.system(),
+                'version': platform.version(),
+                'python': platform.python_version(),
+                'cpu_count': psutil.cpu_count(),
+                'memory_total': psutil.virtual_memory().total,
+                'hostname': platform.node()
+            }
+        except Exception as e:
+            self.logger.error(f"시스템 정보 수집 중 오류: {e}")
+            return {'error': 'Failed to collect system info'}
+    
+    def _get_app_settings(self) -> Dict[str, Any]:
+        """
+        애플리케이션 설정 정보 수집
+        """
+        try:
+            # 원래는 동적으로 애플리케이션 설정을 가져와야 하지만 예시로 고정값 반환
+            from src.config import DATA_DIR, DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME, RISK_MANAGEMENT
+            
+            return {
+                'data_dir': DATA_DIR,
+                'default_exchange': DEFAULT_EXCHANGE,
+                'default_symbol': DEFAULT_SYMBOL,
+                'default_timeframe': DEFAULT_TIMEFRAME,
+                'risk_management': RISK_MANAGEMENT
+            }
+        except Exception as e:
+            self.logger.error(f"설정 정보 수집 중 오류: {e}")
+            return {'error': 'Failed to collect app settings'}
+    
+    def _get_system_state(self) -> Dict[str, Any]:
+        """
+        시스템 상태 정보 수집
+        """
+        try:
+            import psutil
+            
+            return {
+                'cpu_percent': psutil.cpu_percent(),
+                'memory_usage': dict(psutil.virtual_memory()._asdict()),
+                'disk_usage': dict(psutil.disk_usage('/')._asdict()),
+                'boot_time': psutil.boot_time(),
+                'process_count': len(psutil.pids())
+            }
+        except Exception as e:
+            self.logger.error(f"시스템 상태 정보 수집 중 오류: {e}")
+            return {'error': 'Failed to collect system state'}
+    
+    def _get_trading_state(self) -> Dict[str, Any]:
+        """
+        거래 활동 상태 정보 수집
+        """
+        try:
+            # 최근 이벤트에서 거래 활동 관련 데이터 추출
+            trading_events = self.event_manager.get_recent_events(20)
+            
+            # 최근 시스템 이벤트
+            system_events = [e for e in trading_events 
+                             if e['type'] in ['SYSTEM_STARTUP', 'SYSTEM_SHUTDOWN', 'MEMORY_WARNING']]
+            
+            return {
+                'last_events': [e['type'] for e in trading_events[-10:]],
+                'system_events': system_events,
+                'timestamp': datetime.now().isoformat()
+            }
+        except Exception as e:
+            self.logger.error(f"거래 활동 상태 정보 수집 중 오류: {e}")
+            return {'error': 'Failed to collect trading state'}
     
     def _cleanup_old_backups(self, backup_type: str):
         """
@@ -371,6 +513,13 @@ class BackupManager:
             # 현재는 백업 데이터만 반환
             self.logger.info(f"백업 파일 읽기 성공: {backup_path} (유형: {backup_type})")
             
+            # 백업 복원 이벤트 발행
+            self.event_manager.publish(EventType.BACKUP_RESTORED, {
+                'backup_type': backup_type,
+                'backup_path': backup_path,
+                'metadata': metadata
+            })
+            
             return True, {
                 'backup_data': backup_data,
                 'backup_type': backup_type,
@@ -430,6 +579,83 @@ def get_backup_manager() -> BackupManager:
     return backup_manager
 
 # 테스트 코드
+    # 이벤트 기반 백업 핸들러 메서드
+    def _handle_portfolio_update(self, data):
+        """
+        포트폴리오 업데이트 이벤트 처리
+        """
+        try:
+            self.logger.debug("포트폴리오 업데이트 감지: 백업 디레이 설정")
+            # 포트폴리오 업데이트마다 백업하지 않고 마지막 백업 이후 일정 시간이 지난 경우에만 백업
+            last_backup_time = self.last_backup_time[self.BACKUP_TYPE_STATE]
+            
+            if last_backup_time is None or (datetime.now() - last_backup_time).total_seconds() > 300:  # 5분마다 백업
+                self._delayed_state_backup()
+        except Exception as e:
+            self.logger.error(f"포트폴리오 업데이트 백업 처리 중 오류: {e}")
+    
+    def _handle_position_update(self, data):
+        """
+        포지션 변경 이벤트 처리
+        """
+        try:
+            # 포지션 업데이트는 중요하여 즉시 백업 생성
+            self.logger.debug(f"포지션 변경 감지 - 유형: {data.get('event_type')}")
+            self._delayed_state_backup(delay=5)  # 5초 뒤 백업 (연속적인 업데이트 중복 방지)
+        except Exception as e:
+            self.logger.error(f"포지션 변경 백업 처리 중 오류: {e}")
+    
+    def _handle_trade_executed(self, data):
+        """
+        거래 실행 이벤트 처리
+        """
+        try:
+            self.logger.debug("거래 실행 감지: 거래 백업 생성")
+            
+            # 거래 이력 백업 (별도 파일로 저장)
+            trade_data = {'trades': [data.get('trade', {})], 'last_update': time.time()}
+            
+            # 거래 백업 생성
+            self.create_backup(self.BACKUP_TYPE_TRADES, trade_data)
+            
+            # 다음 백업을 위한 상태 백업도 생성
+            self._delayed_state_backup(delay=5)
+        except Exception as e:
+            self.logger.error(f"거래 백업 처리 중 오류: {e}")
+    
+    def _handle_system_shutdown(self, data):
+        """
+        시스템 종료 이벤트 처리
+        """
+        try:
+            self.logger.info("시스템 종료 감지: 전체 백업 생성")
+            
+            # 시스템 종료 시 전체 백업 생성
+            self.create_backup(self.BACKUP_TYPE_FULL, data.get('state', {}))
+        except Exception as e:
+            self.logger.error(f"시스템 종료 백업 처리 중 오류: {e}")
+    
+    def _delayed_state_backup(self, delay=30):
+        """
+        지정된 지연 시간 후 상태 백업 생성
+        
+        Args:
+            delay: 지연 시간 (초)
+        """
+        def delayed_backup():
+            try:
+                time.sleep(delay)
+                # TODO: 어떤 데이터를 백업할지는 다음 단계에서 설정
+                self.create_backup(self.BACKUP_TYPE_STATE, {})
+            except Exception as e:
+                self.logger.error(f"지연 백업 실행 중 오류: {e}")
+        
+        
+        # 다른 스레드에서 백업 실행
+        backup_thread = threading.Thread(target=delayed_backup)
+        backup_thread.daemon = True
+        backup_thread.start()
+
 if __name__ == "__main__":
     # 간단한 테스트
     manager = BackupManager(backup_interval=10, max_backups=5)

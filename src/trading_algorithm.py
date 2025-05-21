@@ -17,6 +17,7 @@ import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
+import psutil
 from src.error_handlers import (
     simple_error_handler, safe_execution, api_error_handler,
     network_error_handler, db_error_handler, trade_error_handler
@@ -39,6 +40,7 @@ from src.strategies import (
 from src.memory_monitor import get_memory_monitor
 from src.resource_manager import get_resource_manager
 from src.backup_manager import get_backup_manager
+from src.event_manager import get_event_manager, EventType
 from src.config import (
     DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME,
     RISK_MANAGEMENT
@@ -141,7 +143,9 @@ class TradingAlgorithm:
         
         # 백업 관리자 초기화
         self.backup_manager = get_backup_manager()
-        self.backup_manager.start_backup_scheduler()
+        
+        # 이벤트 관리자 초기화
+        self.event_manager = get_event_manager()
         
         # 이전 상태 복원
         if restore_state:
@@ -225,9 +229,11 @@ class TradingAlgorithm:
                     'last_signal': self.last_signal,
                     'auto_sl_tp_enabled': self.auto_sl_tp_enabled,
                     'partial_tp_enabled': self.partial_tp_enabled,
-                    'last_update': time.time()
+                    'last_update': time.time(),
+                    'memory_usage': self.get_memory_usage()
                 },
-                'positions': self.portfolio_manager.get_open_positions_data()
+                'positions': self.portfolio_manager.get_open_positions_data(),
+                'portfolio': self.portfolio_manager.portfolio.copy() if hasattr(self.portfolio_manager, 'portfolio') else {}
             }
             
             # 백업 생성
@@ -283,9 +289,12 @@ class TradingAlgorithm:
                     'last_signal': self.last_signal,
                     'auto_sl_tp_enabled': self.auto_sl_tp_enabled,
                     'partial_tp_enabled': self.partial_tp_enabled,
-                    'last_update': time.time()
+                    'last_update': time.time(),
+                    'memory_usage': self.get_memory_usage(),
+                    'system_info': self._get_system_info()
                 },
                 'positions': self.portfolio_manager.get_open_positions_data(),
+                'portfolio': self.portfolio_manager.portfolio.copy() if hasattr(self.portfolio_manager, 'portfolio') else {},
                 'config': self.get_config(),
                 'trades': self.portfolio_manager.get_recent_trades(50)  # 최근 50개 거래 기록
             }
@@ -304,6 +313,25 @@ class TradingAlgorithm:
         except Exception as e:
             logger.error(f"전체 백업 생성 중 오류: {e}")
             return False
+            
+    def _get_system_info(self) -> Dict[str, Any]:
+        """
+        시스템 상태 정보 수집
+        
+        Returns:
+            Dict[str, Any]: 시스템 상태 정보
+        """
+        try:
+            return {
+                'cpu_percent': psutil.cpu_percent(),
+                'memory_percent': psutil.virtual_memory().percent,
+                'disk_usage_percent': psutil.disk_usage('/').percent,
+                'process_memory': psutil.Process(os.getpid()).memory_info().rss,
+                'timestamp': time.time()
+            }
+        except Exception as e:
+            logger.error(f"시스템 정보 수집 중 오류: {e}")
+            return {}
     
     def get_config(self):
         """
@@ -381,6 +409,17 @@ class TradingAlgorithm:
         
         self.trading_active = True
         
+        # 시스템 시작 이벤트 발행
+        self.event_manager.publish(EventType.SYSTEM_STARTUP, {
+            'timestamp': datetime.now().isoformat(),
+            'system_info': self._get_system_info(),
+            'exchange_id': self.exchange_id,
+            'symbol': self.symbol
+        })
+        
+        # 백업 스케줄러 시작
+        self.backup_manager.start_backup_scheduler()
+        
         # 초기 상태 백업 생성
         self._create_state_backup()
         
@@ -406,6 +445,17 @@ class TradingAlgorithm:
         
         # 백업 스케줄러 종료
         self.backup_manager.stop_backup_scheduler()
+        
+        # 시스템 종료 이벤트 발행
+        self.event_manager.publish(EventType.SYSTEM_SHUTDOWN, {
+            'timestamp': datetime.now().isoformat(),
+            'system_info': self._get_system_info(),
+            'memory_usage': self.get_memory_usage(),
+            'state': {
+                'trading_active': self.trading_active,
+                'last_signal': self.last_signal
+            }
+        })
         
         # 최종 상태 백업 생성
         self._create_full_backup()
