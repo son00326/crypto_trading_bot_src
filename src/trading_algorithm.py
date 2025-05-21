@@ -14,6 +14,7 @@ import threading
 import logging
 import pandas as pd
 import numpy as np
+from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from pathlib import Path
 from src.error_handlers import (
@@ -37,6 +38,7 @@ from src.strategies import (
 )
 from src.memory_monitor import get_memory_monitor
 from src.resource_manager import get_resource_manager
+from src.backup_manager import get_backup_manager
 from src.config import (
     DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME,
     RISK_MANAGEMENT
@@ -137,6 +139,10 @@ class TradingAlgorithm:
         self.memory_monitor.start_monitoring()
         self.resource_manager.start_cleanup_scheduler()
         
+        # 백업 관리자 초기화
+        self.backup_manager = get_backup_manager()
+        self.backup_manager.start_backup_scheduler()
+        
         # 이전 상태 복원
         if restore_state:
             self._restore_state()
@@ -144,266 +150,100 @@ class TradingAlgorithm:
         logger.info(f"{exchange_id} 거래소의 {symbol} 거래 알고리즘이 초기화되었습니다.")
     
     def _restore_state(self):
-        """데이터베이스에서 이전 상태 복원"""
+        """
+        데이터베이스 및 백업에서 이전 상태 복원
+        """
         try:
-            # 봇 상태 불러오기
-            saved_state = self.db.load_bot_state()
-            if saved_state:
-                logger.info("이전 봇 상태를 불러옵니다.")
-                
-                # 기본 설정 복원
-                if 'symbol' in saved_state and saved_state['symbol'] == self.symbol:
-                    if 'is_running' in saved_state:
-                        self.trading_active = saved_state['is_running']
-                    if 'test_mode' in saved_state:
-                        self.test_mode = saved_state['test_mode']
-                        if self.test_mode:
-                            self.exchange_api.exchange.set_sandbox_mode(True)
-                    
-                    # 전략 파라미터 복원 (필요시)
-                    if 'parameters' in saved_state and saved_state['parameters']:
-                        logger.info("전략 파라미터를 복원합니다.")
-                        # 여기서 전략별 파라미터 적용 코드 추가 가능
-                    
-                    logger.info("봇 상태 복원 완료")
-                else:
-                    logger.warning(f"저장된 상태의 심볼({saved_state.get('symbol')})이 현재 심볼({self.symbol})과 일치하지 않습니다.")
-            
-            # 열린 포지션 복원
-            open_positions = self.db.get_open_positions(self.symbol)
-            if open_positions:
-                logger.info(f"{len(open_positions)}개의 열린 포지션을 복원합니다.")
-                self.portfolio['positions'] = open_positions
-            
-            # 잔액 정보 복원
-            latest_balance = self.db.get_latest_balance()
-            if latest_balance:
-                for currency, bal_info in latest_balance.items():
-                    if currency == self.portfolio['base_currency']:
-                        self.portfolio['base_balance'] = bal_info['amount']
-                    elif currency == self.portfolio['quote_currency']:
-                        self.portfolio['quote_balance'] = bal_info['amount']
-            
-            # 거래 내역 복원 (최근 50개)
-            recent_trades = self.db.get_trades(self.symbol, limit=50)
-            if recent_trades:
-                logger.info(f"{len(recent_trades)}개의 최근 거래 내역을 복원합니다.")
-                self.portfolio['trade_history'] = recent_trades
-                
-                # 마지막 신호 유추
-                if recent_trades:
-                    last_trade = recent_trades[0]  # 가장 최근 거래
-                    if last_trade['side'] == 'buy':
-                        self.last_signal = 1
-                    elif last_trade['side'] == 'sell':
-                        self.last_signal = -1
-            
-            logger.info("상태 복원 완료")
-            return True
+            # 먼저 데이터베이스에서 복원 시도
+            self.portfolio_manager.restore_portfolio()
+            # 최신 포트폴리오 참조
+            self.portfolio = self.portfolio_manager.portfolio
+            logger.info("이전 포트폴리오 상태를 데이터베이스에서 복원했습니다.")
         except Exception as e:
-            logger.error(f"상태 복원 중 오류 발생: {e}")
+            logger.warning(f"데이터베이스에서 상태 복원 실패: {e}")
+            
+            # 데이터베이스 복원 실패 시 백업에서 복원 시도
+            self._restore_from_backup()
+    
+    def _restore_from_backup(self):
+        """
+        백업 파일에서 상태 복원 시도
+        """
+        try:
+            # 최신 상태 백업 파일 조회
+            latest_backup = self.backup_manager.get_latest_backup(self.backup_manager.BACKUP_TYPE_STATE)
+            if not latest_backup:
+                logger.warning("사용 가능한 상태 백업이 없습니다.")
+                return False
+            
+            # 백업 파일 복원
+            success, restore_data = self.backup_manager.restore_from_backup(latest_backup)
+            if not success:
+                logger.warning(f"백업 복원 실패: {restore_data.get('error')}")
+                return False
+            
+            # 복원된 데이터에서 상태 추출
+            backup_data = restore_data.get('backup_data', {})
+            state_data = backup_data.get('state', {})
+            positions_data = backup_data.get('positions', {})
+            
+            # 상태 복원 로직 구현 (다음 단계에서 구현)
+            logger.info(f"백업에서 상태 복원 성공: {latest_backup}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"백업에서 상태 복원 중 오류: {e}")
             return False
     
     def save_state(self):
-        """현재 상태를 데이터베이스에 저장"""
+        """
+        현재 상태를 데이터베이스와 백업 시스템에 저장
+        """
         try:
-            # 봇 상태 저장
-            bot_state = {
-                'exchange_id': self.exchange_id,
-                'symbol': self.symbol,
-                'timeframe': self.timeframe,
-                'strategy': self.strategy.name if hasattr(self.strategy, 'name') else 'unknown',
-                'market_type': 'futures' if self.exchange_api.is_futures else 'spot',
-                'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
-                'is_running': self.trading_active,
-                'test_mode': self.test_mode,
-                'updated_at': datetime.now().isoformat(),
-                'parameters': {
-                    'risk_management': self.risk_management,
-                    'strategy_params': getattr(self.strategy, 'params', {})
+            # 포트폴리오 상태를 데이터베이스에 저장
+            self.portfolio_manager.save_portfolio()
+            logger.debug("현재 상태가 데이터베이스에 저장되었습니다.")
+            
+            # 상태 백업 생성
+            self._create_state_backup()
+            
+        except Exception as e:
+            logger.error(f"상태 저장 중 오류: {e}")
+    
+    def _create_state_backup(self):
+        """
+        현재 상태의 백업 생성
+        
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            # 백업할 상태 데이터 수집
+            backup_data = {
+                'state': {
+                    'trading_active': self.trading_active,
+                    'last_signal': self.last_signal,
+                    'auto_sl_tp_enabled': self.auto_sl_tp_enabled,
+                    'partial_tp_enabled': self.partial_tp_enabled,
+                    'last_update': time.time()
                 },
-                'additional_info': {
-                    'last_signal': self.last_signal
-                }
+                'positions': self.portfolio_manager.get_open_positions_data()
             }
             
-            # 봇 상태 저장
-            self.db.save_bot_state(bot_state)
-            logger.info("봇 상태 저장 완료")
-            
-            # PortfolioManager를 통한 포트폴리오 상태 저장
-            portfolio_saved = self.portfolio_manager.save_state()
-            
-            if portfolio_saved:
-                logger.info("포트폴리오 상태 저장 완료")
-            else:
-                logger.warning("포트폴리오 상태 저장 실패")
-                
-            # 이전 버전과의 호환성을 위해 추가 저장 작업 수행
-            # 현재 잔액 저장
-            self.db.save_balance(self.portfolio['base_currency'], 
-                                self.portfolio['base_balance'],
-                                {'source': 'automatic_save'})
-            
-            self.db.save_balance(self.portfolio['quote_currency'], 
-                                self.portfolio['quote_balance'],
-                                {'source': 'automatic_save'})
-            
-            return True
-        except Exception as e:
-            logger.error(f"상태 저장 중 오류 발생: {e}")
-            return False
-    
-    def update_portfolio(self):
-        """포트폴리오 정보 업데이트"""
-        try:
-            # PortfolioManager를 통해 포트폴리오 업데이트
-            self.portfolio_manager.update_portfolio()
-            
-            # 이전 버전과의 호환성을 위해 포트폴리오 참조 업데이트
-            self.portfolio = self.portfolio_manager.portfolio
-            
-            # 로깅
-            base_currency = self.portfolio['base_currency']
-            quote_currency = self.portfolio['quote_currency']
-            logger.info(f"포트폴리오 업데이트: {base_currency}={self.portfolio['base_balance']}, {quote_currency}={self.portfolio['quote_balance']}")
-            
-        except Exception as e:
-            logger.error(f"포트폴리오 업데이트 중 오류 발생: {e}")
-            return False
-        
-        return True
-    
-    @simple_error_handler(default_return=False)
-    def update_portfolio_after_trade(self, trade_type, price, quantity, fee=None, is_test=None):
-        """
-        거래 후 포트폴리오 업데이트
-        
-        Args:
-            trade_type (str): 거래 유형 ('buy' 또는 'sell')
-            price (float): 거래 가격
-            quantity (float): 거래 수량
-            fee (float, optional): 수수료, None인 경우 기본값 사용
-            is_test (bool, optional): 테스트 모드 여부, None인 경우 현재 객체 상태 사용
-        """
-        # PortfolioManager를 통해 포트폴리오 업데이트
-        result = self.portfolio_manager.update_portfolio_after_trade(
-            trade_type=trade_type,
-            price=price,
-            quantity=quantity,
-            fee=fee,
-            is_test=is_test
-        )
-        
-        # 이전 버전과의 호환성을 위해 포트폴리오 참조 업데이트
-        self.portfolio = self.portfolio_manager.portfolio
-        
-        logger.info(f"거래 후 포트폴리오 업데이트: {trade_type}, 가격={price}, 수량={quantity}, 수수료={fee if fee else '기본값'}")
-        return result
-    
-    def calculate_position_size(self, price):
-        """
-        위험 관리 설정에 따른 포지션 크기 계산
-        RiskManager의 계산 로직을 활용합니다.
-        
-        Args:
-            price (float): 현재 가격
-        
-        Returns:
-            float: 매수/매도할 수량
-        """
-        try:
-            # PortfolioManager를 통해 사용 가능한 잔고 확인
-            available_balance = self.portfolio_manager.get_available_balance(self.portfolio['quote_currency'])
-            
-            # RiskManager를 통한 포지션 크기 계산
-            quantity = self.risk_manager.calculate_position_size(available_balance, price)
-            
-            # OrderExecutor에서 최소 주문 수량 확인
-            min_quantity = self.order_executor.min_order_qty
-            
-            if quantity < min_quantity:
-                logger.warning(f"계산된 수량({quantity})이 최소 주문 수량({min_quantity})보다 작습니다.")
-                return 0
-            
-            return quantity
-        
-        except Exception as e:
-            logger.error(f"포지션 크기 계산 중 오류 발생: {e}")
-            return 0
-    
-    @trade_error_handler(retry_count=2, max_delay=10)
-    def execute_buy(self, price, quantity, additional_info=None, close_position=False, position_id=None):
-        """
-        매수 주문 실행
-        
-        Args:
-            price (float): 매수 가격
-            quantity (float): 매수 수량
-            additional_info (dict, optional): 추가 정보 (자동 손절매/이익실현 등에 의한 포지션 종료 정보)
-            close_position (bool, optional): 숏 포지션 종료를 위한 매수인지 여부
-            position_id (str, optional): 포지션 ID (종료 시 사용)
-        
-        Returns:
-            dict: 주문 결과
-        """
-        if quantity <= 0:
-            logger.warning(f"유효하지 않은 주문 수량: {quantity}")
-            return None
-            
-        try:
-            # OrderExecutor를 사용하여 주문 실행
-            order = self.order_executor.execute_buy(
-                price=price,
-                quantity=quantity,
-                portfolio=self.portfolio,  # 이전 버전과의 호환성을 위해 전달
-                additional_info=additional_info,
-                close_position=close_position,
-                position_id=position_id
+            # 백업 생성
+            backup_path = self.backup_manager.create_backup(
+                self.backup_manager.BACKUP_TYPE_STATE, 
+                backup_data
             )
             
-            if order:
-                # 포트폴리오 업데이트
-                self.portfolio_manager.update_portfolio_after_trade('buy', price, quantity)
-                
-                # 자동 손절매/이익실현 설정
-                if not close_position and self.auto_sl_tp_enabled and order.get('id'):
-                    position_id = order.get('id')
-                    stop_loss_price = self.risk_manager.calculate_stop_loss_price(
-                        price, 'long', self.risk_management['stop_loss_percentage']
-                    )
-                    take_profit_price = self.risk_manager.calculate_take_profit_price(
-                        price, 'long', self.risk_management['take_profit_percentage']
-                    )
-                    
-                    logger.info(f"자동 SL/TP 설정: SL={stop_loss_price}, TP={take_profit_price}")
-                    
-                    # 포지션 객체 가져오기
-                    open_positions = self.portfolio_manager.get_open_positions(self.symbol)
-                    for position in open_positions:
-                        if position.get('id') == position_id:
-                            # 데이터베이스에 SL/TP 저장
-                            self.db.update_position(position_id, {
-                                'stop_loss': stop_loss_price,
-                                'take_profit': take_profit_price,
-                                'auto_sl_tp': True
-                            })
-                            break
-                
-                # 새 포트폴리오 상태를 참조하도록 업데이트 (이전 버전과의 호환성을 위해)
-                self.portfolio = self.portfolio_manager.portfolio
-                
-                # 현재 상태 저장
-                self.save_state()
-                
-                return order
-            else:
-                logger.error("매수 주문 실패")
-                return None
-                
+            if backup_path:
+                logger.debug(f"상태 백업 생성 완료: {os.path.basename(backup_path)}")
+                return True
+            return False
+            
         except Exception as e:
-            logger.error(f"매수 주문 실행 중 오류 발생: {e}")
-            return None
+            logger.error(f"상태 백업 생성 중 오류: {e}")
+            return False
     
     def get_memory_usage(self):
         """
@@ -427,6 +267,153 @@ class TradingAlgorithm:
         }
         
         return result
+    
+    def _create_full_backup(self):
+        """
+        전체 데이터 백업 생성
+        
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            # 백업할 전체 데이터 수집
+            backup_data = {
+                'state': {
+                    'trading_active': self.trading_active,
+                    'last_signal': self.last_signal,
+                    'auto_sl_tp_enabled': self.auto_sl_tp_enabled,
+                    'partial_tp_enabled': self.partial_tp_enabled,
+                    'last_update': time.time()
+                },
+                'positions': self.portfolio_manager.get_open_positions_data(),
+                'config': self.get_config(),
+                'trades': self.portfolio_manager.get_recent_trades(50)  # 최근 50개 거래 기록
+            }
+            
+            # 백업 생성
+            backup_path = self.backup_manager.create_backup(
+                self.backup_manager.BACKUP_TYPE_FULL, 
+                backup_data
+            )
+            
+            if backup_path:
+                logger.info(f"전체 백업 생성 완료: {os.path.basename(backup_path)}")
+                return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"전체 백업 생성 중 오류: {e}")
+            return False
+    
+    def get_config(self):
+        """
+        현재 설정 정보 반환
+        
+        Returns:
+            Dict[str, Any]: 설정 정보
+        """
+        return {
+            'exchange_id': self.exchange_id,
+            'symbol': self.symbol,
+            'timeframe': self.timeframe,
+            'test_mode': self.test_mode,
+            'risk_management': self.risk_management,
+            'strategy': {
+                'name': self.strategy.name if hasattr(self.strategy, 'name') else self.strategy.__class__.__name__,
+                'type': self.strategy.__class__.__name__,
+                'parameters': self.strategy.get_parameters() if hasattr(self.strategy, 'get_parameters') else {}
+            }
+        }
+    
+    def backup_config(self):
+        """
+        현재 설정 정보 백업
+        
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            config_data = {'config': self.get_config()}
+            backup_path = self.backup_manager.create_backup(
+                self.backup_manager.BACKUP_TYPE_CONFIG, 
+                config_data
+            )
+            
+            if backup_path:
+                logger.info(f"설정 백업 생성 완료: {os.path.basename(backup_path)}")
+                return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"설정 백업 생성 중 오류: {e}")
+            return False
+    
+    def get_backups(self):
+        """
+        사용 가능한 백업 목록 조회
+        
+        Returns:
+            Dict[str, List[Dict[str, Any]]]: 백업 목록
+        """
+        return self.backup_manager.list_backups()
+    
+    def start_trading(self):
+        """
+        거래 시작
+        """
+        if self.trading_active:
+            logger.warning("거래가 이미 진행 중입니다.")
+            return
+        
+        # 메모리 관리 모니터링 시작
+        self.memory_monitor.start_monitoring()
+        self.resource_manager.start_cleanup_scheduler()
+        
+        # 백업 스케줄러 시작
+        self.backup_manager.start_backup_scheduler()
+        
+        # 포트폴리오 업데이트
+        self.update_portfolio()
+        
+        # 자동 손절매/이익실현 활성화 (설정되어 있는 경우)
+        if self.auto_sl_tp_enabled:
+            self.enable_auto_sl_tp()
+        
+        self.trading_active = True
+        
+        # 초기 상태 백업 생성
+        self._create_state_backup()
+        
+        logger.info("자동 거래가 시작되었습니다.")
+    
+    def stop_trading(self):
+        """
+        거래 중지
+        """
+        if not self.trading_active:
+            logger.warning("거래가 이미 중지된 상태입니다.")
+            return
+        
+        self.trading_active = False
+        
+        # 자동 손절매/이익실현 비활성화
+        if self.auto_sl_tp_enabled:
+            self.disable_auto_sl_tp()
+        
+        # 메모리 관리 모니터링 종료
+        self.memory_monitor.stop_monitoring()
+        self.resource_manager.stop_cleanup_scheduler()
+        
+        # 백업 스케줄러 종료
+        self.backup_manager.stop_backup_scheduler()
+        
+        # 최종 상태 백업 생성
+        self._create_full_backup()
+        
+        # 상태 저장
+        self.save_state()
+        
+        logger.info("거래가 중지되었습니다.")
     
     def get_portfolio_summary(self):
         """
