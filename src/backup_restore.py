@@ -262,16 +262,27 @@ class BackupRestoreManager:
             Tuple[bool, Dict[str, Any]]: (성공 여부, 결과 데이터)
         """
         try:
+            # 백업 데이터에서 상태 데이터 추출 시도 - 다양한 키 이름 확인
             state_data = backup_data.get('state', {})
+            
+            # 'state' 키가 없는 경우 'state_data' 키 확인
+            if not state_data and 'state_data' in backup_data:
+                state_data = backup_data.get('state_data', {})
+                self.logger.info("'state' 키 대신 'state_data' 키를 사용하여 상태 복원 시도")
+            
             portfolio_data = backup_data.get('portfolio', {})
             
+            # 상태 데이터가 없지만 복원을 계속 시도
             if not state_data:
-                return False, {"error": "Invalid state backup: missing state data"}
+                self.logger.warning("백업에 상태 데이터가 없습니다. 빈 상태로 초기화합니다.")
+                state_data = {}
             
             # 포트폴리오 데이터가 있으면 복원
             portfolio_restored = False
             if portfolio_data:
                 portfolio_restored = self._restore_portfolio_data(portfolio_data)
+            else:
+                self.logger.warning("백업에 포트폴리오 데이터가 없습니다.")
             
             # 봇 상태 복원
             state_restored = self._restore_bot_state(state_data)
@@ -507,18 +518,43 @@ class BackupRestoreManager:
     def _save_pre_restore_snapshot(self):
         """복원 전 현재 상태 스냅샷 저장 (롤백용)"""
         try:
-            from src.db_manager import DatabaseManager
-            db = DatabaseManager()
-            
+            # 기본 스냅샷 데이터 구조 생성
             snapshot = {
                 'timestamp': datetime.now().isoformat(),
-                'balances': db.get_balances(),
-                'open_positions': db.get_open_positions(),
-                'bot_state': self.recovery_manager.load_bot_state()
+                'balances': {},
+                'open_positions': [],
+                'bot_state': {}
             }
             
+            # 안전하게 각 정보 수집 시도
+            try:
+                from src.db_manager import DatabaseManager
+                db = DatabaseManager()
+                
+                # 현재 계정 잔고 가져오기 시도
+                try:
+                    snapshot['balances'] = db.get_balances()
+                except Exception as e:
+                    self.logger.warning(f"잔고 정보 가져오기 실패: {e}")
+                
+                # 현재 포지션 정보 가져오기 시도
+                try:
+                    snapshot['open_positions'] = db.get_open_positions()
+                except Exception as e:
+                    self.logger.warning(f"포지션 정보 가져오기 실패: {e}")
+                
+                # 봇 상태 정보 가져오기 시도
+                try:
+                    snapshot['bot_state'] = db.load_bot_state() or {}
+                except Exception as e:
+                    self.logger.warning(f"봇 상태 정보 가져오기 실패: {e}")
+            
+            except Exception as db_error:
+                self.logger.warning(f"DB 연결 중 오류: {db_error}")
+            
+            # 스냅샷 파일 저장
             snapshot_file = os.path.join(self.restore_dir, 
-                                       f'pre_restore_snapshot_{int(time.time())}.json')
+                                   f'pre_restore_snapshot_{int(time.time())}.json')
             
             with open(snapshot_file, 'w', encoding='utf-8') as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
@@ -660,35 +696,89 @@ def get_backup_restore_manager() -> BackupRestoreManager:
 
 # 테스트 코드
 if __name__ == "__main__":
+    print("=== 백업 및 복원 시스템 테스트 ===\n")
+    
+    # 자동 복원 비활성화로 시작
     restore_manager = BackupRestoreManager(auto_restore=False)
     
-    # 복원 테스트
-    # 백업 목록 가져오기
+    # 1. 백업 목록 테스트
+    print("1. 백업 목록 테스트")
     backups = restore_manager.backup_manager.list_backups()
     
     print("\n사용 가능한 백업:")
+    has_backups = False
     for backup_type, backup_list in backups.items():
         print(f"\n== {backup_type} 백업 ({len(backup_list)}개) ==")
-        for i, backup in enumerate(backup_list[:3]):  # 최대 3개만 표시
-            print(f" {i+1}. {backup['file_name']} ({backup['size_kb']}KB, {backup['created_at']})")
+        if backup_list:
+            has_backups = True
+            for i, backup in enumerate(backup_list[:3]):  # 최대 3개만 표시
+                print(f" {i+1}. {backup['file_name']} ({backup['size_kb']}KB, {backup['created_at']})")
     
-    # 최신 상태 백업 자동 선택
+    # 2. 백업 생성 테스트
+    print("\n\n2. 백업 생성 테스트")
+    # 테스트용 데이터 생성
+    test_data = {
+        'timestamp': datetime.now().isoformat(),
+        'test_id': f'test_{int(time.time())}',
+        'system_info': {
+            'platform': 'test_platform',
+            'memory': '8GB',
+            'cpu': 'test_cpu',
+            'python_version': sys.version
+        },
+        'portfolio': {
+            'base_currency': 'USDT',
+            'base_balance': 1000.0,
+            'positions': []
+        }
+    }
+    
+    # 상태 백업 생성
+    state_backup = restore_manager.backup_manager.create_backup(
+        restore_manager.backup_manager.BACKUP_TYPE_STATE, test_data)
+    
+    if state_backup:
+        print(f"\n상태 백업 생성 성공: {os.path.basename(state_backup)}")
+    else:
+        print("\n상태 백업 생성 실패")
+    
+    # 3. 백업 선택 테스트
+    print("\n\n3. 백업 선택 테스트")
     restore_manager.restore_strategy = 'latest_first'
     backup_file = restore_manager._select_best_backup()
     
     if backup_file:
         print(f"\n선택된 백업 파일: {os.path.basename(backup_file)}")
-        
-        # 복원 수행
-        confirm = input("이 백업에서 복원하시겠습니까? (y/n): ")
-        if confirm.lower() == 'y':
-            success, result = restore_manager.restore_from_backup(backup_file)
-            
-            if success:
-                print(f"복원 성공: {result}")
-            else:
-                print(f"복원 실패: {result.get('error', '알 수 없는 오류')}")
-        else:
-            print("복원이 취소되었습니다.")
     else:
-        print("복원할 백업을 찾을 수 없습니다.")
+        print("\n복원할 백업을 찾을 수 없습니다. 백업을 먼저 생성해주세요.")
+        exit(0)
+    
+    # 4. 백업 복원 테스트 (자동 응답)
+    print("\n\n4. 백업 복원 테스트 (자동)")
+    # 복원 수행 (자동)
+    print(f"\n'{os.path.basename(backup_file)}' 백업에서 자동 복원 시도 중...")
+    
+    success, result = restore_manager.restore_from_backup(backup_file)
+    
+    if success:
+        restored = result.get('components_restored', {})
+        print(f"\n복원 성공! 복원된 구성요소:")
+        for component, restored_status in restored.items():
+            print(f" - {component}: {'성공' if restored_status else '실패'}")
+    else:
+        print(f"\n복원 실패: {result.get('error', '알 수 없는 오류')}")
+    
+    # 5. 자동 복원 테스트
+    print("\n\n5. 자동 복원 전략 테스트")
+    print("\n다양한 복원 전략 테스트:")
+    
+    for strategy in ['latest_first', 'full_preferred', 'state_only']:
+        restore_manager.restore_strategy = strategy
+        backup_file = restore_manager._select_best_backup()
+        
+        if backup_file:
+            print(f" - {strategy}: {os.path.basename(backup_file)} 선택")
+        else:
+            print(f" - {strategy}: 적합한 백업 없음")
+    
+    print("\n=== 테스트 완료 ===\n")

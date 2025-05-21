@@ -495,15 +495,17 @@ class DatabaseManager:
             values = list(position_data.values())
             
             query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
-            self.cursor.execute(query, values)
-            self.conn.commit()
+            conn, cursor = self._get_connection()
+            cursor.execute(query, values)
+            conn.commit()
             
-            position_id = self.cursor.lastrowid
+            position_id = cursor.lastrowid
             logger.info(f"포지션 저장 완료 (ID: {position_id})")
             return position_id
         except sqlite3.Error as e:
             logger.error(f"포지션 저장 오류: {e}")
-            self.conn.rollback()
+            conn, _ = self._get_connection()
+            conn.rollback()
             return None
     
     def update_position(self, position_id, update_data):
@@ -518,6 +520,9 @@ class DatabaseManager:
             bool: 업데이트 성공 여부
         """
         try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
             # JSON으로 직렬화해야 하는 필드 처리
             if 'additional_info' in update_data and isinstance(update_data['additional_info'], dict):
                 update_data['additional_info'] = json.dumps(update_data['additional_info'])
@@ -528,41 +533,51 @@ class DatabaseManager:
             values.append(position_id)
             
             query = f"UPDATE positions SET {set_clause} WHERE id = ?"
-            self.cursor.execute(query, values)
-            self.conn.commit()
+            cursor.execute(query, values)
+            conn.commit()
             
-            logger.info(f"포지션 업데이트 완료 (ID: {position_id})")
-            return True
+            affected_rows = cursor.rowcount
+            if affected_rows > 0:
+                logger.info(f"포지션 업데이트 완료 (ID: {position_id})")
+                return True
+            else:
+                logger.warning(f"포지션 업데이트 실패 - 해당 ID 찾을 수 없음: {position_id}")
+                return False
+                
         except sqlite3.Error as e:
             logger.error(f"포지션 업데이트 오류: {e}")
-            self.conn.rollback()
+            conn, _ = self._get_connection()
+            conn.rollback()
             return False
     
     def get_open_positions(self, symbol=None):
         """
         열린 포지션 가져오기
-        
+
         Args:
             symbol (str, optional): 특정 심볼 필터링
-        
+
         Returns:
             list: 포지션 정보 목록
         """
         try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
             query = "SELECT * FROM positions WHERE status = 'open'"
             params = []
-            
+
             if symbol:
                 query += " AND symbol = ?"
                 params.append(symbol)
-            
-            self.cursor.execute(query, params)
-            rows = self.cursor.fetchall()
-            
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
             positions = []
             for row in rows:
                 position = dict(row)
-                
+
                 # JSON 필드 역직렬화
                 if 'additional_info' in position and position['additional_info']:
                     try:
@@ -570,18 +585,150 @@ class DatabaseManager:
                     except json.JSONDecodeError:
                         position['additional_info'] = {}
                         logger.warning(f"포지션 ID {position.get('id')}의 additional_info JSON 파싱 오류")
-                
+
                 # 필수 필드 기본값 설정
                 position.setdefault('type', position.get('side', 'unknown'))
                 position.setdefault('current_price', 0)
                 position.setdefault('profit', 0)
                 position.setdefault('profit_percent', 0)
-                
+
                 positions.append(position)
-            
+
             return positions
+            
         except sqlite3.Error as e:
             logger.error(f"열린 포지션 조회 오류: {e}")
+            return []
+    
+    def save_trade(self, trade_data):
+        """
+        거래 내역 저장
+
+        Args:
+            trade_data (dict): 거래 정보
+
+        Returns:
+            int: 새로 생성된 거래 ID
+        """
+        try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
+            # JSON으로 직렬화해야 하는 필드 처리
+            if 'additional_info' in trade_data and isinstance(trade_data['additional_info'], dict):
+                trade_data['additional_info'] = json.dumps(trade_data['additional_info'])
+
+            # 새 거래 저장
+            placeholders = ', '.join(['?'] * len(trade_data))
+            columns = ', '.join(trade_data.keys())
+            values = list(trade_data.values())
+
+            query = f"INSERT INTO trades ({columns}) VALUES ({placeholders})"
+            cursor.execute(query, values)
+            conn.commit()
+
+            trade_id = cursor.lastrowid
+            logger.info(f"거래 내역 저장 완료 (ID: {trade_id})")
+            return trade_id
+            
+        except sqlite3.Error as e:
+            logger.error(f"거래 내역 저장 오류: {e}")
+            if conn:
+                conn.rollback()
+            return None
+    
+    def get_trades(self, symbol=None, limit=50, offset=0):
+        """
+        거래 내역 가져오기
+
+        Args:
+            symbol (str, optional): 특정 심볼 필터링
+            limit (int, optional): 반환할 최대 결과 수
+            offset (int, optional): 결과 오프셋
+
+        Returns:
+            list: 거래 내역 목록
+        """
+        try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
+            query = "SELECT * FROM trades"
+            params = []
+
+            if symbol:
+                query += " WHERE symbol = ?"
+                params.append(symbol)
+
+            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            trades = []
+            for row in rows:
+                trade = dict(row)
+
+                # JSON 필드 역직렬화
+                if 'additional_info' in trade and trade['additional_info']:
+                    try:
+                        trade['additional_info'] = json.loads(trade['additional_info'])
+                    except json.JSONDecodeError:
+                        trade['additional_info'] = {}
+                        logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
+
+                trades.append(trade)
+
+            return trades
+            
+        except sqlite3.Error as e:
+            logger.error(f"거래 내역 조회 오류: {e}")
+            return []
+    
+    def load_trades(self, limit=20):
+        """
+        최근 거래 내역 로드 (API용)
+
+        Args:
+            limit (int, optional): 가져올 거래 내역 수
+
+        Returns:
+            list: 거래 내역 목록
+        """
+        try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+
+            # 거래 내역 쿼리
+            query = "SELECT * FROM trades ORDER BY timestamp DESC"
+            params = []
+
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            trades = []
+            for row in rows:
+                trade = dict(row)
+                
+                # JSON 필드 역직렬화
+                if 'additional_info' in trade and trade['additional_info']:
+                    try:
+                        trade['additional_info'] = json.loads(trade['additional_info'])
+                    except json.JSONDecodeError:
+                        trade['additional_info'] = {}
+                        logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
+                
+                trades.append(trade)
+            
+            return trades
+            
+        except sqlite3.Error as e:
+            logger.error(f"거래 내역 로드 오류: {e}")
             return []
     
     def save_trade(self, trade_data):
@@ -907,6 +1054,63 @@ class DatabaseManager:
             self.conn.rollback()
             return False
     
+    def get_balances(self, exchange_id=None):
+        """
+        저장된 계정 잔고 정보 가져오기
+        
+        Args:
+            exchange_id (str, optional): 특정 거래소의 잔고만 가져올 경우
+            
+        Returns:
+            dict: 통화별 잔고 정보를 담은 딕셔너리
+        """
+        conn, cursor = self._get_connection()
+        
+        try:
+            query = """
+            SELECT b1.* 
+            FROM balance_history b1
+            INNER JOIN (
+                SELECT currency, MAX(timestamp) as max_time
+                FROM balance_history
+                GROUP BY currency
+            ) b2 ON b1.currency = b2.currency AND b1.timestamp = b2.max_time
+            """
+            
+            params = []
+            if exchange_id:
+                query += " WHERE b1.exchange_id = ?"
+                params.append(exchange_id)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            
+            balances = {}
+            for row in rows:
+                bal = dict(row)
+                currency = bal.get('currency')
+                exchange = bal.get('exchange_id', 'default')
+                
+                # JSON 필드 역직렬화
+                if 'additional_info' in bal and bal['additional_info']:
+                    bal['additional_info'] = json.loads(bal['additional_info'])
+                
+                if exchange not in balances:
+                    balances[exchange] = {}
+                    
+                balances[exchange][currency] = {
+                    'free': bal.get('free', 0.0),
+                    'used': bal.get('used', 0.0),
+                    'total': bal.get('amount', 0.0),  # 기존 필드를 호환성 있게 사용
+                    'updated_at': bal.get('timestamp')
+                }
+            
+            return balances
+            
+        except sqlite3.Error as e:
+            logger.error(f"잔고 정보 조회 오류: {e}")
+            return {}
+    
     def get_latest_balance(self, currency=None):
         """
         최신 잔액 정보 가져오기
@@ -917,6 +1121,8 @@ class DatabaseManager:
         Returns:
             dict: 통화별 최신 잔액 정보
         """
+        conn, cursor = self._get_connection()
+        
         try:
             query = """
             SELECT b1.* 
@@ -933,8 +1139,8 @@ class DatabaseManager:
                 query += " WHERE b1.currency = ?"
                 params.append(currency)
             
-            self.cursor.execute(query, params)
-            rows = self.cursor.fetchall()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
             
             balance = {}
             for row in rows:

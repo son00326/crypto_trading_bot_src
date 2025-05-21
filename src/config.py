@@ -91,8 +91,13 @@ BACKTEST = {
     'commission': 0.001,         # 수수료 (0.1%)
 }
 
-# 데이터 저장 설정
+# 데이터 저장 경로
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+
+# 백업 관련 설정
+BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+BACKUP_FREQUENCY = 3600  # 백업 주기 (초)
+MAX_BACKUPS = 24         # 최대 백업 수
 LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
 
 # 디렉토리가 없으면 생성

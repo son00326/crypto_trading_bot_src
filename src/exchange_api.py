@@ -380,24 +380,53 @@ class ExchangeAPI:
             timeframe = self.timeframe
         
         # 시장 타입에 따른 추가 설정
-        params = {}
+        params = {
+            'limit': limit  # limit 매개변수를 params 딕셔너리에 추가
+        }
+        
         if self.market_type == 'futures' and self.exchange_id == 'binance':
             # 바이났스 선물의 경우 필요한 추가 파라미터
-            params = {
-                'contract': True,  # 선물 계약 데이터 지정
-            }
+            params['contract'] = True  # 선물 계약 데이터 지정
         
-        # OHLCV 데이터 가져오기 (로깅은 데코레이터에서 처리)
-        ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit, params=params)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        
-        # 시장 유형 정보 추가
-        df['market_type'] = self.market_type
-        if self.market_type == 'futures':
-            df['leverage'] = self.leverage
+        try:
+            # OHLCV 데이터 가져오기 (로깅은 데코레이터에서 처리)
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, params=params)
             
-        return df
+            if not ohlcv or len(ohlcv) == 0:
+                self.logger.warning(f"fetch_ohlcv 호출 결과가 비어있습니다: {symbol}, {timeframe}")
+                return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # 시장 유형 정보 추가
+            df['market_type'] = self.market_type
+            if self.market_type == 'futures':
+                df['leverage'] = self.leverage
+                
+            return df
+            
+        except Exception as e:
+            self.logger.error(f"OHLCV 데이터 가져오기 실패: {str(e)}")
+            # API 변경 대응을 위한 폴백 처리
+            try:
+                self.logger.info(f"대체 방식으로 OHLCV 데이터 조회 시도 중...")
+                # 일부 거래소는 since 파라미터가 필요할 수 있음
+                since = None
+                ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since, params=params)
+                
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                
+                # 시장 유형 정보 추가
+                df['market_type'] = self.market_type
+                if self.market_type == 'futures':
+                    df['leverage'] = self.leverage
+                    
+                return df
+            except Exception as fallback_e:
+                self.logger.error(f"폴백 방식으로도 OHLCV 데이터 가져오기 실패: {str(fallback_e)}")
+                return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     
     @api_error_handler
     @measure_api_performance

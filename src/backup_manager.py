@@ -120,6 +120,113 @@ class BackupManager:
         # 시스템 이벤트 -> 전체 백업 생성
         self.event_manager.subscribe(EventType.SYSTEM_SHUTDOWN, self._handle_system_shutdown)
         
+    def _handle_portfolio_update(self, event_data: Dict[str, Any]):
+        """
+        포트폴리오 업데이트 이벤트 처리
+        
+        Args:
+            event_data: 이벤트 데이터
+        """
+        self.logger.debug(f"포트폴리오 업데이트 이벤트 받음: {event_data.get('updated_at')}")
+        
+        # 포트폴리오 백업이 필요한지 확인 (최근 백업 시간 기준)
+        current_time = time.time()
+        last_backup = self.last_backup_time.get(self.BACKUP_TYPE_STATE)
+        
+        # 마지막 백업 이후 일정 시간이 지났거나, 백업이 없는 경우
+        if last_backup is None or (current_time - last_backup) > 300:  # 5분 간격
+            self.logger.info("포트폴리오 업데이트로 인한 상태 백업 시작")
+            
+            # 백업 데이터 추가
+            backup_data = self._collect_data_for_backup(self.BACKUP_TYPE_STATE)
+            backup_data.update({
+                'portfolio': event_data.get('portfolio', {}),
+                'symbol': event_data.get('symbol', ''),
+                'trigger': 'portfolio_update',
+                'updated_at': event_data.get('updated_at')
+            })
+            
+            # 백업 생성
+            self.create_backup(self.BACKUP_TYPE_STATE, backup_data)
+    
+    def _handle_position_update(self, event_data: Dict[str, Any]):
+        """
+        포지션 변경 이벤트 처리
+        
+        Args:
+            event_data: 이벤트 데이터
+        """
+        event_type = event_data.get('event_type', '')
+        position_id = event_data.get('position_id', '')
+        
+        self.logger.debug(f"포지션 변경 이벤트 받음: {event_type}, 포지션 ID: {position_id}")
+        
+        # 포지션 열기/닫기의 경우 백업 생성
+        if event_type in [EventType.POSITION_OPENED, EventType.POSITION_CLOSED]:
+            self.logger.info(f"포지션 {event_type} 이벤트로 인한 상태 백업 시작")
+            
+            # 백업 데이터 추가
+            backup_data = self._collect_data_for_backup(self.BACKUP_TYPE_STATE)
+            backup_data.update({
+                'position_event': event_type,
+                'position_id': position_id,
+                'position_data': event_data.get('position', {}),
+                'trigger': 'position_update',
+                'updated_at': datetime.now().isoformat()
+            })
+            
+            # 백업 생성
+            self.create_backup(self.BACKUP_TYPE_STATE, backup_data)
+    
+    def _handle_trade_executed(self, event_data: Dict[str, Any]):
+        """
+        거래 실행 이벤트 처리
+        
+        Args:
+            event_data: 이벤트 데이터
+        """
+        trade_id = event_data.get('trade_id', '')
+        order_id = event_data.get('order_id', '')
+        
+        self.logger.debug(f"거래 실행 이벤트 받음: 거래 ID {trade_id}, 주문 ID {order_id}")
+        
+        # 거래 데이터 백업
+        self.logger.info("거래 실행으로 인한 거래 백업 시작")
+        
+        # 백업 데이터 추가
+        backup_data = {
+            'trade': event_data.get('trade', {}),
+            'order': event_data.get('order', {}),
+            'symbol': event_data.get('symbol', ''),
+            'timestamp': event_data.get('timestamp', datetime.now().isoformat()),
+            'type': event_data.get('type', ''),
+            'trigger': 'trade_executed'
+        }
+        
+        # 백업 생성
+        self.create_backup(self.BACKUP_TYPE_TRADES, backup_data)
+    
+    def _handle_system_shutdown(self, event_data: Dict[str, Any]):
+        """
+        시스템 종료 이벤트 처리
+        
+        Args:
+            event_data: 이벤트 데이터
+        """
+        self.logger.info("시스템 종료 이벤트 받음: 전체 백업 시작")
+        
+        # 전체 백업 데이터 추가
+        backup_data = self._collect_data_for_backup(self.BACKUP_TYPE_FULL)
+        backup_data.update({
+            'shutdown_time': datetime.now().isoformat(),
+            'uptime': event_data.get('uptime', 0),
+            'memory_usage': event_data.get('memory_usage', {}),
+            'trigger': 'system_shutdown'
+        })
+        
+        # 백업 생성
+        self.create_backup(self.BACKUP_TYPE_FULL, backup_data)
+        
         self.logger.debug("백업 관리자: 이벤트 핸들러 등록 완료")
     
     def start_backup_scheduler(self):
@@ -289,12 +396,35 @@ class BackupManager:
         
         elif backup_type == self.BACKUP_TYPE_STATE:
             # 거래 상태 백업
+            # 트레이딩 상태 및 포트폴리오 정보 가져오기
+            trading_state = self._get_trading_state()
+            
+            # 상태 데이터 구성 (백업 복원 시 'state' 키가 필요함)
+            state_data = {
+                'timestamp': datetime.now().isoformat(),
+                'trading_mode': 'automated',
+                'is_running': True,
+                'last_update': datetime.now().isoformat(),
+                'trading_info': trading_state
+            }
+            
+            # DB에서 최신 봇 상태 가져오기
+            try:
+                from src.db_manager import DatabaseManager
+                db = DatabaseManager()
+                bot_state = db.load_bot_state()  # load_bot_state 메서드 사용
+                if bot_state:
+                    state_data.update(bot_state)
+            except Exception as e:
+                self.logger.warning(f"DB에서 봇 상태 가져오기 실패: {e}")
+            
             data.update({
+                'state': state_data,  # 복원에 필요한 기본 'state' 키 추가
                 'portfolio': last_portfolio.get('portfolio', {}),
                 'positions': {
                     'recent_events': positions_data[-5:] if positions_data else []  # 최근 5개
                 },
-                'trading_state': self._get_trading_state()
+                'trading_state': trading_state
             })
         
         elif backup_type == self.BACKUP_TYPE_CONFIG:
