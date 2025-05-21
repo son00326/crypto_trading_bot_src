@@ -38,11 +38,12 @@ from src.strategies import (
     BollingerBandsStrategy, CombinedStrategy
 )
 from src.memory_monitor import get_memory_monitor
-from src.resource_manager import get_resource_manager
+from src.logging_config import get_logger
 from src.backup_manager import get_backup_manager
 from src.event_manager import get_event_manager, EventType
+from src.backup_restore import get_backup_restore_manager
 from src.config import (
-    DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME,
+    BACKUP_FREQUENCY, BACKUP_DIR, DATA_DIR, DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME,
     RISK_MANAGEMENT
 )
 
@@ -143,6 +144,7 @@ class TradingAlgorithm:
         
         # 백업 관리자 초기화
         self.backup_manager = get_backup_manager()
+        self.backup_restore_manager = get_backup_restore_manager()
         
         # 이벤트 관리자 초기화
         self.event_manager = get_event_manager()
@@ -167,36 +169,102 @@ class TradingAlgorithm:
             logger.warning(f"데이터베이스에서 상태 복원 실패: {e}")
             
             # 데이터베이스 복원 실패 시 백업에서 복원 시도
-            self._restore_from_backup()
+            self._try_restore_from_backup()
     
-    def _restore_from_backup(self):
+    def _try_restore_from_backup(self):
         """
-        백업 파일에서 상태 복원 시도
+        백업에서 자동 복원 시도
+        
+        Returns:
+            bool: 성공 여부
         """
         try:
-            # 최신 상태 백업 파일 조회
-            latest_backup = self.backup_manager.get_latest_backup(self.backup_manager.BACKUP_TYPE_STATE)
-            if not latest_backup:
-                logger.warning("사용 가능한 상태 백업이 없습니다.")
+            self.logger.info("백업에서 자동 복원 시도 중...")
+            
+            # 복원 매니저를 사용하여 자동 복원 시도
+            success, result = self.backup_restore_manager.auto_restore_from_backup()
+            
+            if success:
+                restored_components = result.get('components_restored', {})
+                self.logger.info(f"백업 복원 성공! 복원된 구성요소: {restored_components}")
+                
+                # 복원 이벤트에 구독
+                self.event_manager.publish(EventType.SYSTEM_RECOVERY, {
+                    'timestamp': datetime.now().isoformat(),
+                    'success': True,
+                    'restored_components': restored_components
+                })
+                
+                return True
+            else:
+                error = result.get('error', '알 수 없는 오류')
+                self.logger.warning(f"백업 복원 실패: {error}")
+                
+                # 실패 이벤트 발행
+                self.event_manager.publish(EventType.SYSTEM_RECOVERY, {
+                    'timestamp': datetime.now().isoformat(),
+                    'success': False,
+                    'error': error,
+                    'backup_file': backup_file
+                })
+                
                 return False
-            
-            # 백업 파일 복원
-            success, restore_data = self.backup_manager.restore_from_backup(latest_backup)
-            if not success:
-                logger.warning(f"백업 복원 실패: {restore_data.get('error')}")
-                return False
-            
-            # 복원된 데이터에서 상태 추출
-            backup_data = restore_data.get('backup_data', {})
-            state_data = backup_data.get('state', {})
-            positions_data = backup_data.get('positions', {})
-            
-            # 상태 복원 로직 구현 (다음 단계에서 구현)
-            logger.info(f"백업에서 상태 복원 성공: {latest_backup}")
-            return True
-            
+                
         except Exception as e:
-            logger.error(f"백업에서 상태 복원 중 오류: {e}")
+            self.logger.error(f"백업 파일 복원 시도 중 예외 발생: {e}")
+            self.logger.debug(traceback.format_exc())
+            return False
+            
+    def _restore_from_backup(self, backup_file=None):
+        """
+        특정 백업 파일에서 상태 복원
+        
+        Args:
+            backup_file (str, optional): 복원할 백업 파일 경로. None인 경우 자동 선택.
+            
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            self.logger.info(f"백업 파일에서 복원 시도: {backup_file if backup_file else '자동 선택'}")
+            
+            if backup_file:
+                # 특정 백업 파일에서 복원
+                success, result = self.backup_restore_manager.restore_from_backup(backup_file)
+            else:
+                # 자동 선택된 백업에서 복원
+                success, result = self.backup_restore_manager.auto_restore_from_backup()
+            
+            if success:
+                restored_components = result.get('components_restored', {})
+                self.logger.info(f"백업 파일 복원 성공! 복원된 구성요소: {restored_components}")
+                
+                # 복원 이벤트 발행
+                self.event_manager.publish(EventType.SYSTEM_RECOVERY, {
+                    'timestamp': datetime.now().isoformat(),
+                    'success': True,
+                    'restored_components': restored_components,
+                    'backup_file': backup_file
+                })
+                
+                return True
+            else:
+                error = result.get('error', '알 수 없는 오류')
+                self.logger.warning(f"백업 파일 복원 실패: {error}")
+                
+                # 실패 이벤트 발행
+                self.event_manager.publish(EventType.SYSTEM_RECOVERY, {
+                    'timestamp': datetime.now().isoformat(),
+                    'success': False,
+                    'error': error,
+                    'backup_file': backup_file
+                })
+                
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"백업 파일 복원 시도 중 예외 발생: {e}")
+            self.logger.debug(traceback.format_exc())
             return False
     
     def save_state(self):
