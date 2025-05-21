@@ -11,12 +11,14 @@ from datetime import datetime
 import time
 import traceback
 import functools
+import threading
 from src.config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     UPBIT_API_KEY, UPBIT_API_SECRET,
     BITHUMB_API_KEY, BITHUMB_API_SECRET,
     DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_FUTURES_SYMBOL, DEFAULT_MARKET_TYPE, DEFAULT_TIMEFRAME
 )
+from src.network_recovery import NetworkRecoveryManager
 
 # 향상된 로깅 시스템 사용
 from src.logging_config import get_logger, log_api_call
@@ -159,6 +161,9 @@ class ExchangeAPI:
         self.logger = get_logger(f'crypto_bot.exchange.{self.exchange_id}')
         self.exchange = self._initialize_exchange()
         
+        # 네트워크 복구 관리자 초기화
+        self.network_recovery = self._initialize_network_recovery()
+        
         # 초기화 완료 로그
         self.logger.info(f"거래소 API 초기화 완료: {self.exchange_id}, 시장: {self.market_type}, 심볼: {self.symbol}")
         
@@ -199,6 +204,53 @@ class ExchangeAPI:
         return symbol
         
     @api_error_handler
+    def _initialize_network_recovery(self):
+        """네트워크 복구 관리자 초기화"""
+        try:
+            recovery = NetworkRecoveryManager()
+            
+            # 거래소별 엔드포인트 등록
+            if self.exchange_id == 'binance':
+                recovery.register_endpoint(
+                    service_name='binance',
+                    primary_url='https://api.binance.com/api/v3/ping',
+                    alternative_urls=[
+                        'https://api1.binance.com/api/v3/ping',
+                        'https://api2.binance.com/api/v3/ping',
+                        'https://api3.binance.com/api/v3/ping'
+                    ]
+                )
+            elif self.exchange_id == 'bybit':
+                recovery.register_endpoint(
+                    service_name='bybit',
+                    primary_url='https://api.bybit.com/v2/public/time',
+                    alternative_urls=[
+                        'https://api.bytick.com/v2/public/time'
+                    ]
+                )
+            elif self.exchange_id == 'upbit':
+                recovery.register_endpoint(
+                    service_name='upbit',
+                    primary_url='https://api.upbit.com/v1/ticker',
+                    alternative_urls=[]
+                )
+            elif self.exchange_id == 'bithumb':
+                recovery.register_endpoint(
+                    service_name='bithumb',
+                    primary_url='https://api.bithumb.com/public/ticker/ALL',
+                    alternative_urls=[]
+                )
+            
+            # 모니터링 시작 (별도 스레드)
+            threading.Thread(target=recovery.start_monitoring, daemon=True).start()
+            self.logger.info(f"{self.exchange_id} 네트워크 복구 관리자 초기화 완료")
+            
+            return recovery
+        except Exception as e:
+            self.logger.error(f"네트워크 복구 관리자 초기화 실패: {e}")
+            # 실패해도 계속 진행 (복구 관리자는 선택적 기능)
+            return None
+    
     def _initialize_exchange(self):
         """거래소 객체 초기화"""
         try:
@@ -294,9 +346,28 @@ class ExchangeAPI:
         """현재 시세 정보 조회"""
         symbol = self.format_symbol(symbol)
         
-        # API 호출 (로깅은 데코레이터에서 자동으로 처리됨)
-        ticker = self.exchange.fetch_ticker(symbol)
-        return ticker
+        try:
+            # 네트워크 복구 관리자를 통한 연결 확인
+            if self.network_recovery is not None:
+                self.network_recovery.check_connection(self.exchange_id)
+                
+            ticker = self.exchange.fetch_ticker(symbol)
+            return ticker
+        except Exception as e:
+            self.logger.error(f"시세 정보 조회 오류: {e}")
+            
+            # 네트워크 복구 시도
+            if self.network_recovery is not None:
+                recovery_success = self.network_recovery._attempt_recovery(self.exchange_id)
+                if recovery_success:
+                    # 복구 성공 시 재시도
+                    try:
+                        ticker = self.exchange.fetch_ticker(symbol)
+                        return ticker
+                    except Exception as retry_error:
+                        self.logger.error(f"복구 후 시세 정보 재시도 실패: {retry_error}")
+            
+            return None
     
     @api_error_handler
     @measure_api_performance
