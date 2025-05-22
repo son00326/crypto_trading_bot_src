@@ -135,6 +135,38 @@ function getBalance() {
         })
         .catch(error => {
             console.error('잔액 정보 가져오기 오류:', error);
+            
+            // 오류 발생 시 기본값 표시
+            const balances = [
+                {
+                    amount: '0',
+                    currency: 'USDT',
+                    type: 'spot'
+                },
+                {
+                    amount: '0',
+                    currency: 'USDT',
+                    type: 'future'
+                }
+            ];
+            
+            // 잔액 표시 업데이트 - 메인 표시용
+            const mainBalance = balances[0];
+            const formattedBalance = formatCurrency(mainBalance.amount, mainBalance.currency);
+            walletBalanceElem.textContent = formattedBalance;
+            walletBalanceElem.dataset.amount = mainBalance.amount;
+            walletBalanceElem.dataset.currency = mainBalance.currency;
+            
+            // 잔액 표시 업데이트 - 상세 표시용
+            balanceListElem.innerHTML = '';
+            balances.forEach(balance => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                const balanceType = balance.type === 'future' ? '선물 잔액' : '현물 잔액';
+                const formattedAmount = formatCurrency(balance.amount, balance.currency);
+                li.innerHTML = '<span>' + balanceType + '</span><span class="badge bg-primary rounded-pill">' + formattedAmount + '</span>';
+                balanceListElem.appendChild(li);
+            });
         });
 }
 
@@ -289,9 +321,12 @@ function updatePositions() {
 function updateSummary() {
     console.log('잔액 정보 업데이트 시작...');
     fetch(API_URLS.SUMMARY)
-        .then(response => response.json())
+        .then(response => {
+            console.log('응답 상태 코드:', response.status);
+            return response.json();
+        })
         .then(data => {
-            console.log('받은 잔액 데이터:', data);
+            console.log('받은 잔액 데이터 (JSON):', JSON.stringify(data));
             if (data.success && data.data) {
                 // 잔액 정보 업데이트
                 if (data.data.balance) {
@@ -326,6 +361,13 @@ function updateSummary() {
                             amount: '0',
                             currency: 'USDT',
                             type: 'spot'
+                        });
+                        
+                        // 선물 잔액도 기본값 추가
+                        balances.push({
+                            amount: '0',
+                            currency: 'USDT',
+                            type: 'future'
                         });
                     }
                     
@@ -407,78 +449,25 @@ function updateSummary() {
         });
 }
 
-// 손절/이익실현 설정 함수
-function setStopLossTakeProfit(positionId, symbol, side, entryPrice) {
-    // 현재 슬라이더 값 가져오기
-    const stopLossPct = parseFloat(document.getElementById('stop-loss').value) / 100;
-    const takeProfitPct = parseFloat(document.getElementById('take-profit').value) / 100;
-    
-    // API 호출 데이터 준비
-    const data = {
-        position_id: positionId,
-        symbol: symbol,
-        side: side,
-        entry_price: parseFloat(entryPrice),
-        stop_loss_pct: stopLossPct,
-        take_profit_pct: takeProfitPct
-    };
-    
-    // API 호출
-    fetch(API_URLS.SET_STOPLOSS_TAKEPROFIT, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(data)
-    })
-    .then(response => response.json())
-    .then(result => {
-        if (result.success) {
-            // 성공 메시지 표시
-            showAlert('손절/이익실현 설정이 완료되었습니다.', 'success');
-            
-            // 포지션 목록 업데이트
-            updatePositions();
-        } else {
-            // 실패 메시지 표시
-            showAlert('손절/이익실현 설정 실패: ' + (result.message || '알 수 없는 오류'), 'danger');
-        }
-    })
-    .catch(error => {
-        console.error('손절/이익실현 설정 중 오류:', error);
-        showAlert('손절/이익실현 설정 중 오류가 발생했습니다.', 'danger');
-    });
-}
-
 // 이벤트 리스너 등록
 document.addEventListener('DOMContentLoaded', function() {
     // 초기 데이터 로드
     updateBotStatus();
+    
+    // 지연 후 잔액 정보 불러오기 - 세션 초기화 시간 확보
+    setTimeout(() => {
+        console.log('지연 후 잔액 정보 가져오기 시도...');
+        updateSummary();
+    }, 2000);
+    
     updateTrades();
     updatePositions();
-    updateSummary();
     
-    // 손절/이익실현 버튼 클릭 이벤트 등록 (delegation 사용)
-    document.addEventListener('click', function(event) {
-        if (event.target.classList.contains('set-stoploss-takeprofit-btn')) {
-            const positionId = event.target.getAttribute('data-position-id');
-            const symbol = event.target.getAttribute('data-symbol');
-            const side = event.target.getAttribute('data-side');
-            const entryPrice = event.target.getAttribute('data-entry-price');
-            
-            // 현재 슬라이더 값 표시
-            alert(`${symbol} 포지션에 손절매/이익실현을 적용합니다:\n\n손절매: ${document.getElementById('stop-loss-value').textContent}\n이익실현: ${document.getElementById('take-profit-value').textContent}`);
-            
-            // API 호출
-            setStopLossTakeProfit(positionId, symbol, side, entryPrice);
-        }
-    });
-    
-    // 정기적인 데이터 업데이트
-    setInterval(updateBotStatus, 10000);    // 10초마다
+    // 자동 업데이트 타이머 설정
+    setInterval(updateBotStatus, 5000);     // 5초마다
     setInterval(updateTrades, 15000);       // 15초마다
     setInterval(updatePositions, 10000);    // 10초마다
-    setInterval(updateSummary, 30000);      // 30초마다
+    setInterval(updateSummary, 15000);      // 15초마다 (더 자주 확인)
     
     // 봇 시작 버튼 클릭 이벤트
     startBotBtn.addEventListener('click', startBot);
