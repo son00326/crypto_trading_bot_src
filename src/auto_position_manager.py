@@ -656,11 +656,66 @@ class AutoPositionManager:
             logger.error(f"자동 손절매/이익실현 설정 오류: {e}")
             self.auto_sl_tp_enabled = False  # 오류 발생 시 안전하게 비활성화
     
-    def set_partial_tp(self, enabled):
-        """부분 이익실현 활성화/비활성화"""
+    def set_partial_tp(self, enabled, tp_levels=None, tp_percentages=None):
+        """부분 이익실현 활성화/비활성화
+        
+        Args:
+            enabled (bool): 부분 이익실현 활성화 여부
+            tp_levels (list, optional): 이익실현 가격 레벨 목록. 각 요소는 이익실현을 트리거할 가격 비율 (0.0 ~ 1.0)
+            tp_percentages (list, optional): 각 레벨에서 청산할 포지션 비율 목록. tp_levels와 같은 길이여야 함.
+        """
         try:
             self.partial_tp_enabled = bool(enabled)  # bool로 변환하여 안전하게 대입
+            
+            # tp_levels와 tp_percentages가 모두 제공된 경우
+            if (tp_levels is not None and isinstance(tp_levels, list) and 
+                tp_percentages is not None and isinstance(tp_percentages, list)):
+                
+                # 길이 확인
+                if len(tp_levels) == len(tp_percentages) and len(tp_levels) > 0:
+                    # 각 레벨과 비율의 유효성 검사
+                    valid_levels = []
+                    for i, (level, percentage) in enumerate(zip(tp_levels, tp_percentages)):
+                        if 0 < level < 1.0 and 0 < percentage <= 1.0:
+                            valid_levels.append((level, percentage))
+                    
+                    # 유효한 레벨이 있으면 정렬하여 저장
+                    if valid_levels:
+                        # 가격 비율순으로 정렬
+                        self.tp_levels = sorted(valid_levels, key=lambda x: x[0])
+                        
+                        # 요청대로 별도로도 저장
+                        self.tp_price_levels = [level for level, _ in self.tp_levels]
+                        self.tp_percentages = [pct for _, pct in self.tp_levels]
+                        
+                        logger.info(f"부분 이익실현 레벨 설정: {self.tp_levels}")
+                        logger.info(f"가격 레벨: {self.tp_price_levels}, 청산 비율: {self.tp_percentages}")
+                else:
+                    logger.warning(f"tp_levels와 tp_percentages의 길이가 다릅니다: {len(tp_levels)} vs {len(tp_percentages)}")
+            
+            # 레게시 지원: tp_levels가 튜플의 리스트로 제공된 경우
+            elif tp_levels is not None and isinstance(tp_levels, list) and len(tp_levels) > 0 and tp_percentages is None:
+                # 첫 번째 요소가 튜플인지 확인
+                if isinstance(tp_levels[0], (list, tuple)):
+                    valid_levels = []
+                    for level in tp_levels:
+                        if isinstance(level, (list, tuple)) and len(level) == 2:
+                            price_pct, amount_pct = level
+                            if 0 < price_pct < 1.0 and 0 < amount_pct <= 1.0:
+                                valid_levels.append((price_pct, amount_pct))
+                    
+                    # 유효한 레벨이 있으면 정렬하여 저장
+                    if valid_levels:
+                        self.tp_levels = sorted(valid_levels, key=lambda x: x[0])
+                        self.tp_price_levels = [level for level, _ in self.tp_levels]
+                        self.tp_percentages = [pct for _, pct in self.tp_levels]
+                        logger.info(f"부분 이익실현 레벨 설정: {self.tp_levels}")
+                        logger.info(f"가격 레벨: {self.tp_price_levels}, 청산 비율: {self.tp_percentages}")
+                else:
+                    logger.warning("tp_levels에 유효한 레벨이 없습니다.")
+            
             logger.info(f"부분 이익실현 {'활성화' if self.partial_tp_enabled else '비활성화'}")
+            return True
         except Exception as e:
             logger.error(f"부분 이익실현 설정 오류: {e}")
             self.partial_tp_enabled = False  # 오류 발생 시 안전하게 비활성화
