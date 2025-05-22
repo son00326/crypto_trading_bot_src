@@ -60,7 +60,7 @@ class TradingAlgorithm:
     
     def __init__(self, exchange_id=DEFAULT_EXCHANGE, symbol=DEFAULT_SYMBOL, timeframe=DEFAULT_TIMEFRAME, 
                  strategy=None, initial_balance=None, test_mode=True, restore_state=True,
-                 max_init_retries=3, retry_delay=2):
+                 max_init_retries=3, retry_delay=2, strategy_params=None):
         """
         거래 알고리즘 초기화
         
@@ -74,6 +74,7 @@ class TradingAlgorithm:
             restore_state (bool): 이전 상태 복원 여부
             max_init_retries (int): API 초기화 최대 재시도 횟수
             retry_delay (int): 재시도 간 지연 시간(초)
+            strategy_params (dict): 전략별 세부 파라미터
         """
         # 로거 초기화
         self.logger = get_logger('trading_algorithm')
@@ -82,6 +83,7 @@ class TradingAlgorithm:
         self.symbol = symbol
         self.timeframe = timeframe
         self.test_mode = test_mode
+        self.strategy_params = strategy_params or {}
         
         # 데이터베이스 관리자 초기화
         self.db = DatabaseManager()
@@ -124,14 +126,35 @@ class TradingAlgorithm:
         # 전략 설정
         if strategy is None:
             # 기본 전략: 이동평균 교차 + RSI
-            self.strategy = CombinedStrategy([
-                MovingAverageCrossover(short_period=9, long_period=26, ma_type='ema'),
-                RSIStrategy(period=14, overbought=70, oversold=30)
-            ])
+            # 전략 파라미터가 있으면 적용
+            if 'MovingAverageCrossover' in self.strategy_params:
+                mac_params = self.strategy_params['MovingAverageCrossover']
+                ma_cross = MovingAverageCrossover(
+                    short_period=mac_params.get('short_period', 9),
+                    long_period=mac_params.get('long_period', 26),
+                    ma_type=mac_params.get('ma_type', 'ema')
+                )
+            else:
+                ma_cross = MovingAverageCrossover(short_period=9, long_period=26, ma_type='ema')
+                
+            if 'RSIStrategy' in self.strategy_params:
+                rsi_params = self.strategy_params['RSIStrategy']
+                rsi = RSIStrategy(
+                    period=rsi_params.get('period', 14),
+                    overbought=rsi_params.get('overbought', 70),
+                    oversold=rsi_params.get('oversold', 30)
+                )
+            else:
+                rsi = RSIStrategy(period=14, overbought=70, oversold=30)
+                
+            self.strategy = CombinedStrategy([ma_cross, rsi])
         else:
+            # 이미 전략 객체가 제공된 경우
             self.strategy = strategy
         
         logger.info(f"{self.strategy.name} 전략을 사용합니다.")
+        if self.strategy_params:
+            logger.info(f"전략 파라미터: {self.strategy_params}")
         
         # 이전 버전과의 호환성을 위해 포트폴리오 객체 유지 (향후 리팩토링 시 제거 예정)
         self.portfolio = self.portfolio_manager.portfolio

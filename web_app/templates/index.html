@@ -135,6 +135,92 @@
                                 </select>
                             </div>
                             
+                            <!-- 전략 파라미터 설정 -->
+                            <div class="card mb-3 bg-light">
+                                <div class="card-header">
+                                    <h6 class="mb-0">전략 파라미터</h6>
+                                </div>
+                                <div class="card-body">
+                                    <!-- 이동평균 교차 파라미터 -->
+                                    <div id="ma-crossover-params" class="strategy-params">
+                                        <div class="mb-2">
+                                            <label for="ma-short-period" class="form-label">단기 이동평균 기간</label>
+                                            <input type="number" class="form-control" id="ma-short-period" value="9" min="2" max="50">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="ma-long-period" class="form-label">장기 이동평균 기간</label>
+                                            <input type="number" class="form-control" id="ma-long-period" value="26" min="5" max="200">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="ma-type" class="form-label">이동평균 유형</label>
+                                            <select class="form-select" id="ma-type">
+                                                <option value="sma">SMA (단순 이동평균)</option>
+                                                <option value="ema" selected>EMA (지수 이동평균)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- RSI 전략 파라미터 -->
+                                    <div id="rsi-params" class="strategy-params d-none">
+                                        <div class="mb-2">
+                                            <label for="rsi-period" class="form-label">RSI 기간</label>
+                                            <input type="number" class="form-control" id="rsi-period" value="14" min="2" max="30">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="rsi-overbought" class="form-label">과매수 기준값</label>
+                                            <input type="number" class="form-control" id="rsi-overbought" value="70" min="50" max="90">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="rsi-oversold" class="form-label">과매도 기준값</label>
+                                            <input type="number" class="form-control" id="rsi-oversold" value="30" min="10" max="50">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- MACD 전략 파라미터 -->
+                                    <div id="macd-params" class="strategy-params d-none">
+                                        <div class="mb-2">
+                                            <label for="macd-fast-period" class="form-label">빠른 EMA 기간</label>
+                                            <input type="number" class="form-control" id="macd-fast-period" value="12" min="2" max="50">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="macd-slow-period" class="form-label">느린 EMA 기간</label>
+                                            <input type="number" class="form-control" id="macd-slow-period" value="26" min="5" max="100">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="macd-signal-period" class="form-label">시그널 기간</label>
+                                            <input type="number" class="form-control" id="macd-signal-period" value="9" min="2" max="30">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 볼린저 밴드 전략 파라미터 -->
+                                    <div id="bb-params" class="strategy-params d-none">
+                                        <div class="mb-2">
+                                            <label for="bb-period" class="form-label">이동평균 기간</label>
+                                            <input type="number" class="form-control" id="bb-period" value="20" min="5" max="50">
+                                        </div>
+                                        <div class="mb-2">
+                                            <label for="bb-std-dev" class="form-label">표준편차 배수</label>
+                                            <input type="number" class="form-control" id="bb-std-dev" value="2.0" min="0.5" max="4.0" step="0.1">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 복합 전략 파라미터 -->
+                                    <div id="combined-params" class="strategy-params d-none">
+                                        <div class="alert alert-info" role="alert">
+                                            복합 전략은 이동평균 교차와 RSI 전략을 함께 사용합니다.
+                                        </div>
+                                        <div class="form-check form-switch mb-2">
+                                            <input class="form-check-input" type="checkbox" id="use-ma-crossover" checked>
+                                            <label class="form-check-label" for="use-ma-crossover">이동평균 교차 사용</label>
+                                        </div>
+                                        <div class="form-check form-switch mb-2">
+                                            <input class="form-check-input" type="checkbox" id="use-rsi" checked>
+                                            <label class="form-check-label" for="use-rsi">RSI 사용</label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
                             <!-- 마켓 타입 선택 (현물/선물) -->
                             <div class="mb-3">
                                 <label for="market-type" class="form-label">마켓 타입</label>

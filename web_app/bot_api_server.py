@@ -810,6 +810,9 @@ class TradingBotAPIServer:
                 leverage = data.get('leverage', 1)
                 test_mode = data.get('test_mode', False)
                 
+                # 전략 파라미터 추출
+                strategy_params = data.get('strategy_params', {})
+                
                 # 마켓 타입 설정 저장
                 if hasattr(self.bot_gui, 'exchange_id') and self.exchange_api:
                     # 기존 exchange_api 인스턴스 업데이트
@@ -832,9 +835,10 @@ class TradingBotAPIServer:
                     self.bot_gui.partial_tp = partial_tp
                     logger.info(f"자동 손절매/이익실현: {auto_sl_tp}, 부분 청산: {partial_tp}")
                 
-                # BotThread 에 자동 손절매/이익실현 설정 전달
+                # BotThread 에 자동 손절매/이익실현 설정 및 전략 파라미터 전달
                 result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe, 
-                                                   auto_sl_tp=auto_sl_tp, partial_tp=partial_tp)
+                                                   auto_sl_tp=auto_sl_tp, partial_tp=partial_tp,
+                                                   strategy_params=strategy_params)
                 
                 # 성공적으로 시작되면 상태 저장
                 if result.get('success', False):

@@ -66,13 +66,17 @@ function startBot() {
     const strategy = document.getElementById('strategy').value;
     const marketType = document.getElementById('market-type').value;
     
+    // 전략별 파라미터 수집
+    const strategyParams = collectStrategyParameters(strategy);
+    
     // API 요청 데이터
     const requestData = {
         exchange: exchange,
         symbol: symbol,
         timeframe: timeframe,
         strategy: strategy,
-        market_type: marketType
+        market_type: marketType,
+        strategy_params: strategyParams
     };
     
     // API 호출
@@ -96,6 +100,98 @@ function startBot() {
         console.error('봇 시작 오류:', error);
         showAlert('봇 시작 중 오류가 발생했습니다.', 'danger');
     });
+}
+
+// 전략별 파라미터 수집 함수
+function collectStrategyParameters(strategy) {
+    const params = {};
+    
+    // 전략별로 다른 파라미터 수집
+    switch(strategy) {
+        case 'MovingAverageCrossover':
+            params['MovingAverageCrossover'] = {
+                short_period: parseInt(document.getElementById('ma-short-period').value),
+                long_period: parseInt(document.getElementById('ma-long-period').value),
+                ma_type: document.getElementById('ma-type').value
+            };
+            break;
+            
+        case 'RSIStrategy':
+            params['RSIStrategy'] = {
+                period: parseInt(document.getElementById('rsi-period').value),
+                overbought: parseInt(document.getElementById('rsi-overbought').value),
+                oversold: parseInt(document.getElementById('rsi-oversold').value)
+            };
+            break;
+            
+        case 'MACDStrategy':
+            params['MACDStrategy'] = {
+                fast_period: parseInt(document.getElementById('macd-fast-period').value),
+                slow_period: parseInt(document.getElementById('macd-slow-period').value),
+                signal_period: parseInt(document.getElementById('macd-signal-period').value)
+            };
+            break;
+            
+        case 'BollingerBandsStrategy':
+            params['BollingerBandsStrategy'] = {
+                period: parseInt(document.getElementById('bb-period').value),
+                std_dev: parseFloat(document.getElementById('bb-std-dev').value)
+            };
+            break;
+            
+        case 'CombinedStrategy':
+            // 복합 전략은 이동평균 교차와 RSI 전략을 함께 사용
+            if(document.getElementById('use-ma-crossover').checked) {
+                params['MovingAverageCrossover'] = {
+                    short_period: parseInt(document.getElementById('ma-short-period').value),
+                    long_period: parseInt(document.getElementById('ma-long-period').value),
+                    ma_type: document.getElementById('ma-type').value
+                };
+            }
+            
+            if(document.getElementById('use-rsi').checked) {
+                params['RSIStrategy'] = {
+                    period: parseInt(document.getElementById('rsi-period').value),
+                    overbought: parseInt(document.getElementById('rsi-overbought').value),
+                    oversold: parseInt(document.getElementById('rsi-oversold').value)
+                };
+            }
+            break;
+    }
+    
+    return params;
+}
+
+// 전략 변경 시 파라미터 UI 업데이트
+function updateStrategyParameters() {
+    const strategy = document.getElementById('strategy').value;
+    
+    // 모든 전략 파라미터 패널 숨기기
+    document.querySelectorAll('.strategy-params').forEach(panel => {
+        panel.classList.add('d-none');
+    });
+    
+    // 선택된 전략에 맞는 파라미터 패널 표시
+    switch(strategy) {
+        case 'MovingAverageCrossover':
+            document.getElementById('ma-crossover-params').classList.remove('d-none');
+            break;
+        case 'RSIStrategy':
+            document.getElementById('rsi-params').classList.remove('d-none');
+            break;
+        case 'MACDStrategy':
+            document.getElementById('macd-params').classList.remove('d-none');
+            break;
+        case 'BollingerBandsStrategy':
+            document.getElementById('bb-params').classList.remove('d-none');
+            break;
+        case 'CombinedStrategy':
+            document.getElementById('combined-params').classList.remove('d-none');
+            // 복합 전략은 MA와 RSI 파라미터를 모두 표시
+            document.getElementById('ma-crossover-params').classList.remove('d-none');
+            document.getElementById('rsi-params').classList.remove('d-none');
+            break;
+    }
 }
 
 // 봇 중지 함수
@@ -474,6 +570,13 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // 봇 중지 버튼 클릭 이벤트
     stopBotBtn.addEventListener('click', stopBot);
+    
+    // 전략 변경 시 파라미터 UI 업데이트
+    const strategySelect = document.getElementById('strategy');
+    strategySelect.addEventListener('change', updateStrategyParameters);
+    
+    // 초기 전략 파라미터 UI 설정
+    updateStrategyParameters();
     
     // 마켓 타입과 거래소 변경 관련 요소
     const marketTypeSelect = document.getElementById('market-type');

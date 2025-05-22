@@ -394,13 +394,14 @@ class TradingBot:
 class BotThread(QThread):
     update_signal = pyqtSignal(str)
     
-    def __init__(self, bot, interval, auto_sl_tp=False, partial_tp=False):
+    def __init__(self, bot, interval, auto_sl_tp=False, partial_tp=False, strategy_params=None):
         super().__init__()
         self.bot = bot
         self.interval = interval
         self.running = True
         self.auto_sl_tp = auto_sl_tp
         self.partial_tp = partial_tp
+        self.strategy_params = strategy_params or {}
         
         # 데이터베이스 관리자 초기화
         self.db = DatabaseManager()
@@ -420,8 +421,13 @@ class BotThread(QThread):
                 timeframe=self.bot.timeframe,
                 strategy=self.bot.strategy,
                 test_mode=self.bot.test_mode,
-                restore_state=True  # 이전 상태 복원
+                restore_state=True,  # 이전 상태 복원
+                strategy_params=self.strategy_params  # 전략별 세부 파라미터 전달
             )
+            
+            # 적용된 전략 파라미터 로깅
+            if self.strategy_params:
+                self.update_signal.emit(f"전략 파라미터 적용: {self.strategy_params}")
             
             # 자동 손절매/이익실현 설정
             if self.auto_sl_tp:
@@ -437,7 +443,7 @@ class BotThread(QThread):
                 else:
                     self.update_signal.emit("경고: 자동 손절매/이익실현 기능을 활성화할 수 없습니다 (auto_position_manager 없음)")
             
-            self.update_signal.emit(f"트레이딩 알고리즘 초기화 완료: {self.bot.symbol}")
+            self.update_signal.emit(f"트레이딩 알고리즘 초기화 완료: {self.bot.symbol} ({self.bot.strategy})")
         except Exception as e:
             self.update_signal.emit(f"트레이딩 알고리즘 초기화 오류: {e}")
     
@@ -2038,7 +2044,7 @@ class CryptoTradingBotGUI(QMainWindow):
             'balance': self.balance_data
         }
     
-    def start_bot_api(self, strategy=None, symbol=None, timeframe=None, auto_sl_tp=False, partial_tp=False):
+    def start_bot_api(self, strategy=None, symbol=None, timeframe=None, auto_sl_tp=False, partial_tp=False, strategy_params=None):
         """
         API를 통해 봇을 시작하는 메서드
         
@@ -2048,6 +2054,7 @@ class CryptoTradingBotGUI(QMainWindow):
             timeframe (str, optional): 타임프레임
             auto_sl_tp (bool, optional): 자동 손절매/이익실현 활성화 여부
             partial_tp (bool, optional): 부분 청산 활성화 여부
+            strategy_params (dict, optional): 전략별 세부 파라미터
             
         Returns:
             dict: 성공/실패 상태 및 메시지
@@ -2067,6 +2074,11 @@ class CryptoTradingBotGUI(QMainWindow):
                 # 헤드리스 모드에서도 전략 이름 저장
                 self.current_strategy = strategy
                 
+                # 전략 파라미터 저장
+                if strategy_params:
+                    self.strategy_params = strategy_params
+                    logger.info(f"전략 파라미터 설정: {strategy_params}")
+                
                 # UI 업데이트는 헤드리스 모드가 아닐 때만
                 if not self.headless:
                     index = self.strategy_combo.findText(strategy)
@@ -2081,8 +2093,8 @@ class CryptoTradingBotGUI(QMainWindow):
                 self.bot_running = True
                 # interval 값 가져오기 (헤드리스 모드에서는 기본값 사용)
                 interval = self.interval_spin.value() if hasattr(self, 'interval_spin') else 3600  # 기본값 1시간(3600초)
-                # 자동 손절매/이익실현 및 부분 청산 옵션을 포함한 BotThread 생성
-                self.bot_thread = BotThread(self, interval, auto_sl_tp=auto_sl_tp, partial_tp=partial_tp)
+                # 자동 손절매/이익실현 및 부분 청산 옵션, 전략 파라미터를 포함한 BotThread 생성
+                self.bot_thread = BotThread(self, interval, auto_sl_tp=auto_sl_tp, partial_tp=partial_tp, strategy_params=strategy_params)
                 self.bot_thread.update_signal.connect(self.update_bot_status)
                 self.bot_thread.start()
             
