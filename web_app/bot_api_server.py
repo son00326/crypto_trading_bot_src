@@ -816,17 +816,28 @@ class TradingBotAPIServer:
                 return
                 
             # 현재 심볼 가격 가져오기
-            symbol = self.exchange_api.symbol
-            current_price = self.exchange_api.get_current_price()
-            
-            # 가격 데이터 DB에 저장
-            self.db.update_price_data({
-                'symbol': symbol,
-                'price': current_price,
-                'timestamp': datetime.now().isoformat()
-            })
-            
-            logger.debug(f"가격 데이터 동기화 완료: {symbol} = {current_price}")
+            try:
+                symbol = self.exchange_api.symbol
+                current_price = 0
+                
+                # 거래소 API에서 현재 가격 조회
+                if hasattr(self.exchange_api, 'get_current_price') and callable(self.exchange_api.get_current_price):
+                    current_price = self.exchange_api.get_current_price()
+                elif hasattr(self.bot_gui, 'get_current_price') and callable(self.bot_gui.get_current_price):
+                    current_price = self.bot_gui.get_current_price()
+                
+                if current_price > 0:
+                    # 가격 데이터 DB에 저장
+                    self.db.update_price_data({
+                        'symbol': symbol,
+                        'price': current_price,
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    logger.debug(f"가격 데이터 동기화 완료: {symbol} = {current_price}")
+                else:
+                    logger.debug("가격 데이터를 가져올 수 없습니다.")
+            except Exception as e:
+                logger.error(f"가격 조회 중 오류: {str(e)}")
         except Exception as e:
             logger.error(f"가격 데이터 동기화 중 오류: {str(e)}")
     
@@ -840,35 +851,53 @@ class TradingBotAPIServer:
                 return
                 
             # 현재 열린 주문 가져오기
-            orders = self.exchange_api.get_open_orders()
-            
-            if orders:
-                # 주문 데이터 DB에 저장
-                self.db.save_orders(orders)
-                logger.debug(f"주문 상태 동기화 완료: {len(orders)}개의 열린 주문")
-            else:
-                logger.debug("열린 주문 없음")
+            try:
+                # 거래소 API에서 열린 주문 조회
+                orders = None
+                if hasattr(self.exchange_api, 'get_open_orders') and callable(self.exchange_api.get_open_orders):
+                    orders = self.exchange_api.get_open_orders()
+                elif hasattr(self.bot_gui, 'get_open_orders') and callable(self.bot_gui.get_open_orders):
+                    orders = self.bot_gui.get_open_orders()
+                
+                if orders and isinstance(orders, list):
+                    # 주문 데이터 DB에 저장
+                    self.db.save_orders(orders)
+                    logger.debug(f"주문 상태 동기화 완료: {len(orders)}개의 열린 주문")
+                else:
+                    logger.debug("열린 주문 없음")
+            except Exception as e:
+                logger.error(f"주문 조회 중 오류: {str(e)}")
         except Exception as e:
             logger.error(f"주문 상태 동기화 중 오류: {str(e)}")
     
     # 계좌 잔액 동기화
     def _sync_balance(self):
         """
-        거래소에서 계좌 잔액 정보를 가져와 DB에 저장
+        거래소에서 계정 잔고 정보를 가져와 DB에 저장
         """
         try:
             if not self.exchange_api:
                 return
                 
-            # 현물 및 선물 잔고 가져오기
-            balance = self.exchange_api.get_balance('all')
-            
-            if balance:
-                # 잔액 데이터 DB에 저장
-                self.db.save_balances(balance)
-                logger.debug("계좌 잔액 동기화 완료")
+            # 현재 잔고 정보 가져오기
+            try:
+                # 거래소 API에서 계정 잔고 조회
+                balance = None
+                if hasattr(self.exchange_api, 'get_balance') and callable(self.exchange_api.get_balance):
+                    balance = self.exchange_api.get_balance()
+                elif hasattr(self.bot_gui, 'get_balance') and callable(self.bot_gui.get_balance):
+                    balance = self.bot_gui.get_balance()
+                
+                if balance and isinstance(balance, dict):
+                    # 잔고 데이터 DB에 저장
+                    self.db.save_balances(balance)
+                    logger.debug("계정 잔고 동기화 완료")
+                else:
+                    logger.debug("잔고 정보 없음")
+            except Exception as e:
+                logger.error(f"잔고 조회 중 오류: {str(e)}")
         except Exception as e:
-            logger.error(f"계좌 잔액 동기화 중 오류: {str(e)}")
+            logger.error(f"계정 잔고 동기화 중 오류: {str(e)}")
     
     # 포지션 정보 동기화
     def _sync_positions(self):
@@ -876,15 +905,7 @@ class TradingBotAPIServer:
         거래소에서 현재 포지션 정보를 가져와 DB에 저장
         """
         try:
-            # 기존 테스트 모드 포지션 로드
-            existing_positions = self.db.load_positions()
-            test_positions = []
-            for pos in existing_positions:
-                if pos.get('additional_info', {}).get('test_mode', False):
-                    test_positions.append(pos)
-                    logger.debug(f"테스트 모드 포지션 발견: {pos.get('symbol')}, {pos.get('side')}")
-            
-            # 시장 타입이 'futures'가 아닐 경우 실제 포지션 조회 스킵
+            # 시장 타입이 'futures'가 아닀 경우 실제 포지션 조회 스킵
             if not self.exchange_api or self.exchange_api.market_type != 'futures':
                 logger.info("선물 포지션 정보를 조회할 수 없습니다.")
                 return
@@ -892,16 +913,14 @@ class TradingBotAPIServer:
             # 현재 포지션 조회
             try:
                 positions = self.exchange_api.get_positions()
-                logger.debug(f"현재 포지션 조회 결과: {len(positions)}")
-                
-                # 새로운 포지션 정보로 DB 업데이트
-                self.db.save_positions(positions)
-                
-                # 테스트 포지션 보존 (테스트 모드용)
-                for test_pos in test_positions:
-                    logger.debug(f"테스트 포지션 보존: {test_pos.get('symbol')}, {test_pos.get('side')}")
-                    self.db.save_position(test_pos)
+                if positions and isinstance(positions, list):
+                    logger.debug(f"현재 포지션 조회 결과: {len(positions)}")
                     
+                    # 새로운 포지션 정보로 DB 업데이트
+                    self.db.save_positions(positions)
+                else:
+                    logger.debug("포지션 정보 없음")
+                
                 logger.debug("포지션 동기화 완료")
             except Exception as e:
                 logger.error(f"포지션 조회 중 오류: {str(e)}")
