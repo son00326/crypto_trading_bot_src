@@ -2032,6 +2032,7 @@ class CryptoTradingBotGUI(QMainWindow):
         
         return {
             'running': self.bot_running,
+            'exchange': self.exchange_id,
             'symbol': self.symbol_combo.currentText() if not self.headless else default_symbol,
             'strategy': self.strategy_combo.currentText() if not self.headless else self.current_strategy,
             'balance': self.balance_data

@@ -970,7 +970,24 @@ class DatabaseManager:
             total_count = len(trades)
             
             for trade in trades:
-                profit = trade.get('pnl', 0)
+                # trades 테이블에서 수익 계산
+                # 거래 내역에서 side에 따라 매수/매도 구분
+                side = trade['side']
+                price = trade['price']
+                amount = trade['amount']
+                cost = trade['cost']
+                
+                # 추가 정보에서 수익 정보 확인 시도
+                additional_info = {}
+                if trade['additional_info']:
+                    try:
+                        additional_info = json.loads(trade['additional_info'])
+                    except:
+                        pass
+                
+                # 직접 제공된 수익 정보가 있으면 사용
+                profit = additional_info.get('profit', 0)
+                
                 if profit > 0:
                     win_count += 1
                     total_profit += profit
