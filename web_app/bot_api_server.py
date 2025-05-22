@@ -2,12 +2,23 @@
 # 암호화폐 자동 매매 봇 API 서버
 import os
 import sys
-import threading
-import logging
-import json
 import time
+import json
+import random
+import string
+import traceback
+import threading
+import secrets
+import requests
+import logging
 from datetime import datetime
 from dotenv import load_dotenv
+from urllib.parse import urlparse
+from PyQt5.QtWidgets import QApplication
+from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash
+from flask_cors import CORS
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # 프로젝트 루트 디렉토리로 작업 디렉토리 변경
 # 이것은 상대 경로를 사용하는 부분에서 문제를 해결하기 위함
@@ -63,7 +74,19 @@ class TradingBotAPIServer:
         self.flask_app = Flask(__name__, 
                          template_folder=template_dir,
                          static_folder=static_dir)
-        self.flask_app.secret_key = os.getenv('SECRET_KEY', 'crypto_trading_bot_secret_key')
+        
+        # 안전한 SECRET_KEY 설정
+        secret_key = os.getenv('SECRET_KEY')
+        if not secret_key:
+            # 랜덤 SECRET_KEY 생성
+            import secrets
+            secret_key = secrets.token_hex(32)  # 256비트 랜덤 값
+            logger.warning('SECRET_KEY 환경변수가 설정되지 않았습니다. 임시 랜덤 키를 생성했습니다.')
+            logger.warning('서버 재시작 시 세션이 모두 초기화됩니다. 프로덕션 환경에서는 환경변수로 SECRET_KEY를 설정하세요.')
+            
+        self.flask_app.secret_key = secret_key
+        
+        # CORS 설정
         CORS(self.flask_app)
         
         # 로그인 관리자 초기화
@@ -81,7 +104,17 @@ class TradingBotAPIServer:
         # 기본 관리자 계정 생성 (없는 경우)
         admin_user = self.db.get_user_by_username('admin')
         if not admin_user:
-            admin_password = os.getenv('ADMIN_PASSWORD', 'admin123')  # 환경변수에서 암호 가져오기
+            # 환경변수에서 관리자 암호 가져오기, 없으면 강력한 무작위 비밀번호 생성
+            admin_password = os.getenv('ADMIN_PASSWORD')
+            if not admin_password:
+                # 강력한 무작위 비밀번호 생성 (16자리)
+                import random
+                import string
+                chars = string.ascii_letters + string.digits + '!@#$%^&*()'
+                admin_password = ''.join(random.choice(chars) for _ in range(16))
+                logger.warning(f'ADMIN_PASSWORD 환경변수가 설정되지 않았습니다. 생성된 관리자 비밀번호: {admin_password}')
+                logger.warning('이 비밀번호를 안전한 곳에 저장하고 환경변수를 설정하세요!')
+            
             self.db.create_user(
                 username='admin',
                 password_hash=generate_password_hash(admin_password),
@@ -224,10 +257,8 @@ class TradingBotAPIServer:
         """API 엔드포인트 등록"""
         app = self.flask_app
         
-        # 사용자 로드 콜백 등록
-        @self.login_manager.user_loader
-        def load_user(user_id):
-            return self.load_user(user_id)
+        # 사용자 로드 콜백 등록 - 클래스 메서드를 직접 참조
+        self.login_manager.user_loader(self.load_user)
         
         # 로그인 페이지
         @app.route('/login', methods=['GET', 'POST'])
@@ -308,13 +339,10 @@ class TradingBotAPIServer:
                 # GUI에서 상태 정보 가져오기
                 status = self.bot_gui.get_bot_status()
                 status['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                status['success'] = True
                 return jsonify(status)
             except Exception as e:
-                logger.error(f"상태 조회 중 오류: {str(e)}")
-                return jsonify({
-                    'status': 'error',
-                    'message': f'상태 조회 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='get_status')
         
         # 거래 내역 조회 API
         @app.route('/api/trades', methods=['GET'])
@@ -324,32 +352,15 @@ class TradingBotAPIServer:
                 # 거래 내역 데이터 가져오기
                 trades = self.db.load_trades(limit=20)  # 최근 20개 거래 내역
                 
-                # 클라이언트에 반환할 형식으로 데이터 가공
-                trades_data = []
-                for trade in trades:
-                    trades_data.append({
-                        'id': trade.get('id'),
-                        'symbol': trade.get('symbol'),
-                        'type': trade.get('type'),  # buy 또는 sell
-                        'price': trade.get('price'),
-                        'amount': trade.get('amount'),
-                        'cost': trade.get('cost'),
-                        'datetime': trade.get('datetime'),
-                        'profit': trade.get('profit', 0),
-                        'profit_percent': trade.get('profit_percent', 0),
-                        'test_mode': trade.get('additional_info', {}).get('test_mode', False)
-                    })
+                # 공통 변환 메서드를 사용하여 데이터 가공
+                trades_data = [self._format_trade_data(trade) for trade in trades]
                     
                 return jsonify({
                     'success': True,
                     'data': trades_data
                 })
             except Exception as e:
-                logger.error(f"거래 내역 조회 중 오류: {str(e)}")
-                return jsonify({
-                    'success': False, 
-                    'message': f'거래 내역 조회 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='get_trades')
 
         # 포지션 정보 조회 API
         @app.route('/api/positions', methods=['GET'])
@@ -359,32 +370,15 @@ class TradingBotAPIServer:
                 # 현재 포지션 데이터 가져오기
                 positions = self.db.load_positions()
                 
-                # 클라이언트에 반환할 형식으로 데이터 가공
-                positions_data = []
-                for pos in positions:
-                    positions_data.append({
-                        'id': pos.get('id'),
-                        'symbol': pos.get('symbol'),
-                        'type': pos.get('type'),  # long 또는 short
-                        'entry_price': pos.get('entry_price'),
-                        'amount': pos.get('amount'),
-                        'current_price': pos.get('current_price', 0),
-                        'profit': pos.get('profit', 0),
-                        'profit_percent': pos.get('profit_percent', 0),
-                        'open_time': pos.get('open_time'),
-                        'test_mode': pos.get('additional_info', {}).get('test_mode', False)
-                    })
+                # 공통 변환 메서드를 사용하여 데이터 가공
+                positions_data = [self._format_position_data(pos) for pos in positions]
                     
                 return jsonify({
                     'success': True,
                     'data': positions_data
                 })
             except Exception as e:
-                logger.error(f"포지션 정보 조회 중 오류: {str(e)}")
-                return jsonify({
-                    'success': False,
-                    'message': f'포지션 정보 조회 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='get_positions')
         
         # 손절/이익실현 설정 API
         @app.route('/api/set_stop_loss_take_profit', methods=['POST'])
@@ -459,11 +453,7 @@ class TradingBotAPIServer:
                 })
                 
             except Exception as e:
-                logger.error(f"손절매/이익실현 설정 중 오류: {str(e)}")
-                return jsonify({
-                    'success': False, 
-                    'message': f'손절매/이익실현 설정 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='set_stop_loss_take_profit')
 
         # 지갑 잔액 및 요약 정보 API
         @app.route('/api/summary', methods=['GET'])
@@ -544,11 +534,7 @@ class TradingBotAPIServer:
                     }
                 })
             except Exception as e:
-                logger.error(f"요약 정보 조회 중 오류: {str(e)}")
-                return jsonify({
-                    'success': False,
-                    'message': f'요약 정보 조회 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='get_summary')
         
         # 봇 시작 API
         @app.route('/api/start_bot', methods=['POST'])
@@ -601,25 +587,25 @@ class TradingBotAPIServer:
                     
                     # 봇 상태 저장
                     try:
-                        bot_state = {
-                            'exchange_id': self.bot_gui.exchange_id if hasattr(self.bot_gui, 'exchange_id') else 'unknown',
-                            'symbol': symbol or (self.bot_gui.symbol if hasattr(self.bot_gui, 'symbol') else 'unknown'),
-                            'timeframe': timeframe or (self.bot_gui.timeframe if hasattr(self.bot_gui, 'timeframe') else '1h'),
-                            'strategy': strategy or 'unknown',
-                            'market_type': market_type,  # 요청에서 받은 값 사용
-                            'leverage': leverage,  # 입력받은 레버리지 값
-                            'is_running': True,
-                            'test_mode': test_mode,  # 입력받은 테스트 모드 값
-                            'auto_sl_tp': auto_sl_tp,  # 자동 손절매/이익실현 설정
-                            'partial_tp': partial_tp,  # 부분 청산 설정
-                            'updated_at': datetime.now().isoformat(),
-                            'additional_info': {
-                                'via': 'web_api',
-                                'client_ip': request.remote_addr
-                            }
+                        # 봇 시작 상태 저장
+                        additional_info = {
+                            'via': 'web_api',
+                            'client_ip': request.remote_addr
                         }
                         
-                        self.db.save_bot_state(bot_state)
+                        self._save_bot_state(
+                            is_running=True,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            strategy=strategy,
+                            market_type=market_type,
+                            leverage=leverage,
+                            test_mode=test_mode,
+                            auto_sl_tp=auto_sl_tp,
+                            partial_tp=partial_tp,
+                            additional_info=additional_info
+                        )
+                        
                         logger.info(f"봇 상태 저장 성공: {symbol}, {strategy}")
                     except Exception as e:
                         logger.warning(f"봇 상태 저장 중 오류: {e}")
@@ -630,11 +616,7 @@ class TradingBotAPIServer:
                 else:
                     return jsonify(result), 400
             except Exception as e:
-                logger.error(f"봇 시작 중 오류: {str(e)}")
-                return jsonify({
-                    'success': False,
-                    'message': f'봇 시작 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='start_bot')
         
         # 봇 중지 API
         @self.flask_app.route('/api/stop_bot', methods=['POST'])
@@ -646,52 +628,27 @@ class TradingBotAPIServer:
                 
                 # 봇을 중지할 때 상태 저장 (실행 중지 상태로 갱신)
                 try:
-                    # 이전 상태 정보 가져오기
-                    saved_state = self.db.load_bot_state()
+                    # 중지 관련 추가 정보
+                    additional_info = {
+                        'stopped_via': 'web_api',
+                        'stopped_at': datetime.now().isoformat(),
+                        'client_ip': request.remote_addr
+                    }
                     
-                    if saved_state:
-                        # 이전 상태에서 is_running만 업데이트
-                        saved_state['is_running'] = False
-                        saved_state['updated_at'] = datetime.now().isoformat()
-                        
-                        if 'additional_info' not in saved_state:
-                            saved_state['additional_info'] = {}
-                        
-                        saved_state['additional_info']['stopped_via'] = 'web_api'
-                        saved_state['additional_info']['stopped_at'] = datetime.now().isoformat()
-                        saved_state['additional_info']['client_ip'] = request.remote_addr
-                        
-                        # 상태 저장
-                        self.db.save_bot_state(saved_state)
-                        logger.info("봇 중지 상태 저장 완료")
-                    else:
-                        # 이전 상태가 없는 경우 새로 생성
-                        bot_state = {
-                            'exchange_id': self.bot_gui.exchange_id if hasattr(self.bot_gui, 'exchange_id') else 'unknown',
-                            'symbol': self.bot_gui.symbol if hasattr(self.bot_gui, 'symbol') else 'unknown',
-                            'timeframe': self.bot_gui.timeframe if hasattr(self.bot_gui, 'timeframe') else '1h',
-                            'strategy': 'unknown',
-                            'is_running': False,
-                            'test_mode': getattr(self.bot_gui, 'test_mode', True),
-                            'updated_at': datetime.now().isoformat(),
-                            'additional_info': {
-                                'stopped_via': 'web_api',
-                                'stopped_at': datetime.now().isoformat(),
-                                'client_ip': request.remote_addr
-                            }
-                        }
-                        self.db.save_bot_state(bot_state)
-                        logger.info("개체를 생성하여 봇 중지 상태 저장 완료")
+                    # 봇 중지 상태 저장
+                    self._save_bot_state(
+                        is_running=False,
+                        additional_info=additional_info,
+                        update_existing=True  # 기존 상태 업데이트
+                    )
+                    
+                    logger.info("봇 중지 상태 저장 완료")
                 except Exception as e:
                     logger.warning(f"봇 중지 상태 저장 중 오류: {e}")
                 
                 return jsonify(result)
             except Exception as e:
-                logger.error(f"봇 중지 중 오류: {str(e)}")
-                return jsonify({
-                    'success': False,
-                    'message': f'봇 중지 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='stop_bot')
     
         # 잔액 정보 API
         @self.flask_app.route('/api/balance')
@@ -702,11 +659,7 @@ class TradingBotAPIServer:
                 result = self.bot_gui.get_balance_api()
                 return jsonify(result)
             except Exception as e:
-                logger.error(f"잔액 정보 조회 중 오류: {str(e)}")
-                return jsonify({
-                    'status': 'error',
-                    'message': f'잔액 정보 조회 중 오류: {str(e)}'
-                }), 500
+                return self._create_error_response(e, status_code=500, endpoint='get_balance')
 
         # 데이터 동기화 스레드 시작
     def start_data_sync(self):
@@ -768,12 +721,24 @@ class TradingBotAPIServer:
                 if current_time - last_position_sync >= self.position_sync_interval:
                     self._sync_trades()
                 
+            except requests.exceptions.RequestException as e:
+                # 네트워크 관련 오류 - 재시도 가능
+                logger.warning(f"데이터 동기화 중 네트워크 오류(재시도 예정): {str(e)}")
+                # 재시도 로직을 위해 짧은 대기 시간 설정
+                time.sleep(2)
+            except json.JSONDecodeError as e:
+                # JSON 파싱 오류 - 일시적인 API 응답 문제일 수 있음
+                logger.warning(f"데이터 동기화 중 JSON 파싱 오류(재시도 예정): {str(e)}")
+                time.sleep(2)
             except Exception as e:
+                # 기타 모든 예외 처리
                 logger.error(f"데이터 동기화 중 오류: {str(e)}")
-                traceback.print_exc()
+                logger.error(traceback.format_exc())
+                # 심각한 오류 후 좀 더 긴 대기 시간 설정
+                time.sleep(5)
             
             # 최소 동기화 주기(가격 데이터)만큼 대기
-            time.sleep(1)  # 1초마다 체크하여 각 데이터 유형별 동기화 타이밍 확인')}, {pos.get('side')}")
+            time.sleep(1)  # 1초마다 체크하여 각 데이터 유형별 동기화 타이밍 확인
         
         # 시장 타입이 'futures'가 아닐 경우 실제 포지션 조회 스킵
         if not self.exchange_api or self.exchange_api.market_type != 'futures':
@@ -791,12 +756,21 @@ class TradingBotAPIServer:
                 else:
                     logger.info("활성화된 실제 포지션이 없습니다.")
                     
+            except requests.exceptions.RequestException as e:
+                # 네트워크 관련 오류 - 재시도 가능
+                logger.warning(f"포지션 정보 조회 중 네트워크 오류(재시도 예정): {str(e)}")
+                time.sleep(2)
+            except json.JSONDecodeError as e:
+                # JSON 파싱 오류 - 일시적인 API 응답 문제일 수 있음
+                logger.warning(f"포지션 정보 조회 중 JSON 파싱 오류(재시도 예정): {str(e)}")
+                time.sleep(2)
             except Exception as e:
                 # 현물 계좌에서 포지션 조회 오류이면 무시
                 if "MarketTypeError" in str(e.__class__) or "현물 계좌에서는 포지션 조회가 불가능합니다" in str(e):
                     logger.debug(f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_api.exchange_id if self.exchange_api else 'unknown'}")
                 else:
                     logger.error(f"포지션 정보 동기화 중 오류: {str(e)}")
+                    logger.error(traceback.format_exc())
         
         # 테스트 포지션 보존
         for test_pos in test_positions:
@@ -969,14 +943,213 @@ class TradingBotAPIServer:
             self.sync_thread.join(timeout=5.0)
             logger.info("데이터 동기화 스레드 중지됨")
     
+    # 데이터 변환 유틸리티 메서드
+    def _format_trade_data(self, trade):
+        """
+        거래 데이터를 API 응답 형식으로 변환
+        
+        Args:
+            trade (dict): DB에서 가져온 거래 데이터
+            
+        Returns:
+            dict: API 응답용 형식으로 변환된 거래 데이터
+        """
+        return {
+            'id': trade.get('id'),
+            'symbol': trade.get('symbol'),
+            'type': trade.get('type'),  # buy 또는 sell
+            'price': trade.get('price'),
+            'amount': trade.get('amount'),
+            'cost': trade.get('cost'),
+            'datetime': trade.get('datetime'),
+            'profit': trade.get('profit', 0),
+            'profit_percent': trade.get('profit_percent', 0),
+            'test_mode': trade.get('additional_info', {}).get('test_mode', False)
+        }
+    
+    def _format_position_data(self, position):
+        """
+        포지션 데이터를 API 응답 형식으로 변환
+        
+        Args:
+            position (dict): DB에서 가져온 포지션 데이터
+            
+        Returns:
+            dict: API 응답용 형식으로 변환된 포지션 데이터
+        """
+        return {
+            'id': position.get('id'),
+            'symbol': position.get('symbol'),
+            'type': position.get('type'),  # long 또는 short
+            'entry_price': position.get('entry_price'),
+            'amount': position.get('amount'),
+            'current_price': position.get('current_price', 0),
+            'profit': position.get('profit', 0),
+            'profit_percent': position.get('profit_percent', 0),
+            'open_time': position.get('open_time'),
+            'test_mode': position.get('additional_info', {}).get('test_mode', False),
+            'stop_loss_price': position.get('stop_loss_price'),
+            'take_profit_price': position.get('take_profit_price')
+        }
+    
+    # API 오류 응답 유틸리티 메서드
+    def _create_error_response(self, error, status_code=500, endpoint=None):
+        """
+        표준화된 API 오류 응답을 생성하는 유틸리티 메서드
+        
+        Args:
+            error (Exception 또는 str): 오류 내용
+            status_code (int): HTTP 상태 코드
+            endpoint (str, optional): 오류가 발생한 엔드포인트 이름
+        
+        Returns:
+            tuple: (jsonify된 응답, 상태 코드)
+        """
+        # 오류 로깅
+        error_str = str(error)
+        endpoint_info = f" [{endpoint}]" if endpoint else ""
+        logger.error(f"API 오류{endpoint_info}: {error_str}")
+        
+        # 오류 응답 구성
+        response = {
+            'success': False,
+            'message': error_str,
+            'error_type': error.__class__.__name__ if isinstance(error, Exception) else 'Error',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # 엔드포인트 정보 추가
+        if endpoint:
+            response['endpoint'] = endpoint
+            
+        return jsonify(response), status_code
+    
+    # 봇 상태 저장 유틸리티 메서드
+    def _save_bot_state(self, is_running, additional_info=None, update_existing=False, **kwargs):
+        """
+        봇 상태를 데이터베이스에 저장하는 유틸리티 메서드
+        
+        Args:
+            is_running (bool): 봇 실행 상태
+            additional_info (dict, optional): 추가 정보
+            update_existing (bool, optional): 기존 상태 업데이트 여부
+            **kwargs: 추가 상태 데이터 (예: symbol, timeframe, strategy 등)
+        """
+        if update_existing:
+            # 기존 상태 정보 가져오기
+            saved_state = self.db.load_bot_state()
+            
+            if saved_state:
+                # 이전 상태 업데이트
+                saved_state['is_running'] = is_running
+                saved_state['updated_at'] = datetime.now().isoformat()
+                
+                # 추가 파라미터 적용
+                for key, value in kwargs.items():
+                    if value is not None:  # None이 아닌 값만 업데이트
+                        saved_state[key] = value
+                
+                # 추가 정보 업데이트
+                if additional_info:
+                    if 'additional_info' not in saved_state:
+                        saved_state['additional_info'] = {}
+                    saved_state['additional_info'].update(additional_info)
+                
+                # 업데이트된 상태 저장
+                self.db.save_bot_state(saved_state)
+                return True
+            elif is_running is False:  # 이전 상태가 없는데 중지 요청인 경우
+                # 최소한의 정보로 새 상태 생성
+                bot_state = {
+                    'exchange_id': self.bot_gui.exchange_id if hasattr(self.bot_gui, 'exchange_id') else 'unknown',
+                    'symbol': getattr(self.bot_gui, 'symbol', kwargs.get('symbol', 'unknown')),
+                    'timeframe': getattr(self.bot_gui, 'timeframe', kwargs.get('timeframe', '1h')),
+                    'strategy': kwargs.get('strategy', 'unknown'),
+                    'is_running': is_running,
+                    'test_mode': getattr(self.bot_gui, 'test_mode', kwargs.get('test_mode', True)),
+                    'updated_at': datetime.now().isoformat(),
+                }
+                
+                # 추가 파라미터 적용
+                for key, value in kwargs.items():
+                    if value is not None and key not in bot_state:
+                        bot_state[key] = value
+                
+                # 추가 정보 적용
+                if additional_info:
+                    bot_state['additional_info'] = additional_info
+                
+                self.db.save_bot_state(bot_state)
+                return True
+            else:
+                # 이전 상태가 없는데 시작 요청이면 새로 생성해야 함
+                pass
+                
+        # 새 상태 생성
+        bot_state = {
+            'exchange_id': self.bot_gui.exchange_id if hasattr(self.bot_gui, 'exchange_id') else 'unknown',
+            'symbol': kwargs.get('symbol', getattr(self.bot_gui, 'symbol', 'unknown')),
+            'timeframe': kwargs.get('timeframe', getattr(self.bot_gui, 'timeframe', '1h')),
+            'strategy': kwargs.get('strategy', 'unknown'),
+            'market_type': kwargs.get('market_type', 'spot'),
+            'leverage': kwargs.get('leverage', 1),
+            'is_running': is_running,
+            'test_mode': kwargs.get('test_mode', getattr(self.bot_gui, 'test_mode', True)),
+            'auto_sl_tp': kwargs.get('auto_sl_tp', False),
+            'partial_tp': kwargs.get('partial_tp', False),
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        # 추가 정보 적용
+        if additional_info:
+            bot_state['additional_info'] = additional_info
+            
+        self.db.save_bot_state(bot_state)
+        return True
+        
     # API 서버 실행
     def run(self):
         """
         API 서버 시작
         """
+        # 보안 헤더 설정
+        @self.flask_app.after_request
+        def apply_security_headers(response):
+            # XSS 방지
+            response.headers["X-XSS-Protection"] = "1; mode=block"
+            # 클릭재킹 방지
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
+            # MIME 스니핑 방지
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            # 콘텐츠 보안 정책
+            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; img-src 'self' data:;"
+            # HSTS 설정 (프로덕션에서만 활성화)
+            if os.getenv('PRODUCTION', 'false').lower() == 'true':
+                response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            return response
+        
+        # SSL 인증서 경로 확인
+        ssl_context = None
+        cert_file = os.getenv('SSL_CERT_FILE')
+        key_file = os.getenv('SSL_KEY_FILE')
+        
+        # SSL 인증서가 있으면 HTTPS 사용
+        if cert_file and key_file and os.path.exists(cert_file) and os.path.exists(key_file):
+            ssl_context = (cert_file, key_file)
+            logger.info(f"HTTPS 모드로 서버를 실행합니다.")
+        else:
+            logger.warning("SSL 인증서가 없어 HTTP 모드로 서버를 실행합니다. 프로덕션 환경에서는 HTTPS 사용을 권장합니다.")
+        
         logger.info(f"API 서버 실행 준비 완료. 호스트: {self.host}, 포트: {self.port}")
         try:
-            self.flask_app.run(host=self.host, port=self.port, debug=True)
+            # debug=True는 개발 환경에서만 사용
+            debug_mode = os.getenv('DEBUG', 'true').lower() == 'true'
+            self.flask_app.run(
+                host=self.host, 
+                port=self.port, 
+                debug=debug_mode,
+                ssl_context=ssl_context
+            )
         finally:
             # 서버 종료 시 데이터 동기화 스레드 중지
             self.stop_data_sync()
