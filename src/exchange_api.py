@@ -19,6 +19,7 @@ from src.config import (
     DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_FUTURES_SYMBOL, DEFAULT_MARKET_TYPE, DEFAULT_TIMEFRAME
 )
 from src.network_recovery import NetworkRecoveryManager
+from src.rate_limit_manager import get_rate_limit_manager, rate_limited
 
 # 향상된 로깅 시스템 사용
 from src.logging_config import get_logger, log_api_call
@@ -300,31 +301,65 @@ class ExchangeAPI:
             exchange_class = getattr(ccxt, self.exchange_id)
             exchange = exchange_class(config)
             
-            # 선물 거래인 경우 레버리지 설정
+            # 선물 거래인 경우 레버리지와 마진 타입 설정
             if self.market_type == 'futures' and self.exchange_id == 'binance':
                 # 심볼 형식 변환
                 futures_symbol = self.format_symbol()
                 
                 try:
-                    # 실제 API 키가 설정된 경우에만 레버리지 설정 시도
+                    # 실제 API 키가 설정된 경우에만 설정 시도
                     if config['apiKey'] and config['secret'] and config['apiKey'] != 'your_api_key_here':
-                        # 레버리지 설정 API 호출 로깅
+                        # 1. 레버리지 설정
                         log_api_call(f"/exchange/{self.exchange_id}/leverage", "POST", request_data={
                             "symbol": futures_symbol,
                             "leverage": self.leverage
                         })
                         
-                        # 레버리지 설정
-                        exchange.setLeverage(self.leverage, futures_symbol)
+                        leverage_result = exchange.setLeverage(self.leverage, futures_symbol)
                         self.logger.info(f"레버리지 설정 완료: {futures_symbol}, {self.leverage}배")
                         
-                        # 필요한 경우 포지션 모드 설정 (one-way 모드: 한 방향만 포지션 가능)
-                        # exchange.setPositionMode(False, futures_symbol)  # False: 단일 포지션 모드
+                        # 레버리지 설정 확인
+                        try:
+                            positions = exchange.fetch_positions([futures_symbol])
+                            if positions and len(positions) > 0:
+                                actual_leverage = float(positions[0].get('leverage', 0))
+                                if actual_leverage != self.leverage:
+                                    self.logger.warning(f"레버리지 설정 불일치: 요청={self.leverage}, 실제={actual_leverage}")
+                                    # 다시 시도
+                                    exchange.setLeverage(self.leverage, futures_symbol)
+                        except Exception as leverage_check_error:
+                            self.logger.warning(f"레버리지 설정 확인 실패: {str(leverage_check_error)}")
+                        
+                        # 2. 마진 타입 설정 (교차 또는 격리)
+                        margin_mode = 'cross'  # 기본값은 교차 마진
+                        try:
+                            log_api_call(f"/exchange/{self.exchange_id}/marginMode", "POST", request_data={
+                                "symbol": futures_symbol,
+                                "marginMode": margin_mode
+                            })
+                            
+                            exchange.set_margin_mode(margin_mode, futures_symbol)
+                            self.logger.info(f"마진 타입 설정 완료: {futures_symbol}, {margin_mode} 모드")
+                        except Exception as margin_error:
+                            if "already" in str(margin_error):
+                                self.logger.info(f"이미 {margin_mode} 마진 모드로 설정되어 있습니다: {futures_symbol}")
+                            else:
+                                self.logger.error(f"마진 타입 설정 실패: {str(margin_error)}")
+                        
+                        # 3. 포지션 모드 설정 (예: one-way 모드)
+                        try:
+                            exchange.set_position_mode(False, futures_symbol)  # False: 단일 포지션 모드 (one-way)
+                            self.logger.info(f"포지션 모드 설정 완료: {futures_symbol}, one-way 모드")
+                        except Exception as position_mode_error:
+                            if "already" in str(position_mode_error):
+                                self.logger.info(f"이미 one-way 포지션 모드로 설정되어 있습니다: {futures_symbol}")
+                            else:
+                                self.logger.error(f"포지션 모드 설정 실패: {str(position_mode_error)}")
                     else:
-                        self.logger.warning("API 키가 설정되지 않아 레버리지 설정을 건너뜁니다.")
+                        self.logger.warning("API 키가 설정되지 않아 레버리지 및 마진 설정을 건너뚩니다.")
                 except Exception as e:
-                    log_api_call(f"/exchange/{self.exchange_id}/leverage", "POST", error=e)
-                    self.logger.error(f"레버리지 설정 중 오류 발생: {e}")
+                    log_api_call(f"/exchange/{self.exchange_id}/futures_settings", "POST", error=e)
+                    self.logger.error(f"선물 설정 중 오류 발생: {e}")
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time

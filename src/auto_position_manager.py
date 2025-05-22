@@ -363,6 +363,19 @@ class AutoPositionManager:
         Returns:
             bool: 성공 여부
         """
+        # 중복 주문 방지를 위한 주문 ID 추적
+        # 같은 포지션에 대해 최근 주문을 추적하여 중복 주문 정보를 저장
+        order_id_cache_key = f"exit_order_{position.get('id')}_{exit_type}"
+        last_order_timestamp = getattr(self, '_last_exit_order_timestamps', {}).get(order_id_cache_key, 0)
+        current_timestamp = time.time()
+        
+        # 최소 주문 간격 설정 (1초)
+        min_order_interval = 1.0
+        
+        # 마지막 주문 이후 최소 주문 간격 체크
+        if current_timestamp - last_order_timestamp < min_order_interval:
+            logger.warning(f"포지션 {position.get('id')}: 중복 주문 방지 - 마지막 주문 후 {min_order_interval}초 내 주문 무시")
+            return False
         try:
             position_id = position.get('id')
             symbol = position.get('symbol')
@@ -385,13 +398,51 @@ class AutoPositionManager:
             
             # 청산 실행 - 네트워크 오류 발생 가능
             try:
-                result = self.trading_algorithm.close_position(
+                # 주문 실행
+                order_result = self.trading_algorithm.close_position(
                     position_id=position_id,
                     symbol=symbol,
                     side=side,
                     amount=exit_size,
                     reason=exit_reason
                 )
+                
+                # 주문 ID가 반환되었는지 확인
+                order_id = None
+                if isinstance(order_result, dict) and 'id' in order_result:
+                    order_id = order_result.get('id')
+                elif isinstance(order_result, str):
+                    order_id = order_result
+                
+                if not order_id:
+                    logger.warning(f"포지션 {position_id} 청산: 주문 ID가 없습니다. 주문 상태를 확인할 수 없습니다.")
+                else:
+                    # 주문 상태 확인
+                    try:
+                        # 주문 상태 확인 전 약간의 지연
+                        time.sleep(0.5)  # 0.5초 대기
+                        
+                        # 주문 상태 확인
+                        order_status = self.trading_algorithm.exchange_api.get_order_status(symbol, order_id)
+                        
+                        if order_status and order_status.get('status') in ['closed', 'filled']:
+                            logger.info(f"포지션 {position_id} 청산 주문({order_id}) 상태 확인: {order_status.get('status')}")
+                        elif order_status and order_status.get('status') == 'canceled':
+                            logger.warning(f"포지션 {position_id} 청산 주문({order_id})이 취소되었습니다.")
+                            return False
+                        else:
+                            logger.warning(f"포지션 {position_id} 청산 주문({order_id}) 상태: {order_status.get('status') if order_status else '알 수 없음'}")
+                    except Exception as status_error:
+                        logger.error(f"포지션 {position_id} 청산 주문 상태 확인 중 오류: {status_error}")
+                
+                # 중복 주문 방지를 위한 주문 시간 기록 업데이트
+                if not hasattr(self, '_last_exit_order_timestamps'):
+                    self._last_exit_order_timestamps = {}
+                self._last_exit_order_timestamps[order_id_cache_key] = current_timestamp
+                
+                # 성공 처리
+                result = bool(order_id)  # 주문 ID가 있으면 성공으로 처리
+                
             except NetworkError as e:
                 logger.error(f"포지션 {position_id} 청산 중 네트워크 오류: {e}")
                 raise  # trade_error_handler에서 재시도 처리

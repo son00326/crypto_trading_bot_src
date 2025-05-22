@@ -256,7 +256,7 @@ class NetworkRecoveryManager:
     
     def _attempt_recovery(self, service_name: str) -> bool:
         """
-        연결 복구 시도
+        서비스 연결 복구 시도
         
         Args:
             service_name: 복구할 서비스 이름
@@ -264,46 +264,87 @@ class NetworkRecoveryManager:
         Returns:
             bool: 복구 성공 여부
         """
-        # 오류 상태 확인
-        error_type = self.connection_status[service_name]
-        attempt = self.recovery_attempts[service_name]
-        
-        self.logger.info(f"{service_name} 복구 시도 #{attempt}: 오류 유형 '{error_type}'")
-        
-        # 지능형 백오프 계산
-        backoff_time = self._calculate_backoff(attempt)
-        
-        # 복구 전략 선택
-        recovery_func = self.recovery_strategies.get(error_type, self.recovery_strategies['general_network'])
-        
-        try:
-            # 복구 시도
-            success = recovery_func(service_name)
-            
-            if success:
-                self.logger.info(f"{service_name} 복구 성공!")
-                self.recovery_attempts[service_name] = 0
-                self.connection_status[service_name] = 'connected'
-                self.last_successful_connection[service_name] = datetime.now()
-                
-                # 오류 분석기에 기록
-                if 'error_analyzer' in globals():
-                    error_analyzer.log_error(
-                        'network_recovery_success',
-                        f"{service_name} 네트워크 연결 복구 성공",
-                        {'service': service_name, 'error_type': error_type, 'attempts': attempt}
-                    )
-                
-                return True
-            else:
-                self.logger.warning(f"{service_name} 복구 실패, {backoff_time:.1f}초 후 재시도")
-                time.sleep(backoff_time)
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"{service_name} 복구 시도 중 오류: {e}")
-            time.sleep(backoff_time)
+        if service_name not in self.connection_status:
+            self.logger.warning(f"등록되지 않은 서비스: {service_name}")
             return False
+        
+        # 재시도 횟수 증가
+        self.recovery_attempts[service_name] += 1
+        attempts = self.recovery_attempts[service_name]
+        
+        # 복구 시도 시작 시간 기록
+        recovery_start_time = time.time()
+        
+        # 최대 재시도 횟수 및 전체 복구 제한 시간 설정
+        max_total_recovery_time = 300  # 5분
+        
+        if attempts > self.max_recovery_attempts:
+            self.logger.error(f"{service_name} 복구 시도 횟수 초과 ({attempts}/{self.max_recovery_attempts})")
+            # 마지막 상태 저장
+            self._save_recovery_logs()
+            # 복구 전략 초기화 - 다음번에는 다른 전략 사용
+            self.connection_status[service_name] = 'critical_failure'
+            return False
+        
+        # 지수 백오프 계산 (개선된 버전)
+        backoff_time = self._calculate_backoff(attempts)
+        
+        # 로그 레벨 조정: 초기 시도에는 INFO, 이후에는 DEBUG로 로깅
+        if attempts <= 2:
+            self.logger.info(f"{service_name} 복구 시도 {attempts}/{self.max_recovery_attempts} - {backoff_time:.2f}초 대기 후 재시도")
+        else:
+            self.logger.debug(f"{service_name} 복구 시도 {attempts}/{self.max_recovery_attempts} - {backoff_time:.2f}초 대기 후 재시도")
+            
+            # 여러번 시도해도 실패하는 경우, 로그 저장 및 상태 알림
+            if attempts == 3:
+                self.logger.warning(f"{service_name} 복구가 여러번 실패하고 있습니다. 네트워크 상태를 확인하세요.")
+                self._save_recovery_logs()
+        
+        # 대기 시간 후 재시도
+        time.sleep(backoff_time)
+        
+        # 오류 유형 확인
+        error_type = self._determine_error_type(service_name)
+        
+        # 해당 복구 전략 실행
+        recovery_success = False
+        if error_type in self.recovery_strategies:
+            recovery_method = self.recovery_strategies[error_type]
+            try:
+                # 복구 전략 실행
+                recovery_success = recovery_method(service_name)
+                
+                # 전체 복구 소요 시간 계산
+                elapsed_recovery_time = time.time() - recovery_start_time
+                
+                if recovery_success:
+                    self.logger.info(f"{service_name} 복구 성공: {error_type} 오류 해결 (소요시간: {elapsed_recovery_time:.2f}초)")
+                    self.recovery_attempts[service_name] = 0
+                    self.connection_status[service_name] = 'connected'
+                    self.last_successful_connection[service_name] = datetime.now()
+                    self._save_recovery_logs()
+                    return True
+                else:
+                    # 너무 오래 복구를 시도했는지 확인
+                    if elapsed_recovery_time > max_total_recovery_time:
+                        self.logger.error(f"{service_name} 복구 시간 초과: {elapsed_recovery_time:.2f}초 > {max_total_recovery_time}초")
+                        return False
+                    
+                    self.logger.warning(f"{service_name} 복구 실패: {error_type} 오류 지속 (소요시간: {elapsed_recovery_time:.2f}초)")
+                    return False
+            except Exception as e:
+                self.logger.error(f"{service_name} 복구 실패: {error_type} 전략 중 예외 발생 - {e}")
+                self.logger.error(traceback.format_exc())
+                return False
+        else:
+            # 기본 복구 전략: 대체 엔드포인트 시도
+            recovery_success = self._try_alternative_endpoint(service_name)
+            
+            if recovery_success:
+                elapsed_recovery_time = time.time() - recovery_start_time
+                self.logger.info(f"{service_name} 복구 성공: 대체 엔드포인트 사용 (소요시간: {elapsed_recovery_time:.2f}초)")
+            
+            return recovery_success
     
     def _calculate_backoff(self, attempt: int) -> float:
         """

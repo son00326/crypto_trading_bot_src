@@ -59,7 +59,8 @@ class TradingAlgorithm:
     """암호화폐 자동매매 알고리즘 클래스"""
     
     def __init__(self, exchange_id=DEFAULT_EXCHANGE, symbol=DEFAULT_SYMBOL, timeframe=DEFAULT_TIMEFRAME, 
-                 strategy=None, initial_balance=None, test_mode=True, restore_state=True):
+                 strategy=None, initial_balance=None, test_mode=True, restore_state=True,
+                 max_init_retries=3, retry_delay=2):
         """
         거래 알고리즘 초기화
         
@@ -71,6 +72,8 @@ class TradingAlgorithm:
             initial_balance (float): 초기 자산 (테스트 모드에서만 사용)
             test_mode (bool): 테스트 모드 여부
             restore_state (bool): 이전 상태 복원 여부
+            max_init_retries (int): API 초기화 최대 재시도 횟수
+            retry_delay (int): 재시도 간 지연 시간(초)
         """
         # 로거 초기화
         self.logger = get_logger('trading_algorithm')
@@ -83,16 +86,23 @@ class TradingAlgorithm:
         # 데이터베이스 관리자 초기화
         self.db = DatabaseManager()
         
-        # 거래소 API 및 데이터 관련 객체 초기화
-        self.exchange_api = ExchangeAPI(exchange_id=exchange_id, symbol=symbol, timeframe=timeframe)
+        # 거래소 API 및 데이터 관련 객체 초기화 (재시도 로직 포함)
+        self.exchange_api = self._initialize_exchange_api_with_retry(
+            exchange_id, symbol, timeframe, max_retries=max_init_retries, delay=retry_delay
+        )
+        
+        # API 초기화 성공 후 나머지 구성요소 초기화
         self.data_manager = DataManager(exchange_id=exchange_id, symbol=symbol)
         self.data_collector = DataCollector(exchange_id=exchange_id, symbol=symbol, timeframe=timeframe)
         self.data_analyzer = DataAnalyzer(exchange_id=exchange_id, symbol=symbol)
         
         # 테스트 모드 설정
         if test_mode:
-            self.exchange_api.exchange.set_sandbox_mode(True)
-            logger.info("테스트 모드로 실행합니다.")
+            try:
+                self.exchange_api.exchange.set_sandbox_mode(True)
+                logger.info("테스트 모드로 실행합니다.")
+            except Exception as e:
+                logger.warning(f"테스트 모드 설정 실패: {str(e)}. 실제 모드로 진행합니다.")
         
         # 포트폴리오 매니저 초기화
         self.portfolio_manager = PortfolioManager(
@@ -171,6 +181,65 @@ class TradingAlgorithm:
             self._restore_state()
         
         logger.info(f"{exchange_id} 거래소의 {symbol} 거래 알고리즘이 초기화되었습니다.")
+        
+    def _initialize_exchange_api_with_retry(self, exchange_id, symbol, timeframe, max_retries=3, delay=2):
+        """
+        거래소 API를 초기화하고 연결을 검증합니다. 실패 시 재시도합니다.
+        
+        Args:
+            exchange_id (str): 거래소 ID
+            symbol (str): 거래 심볼
+            timeframe (str): 타임프레임
+            max_retries (int): 최대 재시도 횟수
+            delay (int): 재시도 간 지연 시간(초)
+            
+        Returns:
+            ExchangeAPI: 초기화된 거래소 API 인스턴스
+            
+        Raises:
+            APIError: 모든 재시도 후에도 초기화 실패한 경우
+        """
+        retry_count = 0
+        last_exception = None
+        
+        while retry_count <= max_retries:
+            try:
+                # 거래소 API 초기화
+                exchange_api = ExchangeAPI(exchange_id=exchange_id, symbol=symbol, timeframe=timeframe)
+                
+                # API 키 유효성 검증 (간단한 API 호출로 확인)
+                try:
+                    # 서버 시간 조회로 API 연결 테스트 (가장 가벼운 API 호출)
+                    server_time = exchange_api.exchange.fetch_time()
+                    self.logger.info(f"API 연결 확인: 서버 시간 {datetime.fromtimestamp(server_time/1000)}")  
+                    
+                    # 추가 검증: 적절한 API 권한이 있는지 확인
+                    if not exchange_api.exchange.checkRequiredCredentials():
+                        self.logger.warning("API 키가 설정되지 않았거나 불완전합니다. 일부 기능이 제한될 수 있습니다.")
+                    
+                    return exchange_api
+                except Exception as validation_error:
+                    self.logger.error(f"API 키 유효성 검증 실패: {validation_error}")
+                    raise
+                    
+            except Exception as e:
+                last_exception = e
+                retry_count += 1
+                self.logger.warning(f"거래소 API 초기화 실패 ({retry_count}/{max_retries}): {str(e)}")
+                
+                if retry_count <= max_retries:
+                    self.logger.info(f"{delay}초 후 재시도 합니다...")
+                    time.sleep(delay)
+                    # 지수 백오프: 다음 재시도는 더 오래 기다림
+                    delay = min(delay * 2, 30)  # 최대 30초까지 증가
+        
+        # 모든 재시도 실패 시
+        error_msg = f"최대 재시도 횟수({max_retries})를 초과했습니다. 거래소 API 초기화 실패."
+        self.logger.error(error_msg)
+        if last_exception:
+            raise APIError(error_msg, original_exception=last_exception)
+        else:
+            raise APIError(error_msg)
     
     def _restore_state(self):
         """
@@ -342,6 +411,103 @@ class TradingAlgorithm:
             self.logger.debug(traceback.format_exc())
             return False
     
+    def get_current_price(self, symbol=None, max_retries=3):
+        """
+        현재 가격 조회 (API 오류 발생 시 재시도 로직 추가 및 기본값 처리 강화)
+        
+        Args:
+            symbol (str, optional): 거래 심볼. None이면 기본 심볼 사용
+            max_retries (int): 최대 재시도 횟수
+            
+        Returns:
+            float: 현재 가격, 실패 시 None 대신 마지막 유효한 가격 또는 추정값 반환
+        """
+        symbol = symbol or self.symbol
+        retry_count = 0
+        last_error = None
+        last_valid_price = None
+        price_cache_key = f"{symbol}_last_price"
+        
+        # 경고 로그 수준 설정 (재시도 횟수에 따라 조정)
+        log_level = 'warning' if retry_count > 1 else 'error'
+        
+        # 재시도 루프
+        while retry_count <= max_retries:
+            try:
+                # 현재 가격 조회
+                ticker = self.exchange_api.get_ticker(symbol)
+                
+                if not ticker or 'last' not in ticker:
+                    retry_count += 1
+                    if log_level == 'warning':
+                        self.logger.warning(f"현재 가격 조회 결과 불완전: {ticker}, 재시도 {retry_count}/{max_retries}")
+                    else:
+                        self.logger.error(f"현재 가격 조회 결과 불완전: {ticker}, 재시도 {retry_count}/{max_retries}")
+                    time.sleep(1)  # 재시도 전 짠시 대기
+                    continue
+                
+                current_price = float(ticker['last'])
+                
+                # 가격 유효성 검사
+                if current_price <= 0:
+                    self.logger.warning(f"비정상적인 가격 받음: {current_price}, 재시도 {retry_count}/{max_retries}")
+                    retry_count += 1
+                    time.sleep(1)  # 재시도 전 짠시 대기
+                    continue
+                
+                # 캐시 업데이트
+                if not hasattr(self, '_price_cache'):
+                    self._price_cache = {}
+                self._price_cache[price_cache_key] = {
+                    'price': current_price,
+                    'timestamp': time.time()
+                }
+                
+                return current_price
+                
+            except Exception as e:
+                last_error = e
+                retry_count += 1
+                
+                if retry_count <= max_retries:
+                    self.logger.warning(f"현재 가격 조회 실패 ({retry_count}/{max_retries}): {e}")
+                    time.sleep(retry_count)  # 지수적 대기 시간 증가
+                else:
+                    self.logger.error(f"현재 가격 조회 최대 재시도 횟수 초과: {e}")
+        
+        # 모든 재시도 실패 시
+        self.logger.error(f"현재 가격 조회 최종 실패: {last_error}")
+        
+        # 최근 캐시된 가격 확인 (1분 이내)
+        if hasattr(self, '_price_cache') and price_cache_key in self._price_cache:
+            cache_data = self._price_cache[price_cache_key]
+            if time.time() - cache_data['timestamp'] < 60:  # 1분 이내 캐시
+                self.logger.warning(f"캐시된 가격 사용: {cache_data['price']} ({int(time.time() - cache_data['timestamp'])}초 전)")
+                return cache_data['price']
+        
+        # 데이터베이스에서 최근 가격 가져오기 시도
+        try:
+            recent_price = self.db.get_latest_price(symbol)
+            if recent_price and recent_price > 0:
+                self.logger.warning(f"DB에서 최근 가격 사용: {recent_price}")
+                return recent_price
+        except Exception as db_error:
+            self.logger.error(f"DB에서 최근 가격 조회 실패: {db_error}")
+        
+        # OHLCV 데이터에서 수집
+        try:
+            ohlcv_data = self.exchange_api.get_ohlcv(symbol, limit=1)
+            if not ohlcv_data.empty:
+                last_close = float(ohlcv_data.iloc[-1]['close'])
+                self.logger.warning(f"OHLCV에서 마지막 종가 사용: {last_close}")
+                return last_close
+        except Exception as ohlcv_error:
+            self.logger.error(f"OHLCV에서 가격 조회 실패: {ohlcv_error}")
+        
+        # 마지막 수단: 최소한 마지막으로 알고 있는 가격 반환
+        self.logger.critical(f"현재 가격 조회 모든 방법 실패: {symbol}")
+        return None
+    
     def get_portfolio_summary(self):
         """
         포트폴리오 요약 정보 반환
@@ -349,7 +515,7 @@ class TradingAlgorithm:
         try:
             # 현재 가격 조회
             try:
-                current_price = self.exchange_api.get_current_price(self.symbol)
+                current_price = self.get_current_price(self.symbol)
             except Exception as e:
                 self.logger.warning(f"현재 가격 조회 실패: {e}")
                 current_price = 0
