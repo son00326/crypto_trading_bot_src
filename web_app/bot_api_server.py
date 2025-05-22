@@ -985,5 +985,5 @@ class TradingBotAPIServer:
 if __name__ == '__main__':
     # 직접 실행 시 서버 시작
     server = TradingBotAPIServer(host='127.0.0.1', port=8080)
-    server.start_data_sync(interval=60)  # 데이터 동기화 스레드 시작
+    # 데이터 동기화는 이미 TradingBotAPIServer 초기화 시 시작됨
     server.run()
