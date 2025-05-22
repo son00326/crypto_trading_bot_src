@@ -149,7 +149,74 @@ class TradingAlgorithm:
                 
             self.strategy = CombinedStrategy([ma_cross, rsi])
         else:
-            # 이미 전략 객체가 제공된 경우
+            # 전략 이름을 기반으로 전략 객체 생성
+            if isinstance(strategy, str):
+                strategy_name = strategy
+                # 전략 이름에 따라 해당 파라미터를 적용한 전략 객체 생성
+                if strategy_name == 'MovingAverageCrossover':
+                    params = self.strategy_params.get('MovingAverageCrossover', {})
+                    strategy = MovingAverageCrossover(
+                        short_period=params.get('short_period', 9),
+                        long_period=params.get('long_period', 26),
+                        ma_type=params.get('ma_type', 'ema')
+                    )
+                    
+                elif strategy_name == 'RSIStrategy':
+                    params = self.strategy_params.get('RSIStrategy', {})
+                    strategy = RSIStrategy(
+                        period=params.get('period', 14),
+                        overbought=params.get('overbought', 70),
+                        oversold=params.get('oversold', 30)
+                    )
+                    
+                elif strategy_name == 'MACDStrategy':
+                    params = self.strategy_params.get('MACDStrategy', {})
+                    strategy = MACDStrategy(
+                        fast_period=params.get('fast_period', 12),
+                        slow_period=params.get('slow_period', 26),
+                        signal_period=params.get('signal_period', 9)
+                    )
+                    
+                elif strategy_name == 'BollingerBandsStrategy':
+                    params = self.strategy_params.get('BollingerBandsStrategy', {})
+                    strategy = BollingerBandsStrategy(
+                        period=params.get('period', 20),
+                        std_dev=params.get('std_dev', 2.0)
+                    )
+                    
+                elif strategy_name == 'CombinedStrategy':
+                    # 복합 전략은 기본적으로 MovingAverageCrossover와 RSI를 포함
+                    strategies = []
+                    
+                    # MA 전략 추가
+                    if self.strategy_params.get('MovingAverageCrossover'):
+                        mac_params = self.strategy_params['MovingAverageCrossover']
+                        strategies.append(MovingAverageCrossover(
+                            short_period=mac_params.get('short_period', 9),
+                            long_period=mac_params.get('long_period', 26),
+                            ma_type=mac_params.get('ma_type', 'ema')
+                        ))
+                    else:
+                        strategies.append(MovingAverageCrossover(short_period=9, long_period=26, ma_type='ema'))
+                        
+                    # RSI 전략 추가
+                    if self.strategy_params.get('RSIStrategy'):
+                        rsi_params = self.strategy_params['RSIStrategy']
+                        strategies.append(RSIStrategy(
+                            period=rsi_params.get('period', 14),
+                            overbought=rsi_params.get('overbought', 70),
+                            oversold=rsi_params.get('oversold', 30)
+                        ))
+                    else:
+                        strategies.append(RSIStrategy(period=14, overbought=70, oversold=30))
+                        
+                    strategy = CombinedStrategy(strategies)
+                else:
+                    # 나머지 전략은 기본 파라미터로 처리
+                    self.logger.warning(f"알 수 없는 전략 이름: {strategy_name}, 기본 파라미터로 초기화합니다.")
+                    strategy = MovingAverageCrossover(short_period=9, long_period=26, ma_type='ema')
+                    
+            # 전략 객체 적용
             self.strategy = strategy
         
         logger.info(f"{self.strategy.name} 전략을 사용합니다.")

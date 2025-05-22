@@ -33,6 +33,56 @@ class Strategy:
         """
         self.name = name
         logger.info(f"{self.name} 전략이 초기화되었습니다.")
+        
+    def validate_parameters(self, params):
+        """
+        전략 파라미터 유효성 검사
+        
+        Args:
+            params (dict): 검사할 파라미터 딩크셔너리
+            
+        Returns:
+            tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
+        """
+        # 기본 구현은 항상 True 반환 - 자식 클래스에서 재정의
+        return True, ""
+    
+    @staticmethod
+    def validate_numeric_parameter(name, value, min_value=None, max_value=None, allow_none=False):
+        """
+        숫자 파라미터 값 검증
+        
+        Args:
+            name (str): 파라미터 이름
+            value: 검증할 값
+            min_value: 최소값 (선택적)
+            max_value: 최대값 (선택적)
+            allow_none (bool): None 값 허용 여부
+            
+        Returns:
+            tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
+        """
+        if value is None:
+            if allow_none:
+                return True, ""
+            return False, f"{name} 파라미터는 None이 될 수 없습니다."
+        
+        try:
+            # 숫자로 변환 시도
+            num_value = float(value)
+            
+            # 최소값 검사
+            if min_value is not None and num_value < min_value:
+                return False, f"{name} 파라미터는 {min_value} 이상이어야 합니다. 현재 값: {value}"
+                
+            # 최대값 검사
+            if max_value is not None and num_value > max_value:
+                return False, f"{name} 파라미터는 {max_value} 이하여야 합니다. 현재 값: {value}"
+                
+            return True, ""
+            
+        except (ValueError, TypeError):
+            return False, f"{name} 파라미터는 숫자여야 합니다. 현재 값: {value}"
     
     def generate_signals(self, df):
         """
@@ -88,10 +138,58 @@ class MovingAverageCrossover(Strategy):
             long_period (int): 장기 이동평균 기간
             ma_type (str): 이동평균 유형 ('sma' 또는 'ema')
         """
+        # 파라미터 유효성 검사
+        valid, message = self.validate_parameters({
+            'short_period': short_period,
+            'long_period': long_period,
+            'ma_type': ma_type
+        })
+        
+        if not valid:
+            logger.warning(f"이동평균 교차 전략 파라미터 오류: {message}. 기본값을 사용합니다.")
+            short_period = 9
+            long_period = 26
+            ma_type = 'ema'
+            
         super().__init__(name=f"MA_Crossover_{short_period}_{long_period}_{ma_type}")
         self.short_period = short_period
         self.long_period = long_period
         self.ma_type = ma_type
+        
+    def validate_parameters(self, params):
+        """
+        이동평균 교차 전략 파라미터 유효성 검사
+        
+        Args:
+            params (dict): 검사할 파라미터 딩크셔너리
+            
+        Returns:
+            tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
+        """
+        # 단기 이동평균 기간 검사
+        short_period = params.get('short_period')
+        valid, message = self.validate_numeric_parameter('short_period', short_period, 
+                                                       min_value=2, max_value=100)
+        if not valid:
+            return False, message
+        
+        # 장기 이동평균 기간 검사
+        long_period = params.get('long_period')
+        valid, message = self.validate_numeric_parameter('long_period', long_period, 
+                                                      min_value=5, max_value=200)
+        if not valid:
+            return False, message
+            
+        # 이동평균 기간 비교 (장기가 단기보다 커야 함)
+        if short_period >= long_period:
+            return False, f"장기 이동평균 기간({long_period})은 단기 이동평균 기간({short_period})보다 커야 합니다."
+            
+        # 이동평균 유형 검사
+        ma_type = params.get('ma_type')
+        if ma_type not in ['sma', 'ema']:
+            return False, f"이동평균 유형은 'sma' 또는 'ema'여야 합니다. 현재 값: {ma_type}"
+            
+        return True, ""
     
     def generate_signals(self, df):
         """
@@ -147,10 +245,60 @@ class RSIStrategy(Strategy):
             overbought (int): 과매수 기준값
             oversold (int): 과매도 기준값
         """
+        # 파라미터 유효성 검사
+        valid, message = self.validate_parameters({
+            'period': period,
+            'overbought': overbought,
+            'oversold': oversold
+        })
+        
+        if not valid:
+            logger.warning(f"RSI 전략 파라미터 오류: {message}. 기본값을 사용합니다.")
+            period = 14
+            overbought = 70
+            oversold = 30
+            
         super().__init__(name=f"RSI_{period}_{overbought}_{oversold}")
         self.period = period
         self.overbought = overbought
         self.oversold = oversold
+        
+    def validate_parameters(self, params):
+        """
+        RSI 전략 파라미터 유효성 검사
+        
+        Args:
+            params (dict): 검사할 파라미터 딘터셔너리
+            
+        Returns:
+            tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
+        """
+        # RSI 기간 검사
+        period = params.get('period')
+        valid, message = self.validate_numeric_parameter('period', period, 
+                                                      min_value=2, max_value=30)
+        if not valid:
+            return False, message
+        
+        # 과매수 기준값 검사
+        overbought = params.get('overbought')
+        valid, message = self.validate_numeric_parameter('overbought', overbought, 
+                                                      min_value=50, max_value=90)
+        if not valid:
+            return False, message
+            
+        # 과매도 기준값 검사
+        oversold = params.get('oversold')
+        valid, message = self.validate_numeric_parameter('oversold', oversold, 
+                                                     min_value=10, max_value=50)
+        if not valid:
+            return False, message
+            
+        # 과매수와 과매도 기준값 비교
+        if overbought <= oversold:
+            return False, f"과매수 기준값({overbought})은 과매도 기준값({oversold})보다 커야 합니다."
+            
+        return True, ""
     
     def generate_signals(self, df):
         """
@@ -198,10 +346,60 @@ class MACDStrategy(Strategy):
             slow_period (int): 느린 EMA 기간
             signal_period (int): 시그널 기간
         """
+        # 파라미터 유효성 검사
+        valid, message = self.validate_parameters({
+            'fast_period': fast_period,
+            'slow_period': slow_period,
+            'signal_period': signal_period
+        })
+        
+        if not valid:
+            logger.warning(f"MACD 전략 파라미터 오류: {message}. 기본값을 사용합니다.")
+            fast_period = 12
+            slow_period = 26
+            signal_period = 9
+            
         super().__init__(name=f"MACD_{fast_period}_{slow_period}_{signal_period}")
         self.fast_period = fast_period
         self.slow_period = slow_period
         self.signal_period = signal_period
+        
+    def validate_parameters(self, params):
+        """
+        MACD 전략 파라미터 유효성 검사
+        
+        Args:
+            params (dict): 검사할 파라미터 딘터셔너리
+            
+        Returns:
+            tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
+        """
+        # 빠른 EMA 기간 검사
+        fast_period = params.get('fast_period')
+        valid, message = self.validate_numeric_parameter('fast_period', fast_period, 
+                                                      min_value=2, max_value=50)
+        if not valid:
+            return False, message
+        
+        # 느린 EMA 기간 검사
+        slow_period = params.get('slow_period')
+        valid, message = self.validate_numeric_parameter('slow_period', slow_period, 
+                                                      min_value=5, max_value=100)
+        if not valid:
+            return False, message
+            
+        # 시그널 기간 검사
+        signal_period = params.get('signal_period')
+        valid, message = self.validate_numeric_parameter('signal_period', signal_period, 
+                                                      min_value=2, max_value=50)
+        if not valid:
+            return False, message
+            
+        # 빠른/느린 EMA 기간 비교
+        if fast_period >= slow_period:
+            return False, f"느린 EMA 기간({slow_period})은 빠른 EMA 기간({fast_period})보다 커야 합니다."
+            
+        return True, ""
     
     def generate_signals(self, df):
         """
@@ -271,9 +469,46 @@ class BollingerBandsStrategy(Strategy):
             period (int): 이동평균 기간
             std_dev (float): 표준편차 배수
         """
+        # 파라미터 유효성 검사
+        valid, message = self.validate_parameters({
+            'period': period,
+            'std_dev': std_dev
+        })
+        
+        if not valid:
+            logger.warning(f"볼린저 밴드 전략 파라미터 오류: {message}. 기본값을 사용합니다.")
+            period = 20
+            std_dev = 2
+            
         super().__init__(name=f"BollingerBands_{period}_{std_dev}")
         self.period = period
         self.std_dev = std_dev
+        
+    def validate_parameters(self, params):
+        """
+        볼린저 밴드 전략 파라미터 유효성 검사
+        
+        Args:
+            params (dict): 검사할 파라미터 딘터셔너리
+            
+        Returns:
+            tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
+        """
+        # 이동평균 기간 검사
+        period = params.get('period')
+        valid, message = self.validate_numeric_parameter('period', period, 
+                                                     min_value=5, max_value=100)
+        if not valid:
+            return False, message
+        
+        # 표준편차 배수 검사
+        std_dev = params.get('std_dev')
+        valid, message = self.validate_numeric_parameter('std_dev', std_dev, 
+                                                      min_value=0.5, max_value=4)
+        if not valid:
+            return False, message
+            
+        return True, ""
     
     def generate_signals(self, df):
         """
