@@ -141,6 +141,46 @@ class DatabaseManager:
             )
             ''')
             
+            # 가격 데이터 테이블
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS price_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                price REAL NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                UNIQUE(symbol)
+            )
+            ''')
+            
+            # 주문 테이블
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_id TEXT UNIQUE NOT NULL,
+                symbol TEXT NOT NULL,
+                side TEXT NOT NULL,
+                price REAL NOT NULL,
+                amount REAL NOT NULL,
+                status TEXT NOT NULL,
+                type TEXT NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                additional_info TEXT
+            )
+            ''')
+            
+            # 잔액 테이블
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS balances (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                currency TEXT NOT NULL,
+                amount REAL NOT NULL,
+                balance_type TEXT NOT NULL,
+                timestamp TIMESTAMP NOT NULL,
+                additional_info TEXT,
+                UNIQUE(currency, balance_type)
+            )
+            ''')
+            
             # 사용자 테이블 (로그인 기능용)
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
@@ -1020,6 +1060,150 @@ class DatabaseManager:
         except sqlite3.Error as e:
             logger.error(f"설정 불러오기 오류: {e}")
             return default
+    
+    def update_price_data(self, price_data):
+        """
+        가격 데이터 업데이트
+        
+        Args:
+            price_data (dict): 가격 데이터 정보
+                - symbol: 심볼
+                - price: 가격
+                - timestamp: 타임스태프
+        """
+        conn, cursor = self._get_connection()
+        try:
+            # 이전 가격 데이터 조회
+            cursor.execute("""
+                SELECT * FROM price_data WHERE symbol = ?
+            """, (price_data['symbol'],))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # 기존 데이터 업데이트
+                cursor.execute("""
+                    UPDATE price_data 
+                    SET price = ?, timestamp = ?
+                    WHERE symbol = ?
+                """, (
+                    price_data['price'],
+                    price_data['timestamp'],
+                    price_data['symbol']
+                ))
+            else:
+                # 새 데이터 추가
+                cursor.execute("""
+                    INSERT INTO price_data (symbol, price, timestamp)
+                    VALUES (?, ?, ?)
+                """, (
+                    price_data['symbol'],
+                    price_data['price'],
+                    price_data['timestamp']
+                ))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"가격 데이터 업데이트 오류: {str(e)}")
+            conn.rollback()
+            return False
+    
+    def save_orders(self, orders):
+        """
+        주문 데이터 저장
+        
+        Args:
+            orders (list): 주문 데이터 목록
+        """
+        conn, cursor = self._get_connection()
+        try:
+            # 기존 주문 삭제 (열린 주문만 관리하기 때문에 전체 삭제)
+            cursor.execute("DELETE FROM orders WHERE status = 'open'")
+            
+            # 새 주문 데이터 추가
+            for order in orders:
+                order_id = order.get('id', '')
+                symbol = order.get('symbol', '')
+                side = order.get('side', '')  # buy or sell
+                price = order.get('price', 0)
+                amount = order.get('amount', 0)
+                status = order.get('status', 'open')
+                order_type = order.get('type', 'limit')
+                timestamp = order.get('datetime', datetime.now().isoformat())
+                additional_info = json.dumps(order.get('additional_info', {}))
+                
+                cursor.execute("""
+                    INSERT INTO orders 
+                    (order_id, symbol, side, price, amount, status, type, timestamp, additional_info) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    order_id, symbol, side, price, amount, status, order_type, timestamp, additional_info
+                ))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"주문 데이터 저장 오류: {str(e)}")
+            conn.rollback()
+            return False
+    
+    def save_balances(self, balance_data):
+        """
+        전체 계좌 잔액 정보 저장
+        
+        Args:
+            balance_data (dict): 계좌 잔액 정보 (현물 및 선물 가능)
+        """
+        conn, cursor = self._get_connection()
+        try:
+            # 이전 잔액 데이터 삭제
+            cursor.execute("DELETE FROM balances WHERE 1=1")
+            
+            # 현물 잔액 처리
+            if 'spot' in balance_data and balance_data['spot']:
+                spot_data = balance_data['spot']
+                
+                for currency, amount in spot_data.get('total', {}).items():
+                    if amount > 0:
+                        cursor.execute("""
+                            INSERT INTO balances 
+                            (currency, amount, balance_type, timestamp, additional_info) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (
+                            currency, 
+                            amount, 
+                            'spot',
+                            datetime.now().isoformat(),
+                            json.dumps({"free": spot_data.get('free', {}).get(currency, 0)})
+                        ))
+            
+            # 선물 잔액 처리
+            if 'future' in balance_data and balance_data['future']:
+                future_data = balance_data['future']
+                
+                for currency, amount in future_data.get('total', {}).items():
+                    if amount > 0:
+                        cursor.execute("""
+                            INSERT INTO balances 
+                            (currency, amount, balance_type, timestamp, additional_info) 
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (
+                            currency, 
+                            amount, 
+                            'future',
+                            datetime.now().isoformat(),
+                            json.dumps({
+                                "free": future_data.get('free', {}).get(currency, 0),
+                                "used": future_data.get('used', {}).get(currency, 0)
+                            })
+                        ))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"계좌 잔액 저장 오류: {str(e)}")
+            conn.rollback()
+            return False
     
     def save_balance(self, currency, amount, additional_info=None):
         """

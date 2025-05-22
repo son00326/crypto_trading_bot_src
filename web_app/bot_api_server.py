@@ -173,7 +173,14 @@ class TradingBotAPIServer:
         # 데이터 동기화 스레드 시작
         self.sync_thread = None
         self.sync_running = False
-        self.start_data_sync(interval=60)  # 60초마다 동기화
+        
+        # 차등화된 동기화 주기 설정 (AWS 환경 최적화)
+        self.price_sync_interval = 3     # 가격 데이터 (초)
+        self.order_sync_interval = 5     # 주문 상태 (초)
+        self.position_sync_interval = 15  # 포지션 정보 (초)
+        self.balance_sync_interval = 30   # 계좌 잔액 (초)
+        
+        self.start_data_sync()  # 차등화된 주기로 동기화
         
         # API 엔드포인트 등록
         self.register_endpoints()
@@ -702,58 +709,71 @@ class TradingBotAPIServer:
                 }), 500
 
         # 데이터 동기화 스레드 시작
-    def start_data_sync(self, interval=60):
+    def start_data_sync(self):
         """
         바이낸스에서 주기적으로 데이터를 가져와 DB에 동기화하는 스레드 시작
-        
-        Args:
-            interval (int): 동기화 주기(초)
+        차등화된 주기로 각 데이터 유형별 동기화 수행
         """
         if self.sync_thread is not None and self.sync_thread.is_alive():
-            logger.warning("데이터 동기화 스레드가 이미 실행 중입니다.")
+            logger.info("데이터 동기화 스레드가 이미 실행 중입니다.")
             return
         
         self.sync_running = True
-        self.sync_thread = threading.Thread(
-            target=self._data_sync_worker, 
-            args=(interval,),
-            daemon=True
-        )
+        self.sync_thread = threading.Thread(target=self._data_sync_worker, daemon=True)
         self.sync_thread.start()
-        logger.info(f"데이터 동기화 스레드 시작됨 (주기: {interval}초)")
+        logger.info(f"차등화된 주기(가격:{self.price_sync_interval}초, 주문:{self.order_sync_interval}초, 포지션:{self.position_sync_interval}초, 잔액:{self.balance_sync_interval}초)로 데이터 동기화 스레드 시작")
     
     # 데이터 동기화 워커 함수
-    def _data_sync_worker(self, interval):
+    def _data_sync_worker(self):
         """
-        주기적으로 바이낸스 데이터를 가져와 DB에 저장하는 워커 함수
+        차등화된 주기로 바이낸스 데이터를 가져와 DB에 저장하는 워커 함수
+        데이터 유형별로 다른 동기화 주기 적용
+        """
+        last_price_sync = 0
+        last_order_sync = 0
+        last_position_sync = 0
+        last_balance_sync = 0
         
-        Args:
-            interval (int): 동기화 주기(초)
-        """
         while self.sync_running:
             try:
-                if self.exchange_api is not None:
+                # 거래소 API가 없는 경우 초기화 시도
+                if self.exchange_api is None:
+                    logger.warning("거래소 API가 초기화되지 않았습니다. 초기화를 시도합니다.")
+                    time.sleep(5)  # 5초 후 다시 시도
+                    continue
+                
+                current_time = time.time()
+                
+                # 가격 정보 동기화 (높은 빈도)
+                if current_time - last_price_sync >= self.price_sync_interval:
+                    self._sync_price_data()
+                    last_price_sync = current_time
+                
+                # 주문 상태 동기화
+                if current_time - last_order_sync >= self.order_sync_interval:
+                    self._sync_orders()
+                    last_order_sync = current_time
+                
+                # 포지션 정보 동기화
+                if current_time - last_position_sync >= self.position_sync_interval:
                     self._sync_positions()
+                    last_position_sync = current_time
+                
+                # 잔액 정보 동기화 (낮은 빈도)
+                if current_time - last_balance_sync >= self.balance_sync_interval:
+                    self._sync_balance()
+                    last_balance_sync = current_time
+                
+                # 거래 내역 동기화 (포지션 동기화와 같은 주기)
+                if current_time - last_position_sync >= self.position_sync_interval:
                     self._sync_trades()
-                    logger.debug("데이터 동기화 완료")
+                
             except Exception as e:
-                logger.error(f"데이터 동기화 중 오류 발생: {str(e)}")
+                logger.error(f"데이터 동기화 중 오류: {str(e)}")
+                traceback.print_exc()
             
-            # 지정된 간격만큼 대기
-            time.sleep(interval)
-    
-    # 포지션 정보 동기화
-    def _sync_positions(self):
-        """
-        거래소에서 현재 포지션 정보를 가져와 DB에 저장
-        """
-        # 기존 테스트 모드 포지션 로드
-        existing_positions = self.db.load_positions()
-        test_positions = []
-        for pos in existing_positions:
-            if pos.get('additional_info', {}).get('test_mode', False):
-                test_positions.append(pos)
-                logger.debug(f"테스트 모드 포지션 발견: {pos.get('symbol')}, {pos.get('side')}")
+            # 최소 동기화 주기(가격 데이터)만큼 대기
+            time.sleep(1)  # 1초마다 체크하여 각 데이터 유형별 동기화 타이밍 확인')}, {pos.get('side')}")
         
         # 시장 타입이 'futures'가 아닐 경우 실제 포지션 조회 스킵
         if not self.exchange_api or self.exchange_api.market_type != 'futures':
@@ -785,6 +805,109 @@ class TradingBotAPIServer:
             if test_pos.get('id') not in existing_ids and test_pos.get('status') == 'open':
                 logger.info(f"테스트 포지션 보존: {test_pos.get('symbol')}, {test_pos.get('side')}")
                 self.db.save_position(test_pos)
+    
+    # 가격 데이터 동기화
+    def _sync_price_data(self):
+        """
+        거래소에서 최신 가격 데이터를 가져와 DB에 저장
+        """
+        try:
+            if not self.exchange_api:
+                return
+                
+            # 현재 심볼 가격 가져오기
+            symbol = self.exchange_api.symbol
+            current_price = self.exchange_api.get_current_price()
+            
+            # 가격 데이터 DB에 저장
+            self.db.update_price_data({
+                'symbol': symbol,
+                'price': current_price,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            logger.debug(f"가격 데이터 동기화 완료: {symbol} = {current_price}")
+        except Exception as e:
+            logger.error(f"가격 데이터 동기화 중 오류: {str(e)}")
+    
+    # 주문 상태 동기화
+    def _sync_orders(self):
+        """
+        거래소에서 주문 상태를 가져와 DB에 저장
+        """
+        try:
+            if not self.exchange_api:
+                return
+                
+            # 현재 열린 주문 가져오기
+            orders = self.exchange_api.get_open_orders()
+            
+            if orders:
+                # 주문 데이터 DB에 저장
+                self.db.save_orders(orders)
+                logger.debug(f"주문 상태 동기화 완료: {len(orders)}개의 열린 주문")
+            else:
+                logger.debug("열린 주문 없음")
+        except Exception as e:
+            logger.error(f"주문 상태 동기화 중 오류: {str(e)}")
+    
+    # 계좌 잔액 동기화
+    def _sync_balance(self):
+        """
+        거래소에서 계좌 잔액 정보를 가져와 DB에 저장
+        """
+        try:
+            if not self.exchange_api:
+                return
+                
+            # 현물 및 선물 잔고 가져오기
+            balance = self.exchange_api.get_balance('all')
+            
+            if balance:
+                # 잔액 데이터 DB에 저장
+                self.db.save_balances(balance)
+                logger.debug("계좌 잔액 동기화 완료")
+        except Exception as e:
+            logger.error(f"계좌 잔액 동기화 중 오류: {str(e)}")
+    
+    # 포지션 정보 동기화
+    def _sync_positions(self):
+        """
+        거래소에서 현재 포지션 정보를 가져와 DB에 저장
+        """
+        try:
+            # 기존 테스트 모드 포지션 로드
+            existing_positions = self.db.load_positions()
+            test_positions = []
+            for pos in existing_positions:
+                if pos.get('additional_info', {}).get('test_mode', False):
+                    test_positions.append(pos)
+                    logger.debug(f"테스트 모드 포지션 발견: {pos.get('symbol')}, {pos.get('side')}")
+            
+            # 시장 타입이 'futures'가 아닐 경우 실제 포지션 조회 스킵
+            if not self.exchange_api or self.exchange_api.market_type != 'futures':
+                logger.info("선물 포지션 정보를 조회할 수 없습니다.")
+                return
+            
+            # 현재 포지션 조회
+            try:
+                positions = self.exchange_api.get_positions()
+                logger.debug(f"현재 포지션 조회 결과: {len(positions)}")
+                
+                # 새로운 포지션 정보로 DB 업데이트
+                self.db.save_positions(positions)
+                
+                # 테스트 포지션 보존 (테스트 모드용)
+                for test_pos in test_positions:
+                    logger.debug(f"테스트 포지션 보존: {test_pos.get('symbol')}, {test_pos.get('side')}")
+                    self.db.save_position(test_pos)
+                    
+                logger.debug("포지션 동기화 완료")
+            except Exception as e:
+                logger.error(f"포지션 조회 중 오류: {str(e)}")
+                logger.debug("포지션 정보 업데이트 실패")
+        except Exception as e:
+            logger.error(f"포지션 동기화 중 오류: {str(e)}")
     
     # 거래 내역 동기화
     def _sync_trades(self):
