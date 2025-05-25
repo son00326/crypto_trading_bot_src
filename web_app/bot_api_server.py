@@ -1597,25 +1597,48 @@ class TradingBotAPIServer:
         if additional_info:
             bot_state['additional_info'] = additional_info
             
+        # 상태 저장
         self.db.save_bot_state(bot_state)
         return True
+    
+    def _create_error_response(self, error, status_code=500, endpoint=None):
+        """
+        표준화된 API 오류 응답을 생성하는 유틸리티 메서드
         
-    # API 서버 실행
+        Args:
+            error (Exception 또는 str): 오류 내용
+            status_code (int): HTTP 상태 코드
+            endpoint (str, optional): 오류가 발생한 엔드포인트 이름
+        
+        Returns:
+            tuple: (jsonify된 응답, 상태 코드)
+        """
+        # 오류 로깅
+        error_str = str(error)
+        endpoint_info = f" [{endpoint}]" if endpoint else ""
+        logger.error(f"API 오류{endpoint_info}: {error_str}")
+        
+        # 오류 응답 구성
+        response = {
+            'success': False,
+            'message': error_str,
+            'error_type': error.__class__.__name__ if isinstance(error, Exception) else 'Error',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        # 엔드포인트 정보 추가
+        if endpoint:
+            response['endpoint'] = endpoint
+            
+        return jsonify(response), status_code
+    
     def run(self):
-        """
-        API 서버 시작
-        """
-        # 보안 헤더 설정
+        """API 서버 시작"""
+        # CSP 헤더 추가
         @self.flask_app.after_request
         def apply_security_headers(response):
-            # XSS 방지
-            response.headers["X-XSS-Protection"] = "1; mode=block"
-            # 클릭재킹 방지
-            response.headers["X-Frame-Options"] = "SAMEORIGIN"
-            # MIME 스니핑 방지
-            response.headers["X-Content-Type-Options"] = "nosniff"
             # 콘텐츠 보안 정책
-            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; img-src 'self' data:;"
+            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://*; font-src 'self' data:; worker-src 'self' blob:"
             # HSTS 설정 (프로덕션에서만 활성화)
             if os.getenv('PRODUCTION', 'false').lower() == 'true':
                 response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
