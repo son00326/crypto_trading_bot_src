@@ -39,7 +39,7 @@ def add_csp_headers(app):
     @app.after_request
     def apply_security_headers(response):
         # unsafe-eval 허용하여 JavaScript eval() 함수 사용 가능하게 함
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'"
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://*; font-src 'self' data:; worker-src 'self' blob:"
         return response
     return app
 
@@ -74,7 +74,7 @@ def add_csp_headers(server):
     @server.after_request
     def add_security_headers(response):
         # unsafe-eval 허용하여 JavaScript eval() 함수 사용 가능하게 함
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'"
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://*; font-src 'self' data:; worker-src 'self' blob:"
         return response
     return server
 
