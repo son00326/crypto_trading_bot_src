@@ -26,6 +26,23 @@ logger = logging.getLogger('crypto_bot_web')
 # API 서버 임포트
 from web_app.bot_api_server import TradingBotAPIServer
 
+# CSP 헤더 추가 함수
+def add_csp_headers(app):
+    """
+    Flask 앱에 Content Security Policy 헤더를 추가하는 함수
+    
+    Args:
+        app: Flask 애플리케이션 인스턴스
+    Returns:
+        Flask 애플리케이션 인스턴스
+    """
+    @app.after_request
+    def apply_security_headers(response):
+        # unsafe-eval 허용하여 JavaScript eval() 함수 사용 가능하게 함
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'"
+        return response
+    return app
+
 def run_api_server(host='0.0.0.0', port=8080, headless=True, debug=True):
     """
     API 서버 실행 함수
@@ -41,11 +58,25 @@ def run_api_server(host='0.0.0.0', port=8080, headless=True, debug=True):
         server = TradingBotAPIServer(host=host, port=port, headless=headless)
         logger.info(f"API 서버 실행 준비 완료. 호스트: {host}, 포트: {port}")
         
+        # CSP 헤더 추가
+        server.flask_app = add_csp_headers(server.flask_app)
+        logger.info("CSP 헤더 추가: JavaScript eval() 함수 사용 허용")
+        
         # 서버 실행
         server.run()
     except Exception as e:
         logger.error(f"API 서버 실행 중 오류: {str(e)}")
         raise
+
+# CSP 헤더 추가 함수 (Content Security Policy)
+def add_csp_headers(server):
+    """Flask 서버에 CSP 헤더를 추가하는 함수"""
+    @server.after_request
+    def add_security_headers(response):
+        # unsafe-eval 허용하여 JavaScript eval() 함수 사용 가능하게 함
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'"
+        return response
+    return server
 
 # 직접 실행 시 서버 시작
 if __name__ == '__main__':
