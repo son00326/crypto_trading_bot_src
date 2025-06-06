@@ -65,7 +65,7 @@ class TradingBotAPIServer:
         template_dir = os.path.join(os.path.dirname(__file__), 'templates')
         static_dir = os.path.join(os.path.dirname(__file__), 'static')
         
-        self.flask_app = Flask(__name__, 
+        self.flask_app = Flask(__name__,
                          template_folder=template_dir,
                          static_folder=static_dir)
         
@@ -144,7 +144,7 @@ class TradingBotAPIServer:
                     # 특정 조건에서 봇 자동 재시작을 원하는 경우 사용
                     # self.start_bot_with_saved_settings(saved_state)
             
-            logger.info(f"API 서버가 초기화되었습니다. 봇 GUI를 헤드리스 모드로 실행 중...")  
+            logger.info(f"API 서버가 초기화되었습니다. 봇 GUI를 헤드리스 모드로 실행 중...")
         except Exception as e:
             logger.error(f"GUI 초기화 중 오류: {str(e)}")
             raise
@@ -271,7 +271,7 @@ class TradingBotAPIServer:
                 # 사용자 확인
                 user_data = self.db.get_user_by_username(username)
                 if user_data:
-                    # 비밀번호 해시 확인 
+                    # 비밀번호 해시 확인
                     logger.info(f"사용자 찾음: {username}, 비밀번호 검증 시도")
                     
                     # 해시 타입 확인 및 변환
@@ -279,7 +279,7 @@ class TradingBotAPIServer:
                     
                     if check_password_hash(stored_hash, password):
                         user = User(
-                            id=user_data['id'], 
+                            id=user_data['id'],
                             username=user_data['username'],
                             password_hash=user_data['password_hash'],
                             email=user_data['email'],
@@ -472,7 +472,7 @@ class TradingBotAPIServer:
                 # RiskManager 인스턴스 생성
                 from src.risk_manager import RiskManager
                 risk_manager = RiskManager(
-                    exchange_id=DEFAULT_EXCHANGE, 
+                    exchange_id=DEFAULT_EXCHANGE,
                     symbol=symbol
                 )
                 
@@ -827,7 +827,7 @@ class TradingBotAPIServer:
                                 logger.error(traceback.format_exc())
                                 # 기본값 설정
                                 all_balances = {
-                                    'spot': {'total': {'USDT': 10.0}}, 
+                                    'spot': {'total': {'USDT': 10.0}},
                                     'future': {'total': {'USDT': 5.0}}
                                 }
                                 logger.warning(f"[RECOVERY] 외부 예외 처리로 기본값 설정: {all_balances}")
@@ -981,7 +981,7 @@ class TradingBotAPIServer:
                     logger.info(f"자동 손절매/이익실현: {auto_sl_tp}, 부분 청산: {partial_tp}")
                 
                 # BotThread 에 자동 손절매/이익실현 설정 및 전략 파라미터 전달
-                result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe, 
+                result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe,
                                                    auto_sl_tp=auto_sl_tp, partial_tp=partial_tp,
                                                    strategy_params=strategy_params)
                 
@@ -1075,7 +1075,7 @@ class TradingBotAPIServer:
                 if not api_key or not api_secret:
                     logger.error("API 키가 설정되지 않았습니다.")
                     return jsonify({
-                        'success': False, 
+                        'success': False,
                         'message': '오류: Binance API 키가 환경 변수에 설정되지 않았습니다.',
                         'error_code': 'API_KEYS_MISSING',
                         'debug_info': {
@@ -1196,7 +1196,7 @@ class TradingBotAPIServer:
                                 logger.critical("API 인증 실패: 잘못된 API 키 또는 권한 문제")
                                 raise ValueError("API 키 인증 실패. 키가 유효하고 필요한 권한이 있는지 확인하세요.") from e
                             
-                            # 오류 발생 시 기본 메서드 시도    
+                            # 오류 발생 시 기본 메서드 시도
                             logger.info("대체 API 메서드 fetch_balance 시도 중...")
                             balance_result = binance.fetch_balance()
                             logger.info(f"현물 잔액 조회 결과: {balance_result['total'] if 'total' in balance_result else 'No data'}")
@@ -1216,7 +1216,7 @@ class TradingBotAPIServer:
                 except ImportError:
                     logger.error("CCXT 라이브러리를 불러올 수 없습니다.")
                     return jsonify({
-                        'success': False, 
+                        'success': False,
                         'message': 'CCXT 라이브러리를 불러올 수 없습니다. 설치되어 있는지 확인하세요.'
                     })
                 except Exception as e:
@@ -1245,14 +1245,14 @@ class TradingBotAPIServer:
                     
                     # 잔액 조회 실패 원인에 대한 자세한 정보 제공
                     return jsonify({
-                        'success': False, 
+                        'success': False,
                         'message': '잔액 정보를 가져올 수 없습니다. 다음 사항을 확인하세요:',
                         'error_code': 'BALANCE_DATA_NOT_FOUND',
                         'debug_info': {
                             'checks': [
                                 "1. API 키와 시크릿이 올바르게 설정되었는지 확인",
                                 "2. API 키에 읽기 권한이 있는지 확인",
-                                "3. 바이낸스 계정이 활성화되어 있는지 확인", 
+                                "3. 바이낸스 계정이 활성화되어 있는지 확인",
                                 "4. IP 제한이 설정된 경우 현재 서버 IP가 허용되는지 확인",
                                 "5. 네트워크 연결 상태 확인"
                             ],
@@ -1833,8 +1833,8 @@ class TradingBotAPIServer:
             # debug=True는 개발 환경에서만 사용
             debug_mode = os.getenv('DEBUG', 'true').lower() == 'true'
             self.flask_app.run(
-                host=self.host, 
-                port=self.port, 
+                host=self.host,
+                port=self.port,
                 debug=debug_mode,
                 ssl_context=ssl_context
             )
