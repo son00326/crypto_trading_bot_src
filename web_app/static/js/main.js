@@ -219,50 +219,61 @@ function stopBot() {
 
 // 잔액 정보 가져오기
 function getBalance() {
+    console.log('지갑 잔액 정보 요청 중...');
     fetch(API_URLS.BALANCE)
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP 오류: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
+            console.log('지갑 잔액 응답 수신:', data);
             if (data.success && data.data) {
-                balanceAmountElem.textContent = data.data.amount || '0';
+                // 수신된 잔액 정보가 있으면 표시
+                const amount = parseFloat(data.data.amount) || 0;
+                const formattedAmount = amount.toFixed(2); // 소수점 두 자리까지 표시
+                balanceAmountElem.textContent = formattedAmount;
                 balanceCurrencyElem.textContent = data.data.currency || 'USDT';
+                
+                // 다른 잔액 표시 요소도 업데이트 (웹 인터페이스에 있다면)
+                const walletBalanceElem = document.getElementById('wallet-balance');
+                const balanceListElem = document.getElementById('balance-list');
+                
+                if (walletBalanceElem) {
+                    const formattedBalance = formatCurrency(amount, data.data.currency);
+                    walletBalanceElem.textContent = formattedBalance;
+                    walletBalanceElem.dataset.amount = amount;
+                    walletBalanceElem.dataset.currency = data.data.currency;
+                }
+                
+                if (balanceListElem) {
+                    balanceListElem.innerHTML = '';
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    const balanceType = data.data.type === 'future' ? '선물 잔액' : '현물 잔액';
+                    const formattedAmount = formatCurrency(amount, data.data.currency);
+                    li.innerHTML = '<span>' + balanceType + '</span><span class="badge bg-primary rounded-pill">' + formattedAmount + '</span>';
+                    balanceListElem.appendChild(li);
+                }
+                
+                console.log('지갑 잔액 정보 업데이트 완료:', formattedAmount, data.data.currency);
             } else {
                 console.warn('잔액 정보 없음:', data.message);
+                showAlert('잔액 정보를 가져올 수 없습니다: ' + (data.message || '알 수 없는 오류'), 'warning');
+                
+                // 기본값 설정
+                balanceAmountElem.textContent = '0.00';
+                balanceCurrencyElem.textContent = 'USDT';
             }
         })
         .catch(error => {
             console.error('잔액 정보 가져오기 오류:', error);
+            showAlert('잔액 정보를 가져오는 중 오류가 발생했습니다', 'danger');
             
             // 오류 발생 시 기본값 표시
-            const balances = [
-                {
-                    amount: '0',
-                    currency: 'USDT',
-                    type: 'spot'
-                },
-                {
-                    amount: '0',
-                    currency: 'USDT',
-                    type: 'future'
-                }
-            ];
-            
-            // 잔액 표시 업데이트 - 메인 표시용
-            const mainBalance = balances[0];
-            const formattedBalance = formatCurrency(mainBalance.amount, mainBalance.currency);
-            walletBalanceElem.textContent = formattedBalance;
-            walletBalanceElem.dataset.amount = mainBalance.amount;
-            walletBalanceElem.dataset.currency = mainBalance.currency;
-            
-            // 잔액 표시 업데이트 - 상세 표시용
-            balanceListElem.innerHTML = '';
-            balances.forEach(balance => {
-                const li = document.createElement('li');
-                li.className = 'list-group-item d-flex justify-content-between align-items-center';
-                const balanceType = balance.type === 'future' ? '선물 잔액' : '현물 잔액';
-                const formattedAmount = formatCurrency(balance.amount, balance.currency);
-                li.innerHTML = '<span>' + balanceType + '</span><span class="badge bg-primary rounded-pill">' + formattedAmount + '</span>';
-                balanceListElem.appendChild(li);
-            });
+            balanceAmountElem.textContent = '0.00';
+            balanceCurrencyElem.textContent = 'USDT';
         });
 }
 

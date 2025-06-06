@@ -522,13 +522,17 @@ class TradingBotAPIServer:
                                 # 새로운 방식으로 바이낸스 API 직접 호출
                                 all_balances = {'spot': {'total': {}}, 'future': {'total': {}}}
                                 
-                                # API 키 직접 지정 (테스트용)
-                                api_key = "wtA4vC2hpvJUcimjdRUbGTpa3pHXQFBFCh1PoMyKQ9Favux4qJQ7gvyGRZ6Ts8I6"
-                                api_secret = "q1mQB47ELPQm2cvLfzK3w6GGuk3NCZySLCvoL5vIIKAieifKkwW5nlLY5PkSvYso"
+                                # API 키는 환경 변수에서만 가져옵니다
+                                # 환경 변수가 설정되어 있지 않으면 에러 로그를 남깁니다
+                                if not api_key or not api_secret:
+                                    logger.error("[CRITICAL] 바이낸스 API 키가 설정되어 있지 않습니다.")
+                                    logger.error("환경 변수 BINANCE_API_KEY와 BINANCE_API_SECRET를 설정하세요.")
+                                    # 여기서 return하거나 예외를 발생시킬 수 있습니다
+                                    return jsonify({"error": "API 키가 설정되어 있지 않습니다."}), 500
                                 
-                                logger.info(f"[INFO] API 키 직접 사용: {api_key[:5]}..., 시크릿 길이: {len(api_secret)}")
+                                logger.info(f"[INFO] 환경 변수에서 API 키 사용: {api_key[:5]}..., 시크릿 길이: {len(api_secret)}")
                                 
-                                # 중요: 실제 서비스에서는 환경변수나 설정 파일을 통해 안전하게 관리해야 합니다.
+                                # 중요: API 키는 환경변수를 통해 안전하게 관리합니다.
                                 
                                 logger.info("[INFO] 새로운 방식으로 바이낸스 API 호출 시도")
                                 
@@ -990,7 +994,12 @@ class TradingBotAPIServer:
                     logger.error("API 키가 설정되지 않았습니다.")
                     return jsonify({
                         'success': False, 
-                        'message': 'Binance API 키가 설정되지 않았습니다.'
+                        'message': '오류: Binance API 키가 환경 변수에 설정되지 않았습니다.',
+                        'error_code': 'API_KEYS_MISSING',
+                        'debug_info': {
+                            'api_key_exists': bool(api_key),
+                            'api_secret_exists': bool(api_secret)
+                        }
                     })
                 
                 logger.info(f"API 키 확인됨: {api_key[:5]}...")
@@ -1035,8 +1044,18 @@ class TradingBotAPIServer:
                             
                             logger.info(f"선물 잔액 처리 결과: {balance_result['total'] if 'total' in balance_result else 'No data'}")
                         except Exception as e:
+                            # 상세 오류 정보 로깅
                             logger.error(f"선물 API 직접 호출 중 오류: {str(e)}")
+                            logger.error(f"오류 유형: {type(e).__name__}")
+                            logger.error(traceback.format_exc())
+                            
+                            # API 키 관련 오류인지 확인
+                            if 'key' in str(e).lower() or 'auth' in str(e).lower() or '401' in str(e):
+                                logger.critical("API 인증 실패: 잘못된 API 키 또는 권한 문제")
+                                raise ValueError("API 키 인증 실패. 키가 유효하고 필요한 권한이 있는지 확인하세요.") from e
+                                
                             # 오류 발생 시 기본 메서드 시도
+                            logger.info("대체 API 메서드 fetch_balance 시도 중...")
                             balance_result = binance.fetch_balance()
                         
                         if 'total' in balance_result:
@@ -1085,8 +1104,18 @@ class TradingBotAPIServer:
                             balance_result = {'total': total_balances}
                             logger.info(f"현물 잔액 처리 결과: {total_balances}")
                         except Exception as e:
+                            # 상세 오류 정보 로깅
                             logger.error(f"현물 API 직접 호출 중 오류: {str(e)}")
-                            # 오류 발생 시 기본 메서드 시도
+                            logger.error(f"오류 유형: {type(e).__name__}")
+                            logger.error(traceback.format_exc())
+                            
+                            # API 키 관련 오류인지 확인
+                            if 'key' in str(e).lower() or 'auth' in str(e).lower() or '401' in str(e):
+                                logger.critical("API 인증 실패: 잘못된 API 키 또는 권한 문제")
+                                raise ValueError("API 키 인증 실패. 키가 유효하고 필요한 권한이 있는지 확인하세요.") from e
+                            
+                            # 오류 발생 시 기본 메서드 시도    
+                            logger.info("대체 API 메서드 fetch_balance 시도 중...")
                             balance_result = binance.fetch_balance()
                             logger.info(f"현물 잔액 조회 결과: {balance_result['total'] if 'total' in balance_result else 'No data'}")
                         
@@ -1115,14 +1144,61 @@ class TradingBotAPIServer:
                 if balance_data:
                     return jsonify({'success': True, 'data': balance_data})
                 else:
+                    # 추가 디버깅 정보를 로그에 기록
+                    logger.warning("최종 잔액 데이터를 찾을 수 없습니다. API 응답 구조가 예상과 다를 수 있습니다.")
+                    
+                    # 잔액 조회 실패 원인에 대한 자세한 정보 제공
                     return jsonify({
                         'success': False, 
-                        'message': '잔액 정보를 가져올 수 없습니다. API 키가 유효하고 바이낸스 계정이 활성화되어 있는지 확인하세요.'
+                        'message': '잔액 정보를 가져올 수 없습니다. 다음 사항을 확인하세요:',
+                        'error_code': 'BALANCE_DATA_NOT_FOUND',
+                        'debug_info': {
+                            'checks': [
+                                "1. API 키와 시크릿이 올바르게 설정되었는지 확인",
+                                "2. API 키에 읽기 권한이 있는지 확인",
+                                "3. 바이낸스 계정이 활성화되어 있는지 확인", 
+                                "4. IP 제한이 설정된 경우 현재 서버 IP가 허용되는지 확인",
+                                "5. 네트워크 연결 상태 확인"
+                            ],
+                            'market_type': market_type,
+                            'balance_result_keys': list(balance_result.keys()) if isinstance(balance_result, dict) else 'Not a dictionary'
+                        }
                     })
+            except ValueError as e:
+                # API 키 인증 오류는 특별 처리
+                logger.error(f"API 키 인증 오류: {str(e)}")
+                logger.error(traceback.format_exc())
+                return jsonify({
+                    'success': False,
+                    'message': str(e),
+                    'error_code': 'API_AUTH_ERROR',
+                    'status_code': 401
+                }), 401
             except Exception as e:
                 logger.error(f"잔액 정보 조회 중 오류: {str(e)}")
                 logger.error(traceback.format_exc())
-                return bot_api_server._create_error_response(e, status_code=500, endpoint='get_balance')
+                
+                # 오류 유형에 따라 다른 오류 코드와 메시지 제공
+                if 'connection' in str(e).lower():
+                    error_code = 'CONNECTION_ERROR'
+                    message = '바이낸스 API에 연결할 수 없습니다. 인터넷 연결을 확인하세요.'
+                    status_code = 503
+                elif 'timeout' in str(e).lower():
+                    error_code = 'TIMEOUT_ERROR'
+                    message = '바이낸스 API 요청 시간이 초과되었습니다. 나중에 다시 시도하세요.'
+                    status_code = 504
+                else:
+                    error_code = 'GENERIC_ERROR'
+                    message = f'잔액 정보 조회 중 오류 발생: {str(e)}'
+                    status_code = 500
+                    
+                return jsonify({
+                    'success': False,
+                    'message': message,
+                    'error_code': error_code,
+                    'error_details': str(e),
+                    'status_code': status_code
+                }), status_code
 
         # 데이터 동기화 스레드 시작
     def start_data_sync(self):
@@ -1637,8 +1713,8 @@ class TradingBotAPIServer:
         # CSP 헤더 추가
         @self.flask_app.after_request
         def apply_security_headers(response):
-            # 콘텐츠 보안 정책
-            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' https://*; font-src 'self' data:; worker-src 'self' blob:"
+            # 콘텐츠 보안 정책 - 웹앱 기능 완벽 작동을 위해 허용 정책 확장
+            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net https://code.jquery.com https://stackpath.bootstrapcdn.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; img-src 'self' data: https: blob:; connect-src 'self' https://* ws://* wss://*; font-src 'self' data: https://cdn.jsdelivr.net; worker-src 'self' blob:; frame-src 'self'"
             # HSTS 설정 (프로덕션에서만 활성화)
             if os.getenv('PRODUCTION', 'false').lower() == 'true':
                 response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
@@ -1672,7 +1748,7 @@ class TradingBotAPIServer:
 
 
 if __name__ == '__main__':
-    # 직접 실행 시 서버 시작
-    server = TradingBotAPIServer(host='127.0.0.1', port=8080)
+    # 직접 실행 시 서버 시작 - 외부 접속 허용
+    server = TradingBotAPIServer(host='0.0.0.0', port=8080)
     # 데이터 동기화는 이미 TradingBotAPIServer 초기화 시 시작됨
     server.run()
