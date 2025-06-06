@@ -333,6 +333,88 @@ class TradingBotAPIServer:
                 # GUI에서 상태 정보 가져오기
                 status = self.bot_gui.get_bot_status()
                 status['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                # 수정: 매번 최신 잔액 정보를 직접 가져옴
+                try:
+                    logger.info("[STATUS API] 최신 잔액 정보 직접 요청 중")
+                    # exchange_api에서 최신 잔액 가져오기
+                    if hasattr(self.bot_gui, 'exchange_api') and self.bot_gui.exchange_api:
+                        # API 키가 있는지 확인
+                        api_key = os.environ.get('BINANCE_API_KEY', None)
+                        api_secret = os.environ.get('BINANCE_API_SECRET', None)
+                        
+                        if api_key and api_secret:
+                            # 바이낸스에서 직접 잔액 정보 가져오기
+                            import ccxt
+                            binance = ccxt.binance({
+                                'apiKey': api_key,
+                                'secret': api_secret,
+                                'enableRateLimit': True,
+                                'options': {'recvWindow': 5000}
+                            })
+                            
+                            # 현물 잔액
+                            spot_balance = binance.fetch_balance()
+                            usdt_balance = 0
+                            if 'USDT' in spot_balance['total']:
+                                usdt_balance = spot_balance['total']['USDT']
+                            
+                            # 선물 잔액 (필요한 경우)
+                            future_balance = 0
+                            try:
+                                binance_futures = ccxt.binance({
+                                    'apiKey': api_key,
+                                    'secret': api_secret,
+                                    'enableRateLimit': True,
+                                    'options': {'defaultType': 'future'}
+                                })
+                                futures = binance_futures.fetch_balance()
+                                if 'USDT' in futures['total']:
+                                    future_balance = futures['total']['USDT']
+                            except Exception as e:
+                                logger.error(f"[STATUS API] 선물 잔액 조회 오류: {e}")
+                            
+                            # 잔액 정보 업데이트
+                            balance_data = {
+                                'spot': {
+                                    'amount': usdt_balance,
+                                    'currency': 'USDT',
+                                    'type': 'spot'
+                                },
+                                'future': {
+                                    'amount': future_balance,
+                                    'currency': 'USDT',
+                                    'type': 'future'
+                                }
+                            }
+                            
+                            # GUI 객체의 balance_data 업데이트 (중요!)
+                            try:
+                                # 현물/선물 중 하나라도 잔액이 있는 경우 GUI 객체에 업데이트
+                                if usdt_balance > 0:
+                                    self.bot_gui.balance_data = {
+                                        'amount': usdt_balance,
+                                        'currency': 'USDT',
+                                        'type': 'spot'
+                                    }
+                                elif future_balance > 0:
+                                    self.bot_gui.balance_data = {
+                                        'amount': future_balance,
+                                        'currency': 'USDT',
+                                        'type': 'future'
+                                    }
+                                
+                                logger.info(f"[STATUS API] GUI 객체의 balance_data 업데이트 성공: {self.bot_gui.balance_data}")
+                            except Exception as update_err:
+                                logger.error(f"[STATUS API] GUI 객체의 balance_data 업데이트 중 오류: {update_err}")
+                            
+                            # 상태 업데이트
+                            status['balance'] = balance_data
+                            logger.info(f"[STATUS API] 잔액 정보 업데이트 성공: {status['balance']}")
+                except Exception as balance_err:
+                    logger.error(f"[STATUS API] 잔액 업데이트 중 오류: {balance_err}")
+                    # 오류가 발생해도 API 응답은 계속 반환
+                
                 status['success'] = True
                 return jsonify(status)
             except Exception as e:
@@ -1142,7 +1224,21 @@ class TradingBotAPIServer:
                     logger.error(traceback.format_exc())
                 
                 if balance_data:
-                    return jsonify({'success': True, 'data': balance_data})
+                    # 핸들러 함수에서 GUI 객체의 balance_data 속성을 업데이트
+                    try:
+                        if hasattr(self.bot_gui, 'balance_data'):
+                            self.bot_gui.balance_data = balance_data
+                            logger.info(f"[get_balance] GUI 객체의 balance_data 업데이트 성공: {balance_data}")
+                    except Exception as update_err:
+                        logger.error(f"[get_balance] GUI 객체의 balance_data 업데이트 중 오류: {update_err}")
+                    
+                    # 하나의 단일 값이 아닌 두 값(현물/선물)을 포함하는 전체 구조 반환
+                    result_data = {
+                        'spot': balance_data if balance_data.get('type') == 'spot' else {'amount': 0, 'currency': 'USDT', 'type': 'spot'},
+                        'future': balance_data if balance_data.get('type') == 'future' else {'amount': 0, 'currency': 'USDT', 'type': 'future'}
+                    }
+                    
+                    return jsonify({'success': True, 'data': result_data})
                 else:
                     # 추가 디버깅 정보를 로그에 기록
                     logger.warning("최종 잔액 데이터를 찾을 수 없습니다. API 응답 구조가 예상과 다를 수 있습니다.")
