@@ -39,7 +39,7 @@ from utils.config import get_api_credentials, validate_api_key, get_validated_ap
 import utils.api as api
 from utils.api import get_formatted_balances, get_spot_balance, get_future_balance
 from PyQt5.QtWidgets import QApplication
-from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash
+from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash, session
 from flask_cors import CORS
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -1101,213 +1101,96 @@ class TradingBotAPIServer:
                 return jsonify(result)
             except Exception as e:
                 return self._create_error_response(e, status_code=500, endpoint='stop_bot')
-    
         # 잔액 정보 API
         @self.flask_app.route('/api/balance')
         @login_required
         def get_balance():
-            # 클래스 인스턴스를 직접 참조
-            bot_api_server = self
             try:
-                # 잔액 정보 초기화
-                balance_data = None
+                # utils/api.py의 표준 함수 사용
+                import utils.api as api
+                import os
                 
-                # CCXT 직접 사용 - API 키 확인 유틸리티 함수 사용
-                api_result = get_validated_api_credentials()
+                # API 키/시크릿 가져오기
+                api_key = os.environ.get('BINANCE_API_KEY')
+                api_secret = os.environ.get('BINANCE_API_SECRET')
                 
-                if not api_result['success']:
-                    logger.error(f"API 키 오류: {api_result['message']}")
-                    return jsonify({
-                        'success': False,
-                        'message': f'오류: {api_result["message"]}',
-                        'error_code': 'API_KEYS_MISSING',
-                        'debug_info': {
-                            'api_key_exists': api_result['api_key'] is not None,
-                            'api_secret_exists': api_result['api_secret'] is not None
-                        }
-                    })
+                if not api_key or not api_secret:
+                    # API 키가 환경 변수에 없으면 세션에서 가져오기
+                    api_result = get_validated_api_credentials()
+                    if not api_result['success']:
+                        logger.error(f"API 키 오류: {api_result['message']}")
+                        return jsonify({
+                            'success': False,
+                            'message': f'오류: {api_result["message"]}',
+                            'error_code': 'API_KEYS_MISSING',
+                        })
+                    api_key = api_result['api_key']
+                    api_secret = api_result['api_secret']
                 
-                # API 키 및 시크릿 가져오기
-                api_key = api_result['api_key']
-                api_secret = api_result['api_secret']
                 logger.info(f"API 키 확인됨: {api_key[:5]}...")
                 
-                try:
-                    import ccxt
-                    
-                    # 시장 타입 확인
-                    market_type = 'spot'
-                    if hasattr(bot_api_server.bot_gui, 'exchange_api') and bot_api_server.bot_gui.exchange_api:
-                        market_type = getattr(bot_api_server.bot_gui.exchange_api, 'market_type', 'spot')
-                    
-                    # 시장 타입에 따른 CCXT 인스턴스 설정
-                    if market_type == 'futures':
-                        # 선물 거래 잔액
-                        logger.info("선물 거래 잔액 조회 중...")
-                        binance = ccxt.binance({
-                            'apiKey': api_key,
-                            'secret': api_secret,
-                            'enableRateLimit': True,
-                            'options': {
-                                'defaultType': 'future',
-                                'recvWindow': 5000,  # 응답 시간 줄이기
-                                'adjustForTimeDifference': True  # 시간 차이 자동 조정
-                            }
-                        })
-                        
-                        # 직접 Account Information API 호출
-                        try:
-                            # 간단한 API 호출로 시작
-                            markets = binance.load_markets()
-                            logger.info(f"마켓 로드 성공: {len(markets)} 마켓 사용 가능")
-                            balance_result = binance.fapiPrivateGetAccount()
-                            logger.info(f"선물 계정 조회 성공: {balance_result}")
-                            
-                            # USDT 잔액 추출
-                            if 'assets' in balance_result:
-                                for asset in balance_result['assets']:
-                                    if asset['asset'] == 'USDT':
-                                        balance_result = {'total': {'USDT': float(asset['walletBalance'])}}
-                                        break
-                            
-                            logger.info(f"선물 잔액 처리 결과: {balance_result['total'] if 'total' in balance_result else 'No data'}")
-                        except Exception as e:
-                            # 상세 오류 정보 로깅
-                            logger.error(f"선물 API 직접 호출 중 오류: {str(e)}")
-                            logger.error(f"오류 유형: {type(e).__name__}")
-                            logger.error(traceback.format_exc())
-                            
-                            # API 키 관련 오류인지 확인
-                            if 'key' in str(e).lower() or 'auth' in str(e).lower() or '401' in str(e):
-                                logger.critical("API 인증 실패: 잘못된 API 키 또는 권한 문제")
-                                raise ValueError("API 키 인증 실패. 키가 유효하고 필요한 권한이 있는지 확인하세요.") from e
-                                
-                            # 오류 발생 시 기본 메서드 시도
-                            logger.info("대체 API 메서드 fetch_balance 시도 중...")
-                            balance_result = binance.fetch_balance()
-                        
-                        if 'total' in balance_result:
-                            for currency in ['USDT', 'USD', 'BUSD', 'USDC', 'BTC', 'ETH']:
-                                if currency in balance_result['total'] and balance_result['total'][currency] > 0:
-                                    balance_data = {
-                                        'amount': balance_result['total'][currency],
-                                        'currency': currency,
-                                        'type': 'future'
-                                    }
-                                    logger.info(f"선물 잔액 정보: {balance_data}")
-                                    break
-                    else:
-                        # 현물 거래 잔액
-                        logger.info("현물 거래 잔액 조회 중...")
-                        binance = ccxt.binance({
-                            'apiKey': api_key,
-                            'secret': api_secret,
-                            'enableRateLimit': True,
-                            'options': {
-                                'recvWindow': 5000,  # 응답 시간 줄이기
-                                'adjustForTimeDifference': True  # 시간 차이 자동 조정
-                            }
-                        })
-                        
-                        # 직접 Account Information API 호출 시도
-                        try:
-                            # 간단한 API 호출로 시작
-                            markets = binance.load_markets()
-                            logger.info(f"마켓 로드 성공: {len(markets)} 마켓 사용 가능")
-                            
-                            # 계정 정보 가져오기
-                            account_info = binance.privateGetAccount()
-                            logger.info(f"현물 계정 조회 성공")
-                            
-                            # 잔액 정보 추출
-                            total_balances = {}
-                            if 'balances' in account_info:
-                                for asset in account_info['balances']:
-                                    free = float(asset['free'])
-                                    locked = float(asset['locked'])
-                                    total = free + locked
-                                    if total > 0:
-                                        total_balances[asset['asset']] = total
-                            
-                            balance_result = {'total': total_balances}
-                            logger.info(f"현물 잔액 처리 결과: {total_balances}")
-                        except Exception as e:
-                            # 상세 오류 정보 로깅
-                            logger.error(f"현물 API 직접 호출 중 오류: {str(e)}")
-                            logger.error(f"오류 유형: {type(e).__name__}")
-                            logger.error(traceback.format_exc())
-                            
-                            # API 키 관련 오류인지 확인
-                            if 'key' in str(e).lower() or 'auth' in str(e).lower() or '401' in str(e):
-                                logger.critical("API 인증 실패: 잘못된 API 키 또는 권한 문제")
-                                raise ValueError("API 키 인증 실패. 키가 유효하고 필요한 권한이 있는지 확인하세요.") from e
-                            
-                            # 오류 발생 시 기본 메서드 시도
-                            logger.info("대체 API 메서드 fetch_balance 시도 중...")
-                            balance_result = binance.fetch_balance()
-                            logger.info(f"현물 잔액 조회 결과: {balance_result['total'] if 'total' in balance_result else 'No data'}")
-                        
-                        
-                        if 'total' in balance_result:
-                            for currency in ['USDT', 'USD', 'BUSD', 'USDC', 'BTC', 'ETH']:
-                                if currency in balance_result['total'] and balance_result['total'][currency] > 0:
-                                    balance_data = {
-                                        'amount': balance_result['total'][currency],
-                                        'currency': currency,
-                                        'type': 'spot'
-                                    }
-                                    logger.info(f"현물 잔액 정보: {balance_data}")
-                                    break
-                        
-                except ImportError:
-                    logger.error("CCXT 라이브러리를 불러올 수 없습니다.")
-                    return jsonify({
-                        'success': False,
-                        'message': 'CCXT 라이브러리를 불러올 수 없습니다. 설치되어 있는지 확인하세요.'
-                    })
-                except Exception as e:
-                    logger.error(f"CCXT로 잔액 조회 중 오류: {str(e)}")
-                    logger.error(traceback.format_exc())
+                # utils/api.py의 표준화된 함수 호출
+                balanced_result = api.get_formatted_balances(api_key, api_secret)
                 
-                if balance_data:
-                    # 핸들러 함수에서 GUI 객체의 balance_data 속성을 업데이트
+                # utils/api.py의 원래 형식 그대로 사용
+                if balanced_result.get('success', False):
+                    logger.info(f"잔액 조회 성공: {balanced_result}")
+                    
+                    # GUI 업데이트용 데이터 준비
+                    spot_balance = balanced_result.get('balance', {}).get('spot', {}).get('balance', 0)
+                    future_balance = balanced_result.get('balance', {}).get('future', {}).get('balance', 0)
+                    
+                    # GUI 업데이트 - 선물 계정 기준으로 업데이트
+                    balance_to_use = {
+                        'balance': future_balance if future_balance > 0 else spot_balance,
+                        'currency': 'USDT',
+                        'type': 'future' if future_balance > 0 else 'spot'
+                    }
+                    
                     try:
                         if hasattr(self.bot_gui, 'balance_data'):
-                            self.bot_gui.balance_data = balance_data
-                            logger.info(f"[get_balance] GUI 객체의 balance_data 업데이트 성공: {balance_data}")
+                            self.bot_gui.balance_data = balance_to_use
+                            logger.info(f"[get_balance] GUI 객체의 balance_data 업데이트 성공: {balance_to_use}")
                     except Exception as update_err:
                         logger.error(f"[get_balance] GUI 객체의 balance_data 업데이트 중 오류: {update_err}")
                     
-                    # 하나의 단일 값이 아닌 두 값(현물/선물)을 포함하는 전체 구조 반환
-                    result_data = {
-                        'spot': balance_data if balance_data.get('type') == 'spot' else {'amount': 0, 'currency': 'USDT', 'type': 'spot'},
-                        'future': balance_data if balance_data.get('type') == 'future' else {'amount': 0, 'currency': 'USDT', 'type': 'future'}
-                    }
-                    
-                    return jsonify({'success': True, 'data': result_data})
-                else:
-                    # 추가 디버깅 정보를 로그에 기록
-                    logger.warning("최종 잔액 데이터를 찾을 수 없습니다. API 응답 구조가 예상과 다를 수 있습니다.")
-                    
-                    # 잔액 조회 실패 원인에 대한 자세한 정보 제공
+                    # API 응답 생성 - 원본 형식 그대로 반환
                     return jsonify({
-                        'success': False,
-                        'message': '잔액 정보를 가져올 수 없습니다. 다음 사항을 확인하세요:',
-                        'error_code': 'BALANCE_DATA_NOT_FOUND',
-                        'debug_info': {
-                            'checks': [
-                                "1. API 키와 시크릿이 올바르게 설정되었는지 확인",
-                                "2. API 키에 읽기 권한이 있는지 확인",
-                                "3. 바이낸스 계정이 활성화되어 있는지 확인",
-                                "4. IP 제한이 설정된 경우 현재 서버 IP가 허용되는지 확인",
-                                "5. 네트워크 연결 상태 확인"
-                            ],
-                            'market_type': market_type,
-                            'balance_result_keys': list(balance_result.keys()) if isinstance(balance_result, dict) else 'Not a dictionary'
+                        'success': True,
+                        'data': {
+                            'balance': balanced_result.get('balance', {}),
+                            'performance': {
+                                'total_trades': 0,
+                                'win_trades': 0,
+                                'loss_trades': 0,
+                                'win_rate': '0.0%',
+                                'avg_profit': '0.00',
+                                'total_profit': '0.00'
+                            }
                         }
                     })
+                else:
+                    logger.error(f"잔액 조회 실패: {balanced_result}")
+                    error_msg = balanced_result.get('error', {})
+                    return jsonify({
+                        'success': True,
+                        'data': {
+                            'balance': {
+                                'spot': {'amount': 0, 'currency': 'USDT', 'type': 'spot'},
+                                'future': {'amount': 0, 'currency': 'USDT', 'type': 'future'}
+                            },
+                            'performance': {
+                                'total_trades': 0,
+                                'win_trades': 0,
+                                'loss_trades': 0,
+                                'win_rate': '0.0%',
+                                'avg_profit': '0.00',
+                                'total_profit': '0.00'
+                            }
+                        }
+                    })
+                    
             except ValueError as e:
-                # API 키 인증 오류는 특별 처리
                 logger.error(f"API 키 인증 오류: {str(e)}")
                 logger.error(traceback.format_exc())
                 return jsonify({
@@ -1503,7 +1386,11 @@ class TradingBotAPIServer:
                 
             # 현재 심볼 가격 가져오기
             try:
+                # 원래 심볼에서 콜론(:) 이후 부분 제거 (BTCUSDT:USDT -> BTCUSDT)
                 symbol = self.exchange_api.symbol
+                if ':' in symbol:
+                    symbol = symbol.split(':')[0]
+                    logger.info(f"심볼 형식 변환: {self.exchange_api.symbol} -> {symbol}")
                 
                 # API 키 가져오기 (세션에서)
                 api_key, api_secret = self._get_api_keys_from_session()
@@ -1565,8 +1452,15 @@ class TradingBotAPIServer:
             tuple: (api_key, api_secret) 형태로 반환, 없으면 (None, None) 반환
         """
         try:
-            # 현재 로그인된 사용자 확인
-            if not current_user.is_authenticated:
+            # 현재 로그인된 사용자 확인 - current_user가 None일 수 있음
+            if not hasattr(current_user, 'is_authenticated') or not current_user.is_authenticated:
+                # 로그인하지 않은 경우에도 환경 변수에서 API 키를 가져올 수 있음
+                api_key = os.environ.get('BINANCE_API_KEY')
+                api_secret = os.environ.get('BINANCE_API_SECRET')
+                
+                if api_key and api_secret:
+                    return api_key, api_secret
+                    
                 logger.warning("인증된 사용자가 아닙니다. API 키를 가져올 수 없습니다.")
                 return None, None
             

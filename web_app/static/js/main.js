@@ -10,8 +10,8 @@ const strategyNameElem = document.getElementById('strategy-name');
 const lastUpdateElem = document.getElementById('last-update');
 const startBotBtn = document.getElementById('start-bot-btn');
 const stopBotBtn = document.getElementById('stop-bot-btn');
-const balanceAmountElem = document.getElementById('balance-amount');
-const balanceCurrencyElem = document.getElementById('balance-currency');
+const balanceAmountElem = document.getElementById('summary-balance-amount');
+const balanceCurrencyElem = document.getElementById('summary-balance-currency');
 const botConfigForm = document.getElementById('bot-config-form');
 
 // API URL 상수
@@ -229,35 +229,60 @@ function getBalance() {
         })
         .then(data => {
             console.log('지갑 잔액 응답 수신:', data);
-            if (data.success && data.data) {
-                // 수신된 잔액 정보가 있으면 표시
-                const amount = parseFloat(data.data.amount) || 0;
-                const formattedAmount = amount.toFixed(2); // 소수점 두 자리까지 표시
+            if (data.success && data.data && data.data.balance) {
+                console.log('잔액 데이터:', data.data.balance);
+                
+                // 스팟과 선물 잔액 정보 추출
+                const spotBalance = parseFloat(data.data.balance.spot && data.data.balance.spot.balance) || 0;
+                const futureBalance = parseFloat(data.data.balance.future && data.data.balance.future.balance) || 0;
+                
+                // 총 잔액 계산 (스팟 + 선물)
+                const totalBalance = spotBalance + futureBalance;
+                const formattedAmount = totalBalance.toFixed(2); // 소수점 두 자리까지 표시
                 balanceAmountElem.textContent = formattedAmount;
-                balanceCurrencyElem.textContent = data.data.currency || 'USDT';
+                balanceCurrencyElem.textContent = 'USDT';
                 
                 // 다른 잔액 표시 요소도 업데이트 (웹 인터페이스에 있다면)
                 const walletBalanceElem = document.getElementById('wallet-balance');
                 const balanceListElem = document.getElementById('balance-list');
                 
                 if (walletBalanceElem) {
-                    const formattedBalance = formatCurrency(amount, data.data.currency);
+                    const formattedBalance = formatCurrency(totalBalance, 'USDT');
                     walletBalanceElem.textContent = formattedBalance;
-                    walletBalanceElem.dataset.amount = amount;
-                    walletBalanceElem.dataset.currency = data.data.currency;
+                    walletBalanceElem.dataset.amount = totalBalance;
+                    walletBalanceElem.dataset.currency = 'USDT';
                 }
                 
                 if (balanceListElem) {
                     balanceListElem.innerHTML = '';
-                    const li = document.createElement('li');
-                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
-                    const balanceType = data.data.type === 'future' ? '선물 잔액' : '현물 잔액';
-                    const formattedAmount = formatCurrency(amount, data.data.currency);
-                    li.innerHTML = '<span>' + balanceType + '</span><span class="badge bg-primary rounded-pill">' + formattedAmount + '</span>';
-                    balanceListElem.appendChild(li);
+                    
+                    // 스팟 잔액 항목 추가
+                    if (spotBalance > 0) {
+                        const spotLi = document.createElement('li');
+                        spotLi.className = 'list-group-item d-flex justify-content-between align-items-center';
+                        const formattedSpot = formatCurrency(spotBalance, 'USDT');
+                        spotLi.innerHTML = '<span>현물 잔액</span><span class="badge bg-primary rounded-pill">' + formattedSpot + '</span>';
+                        balanceListElem.appendChild(spotLi);
+                    }
+                    
+                    // 선물 잔액 항목 추가
+                    if (futureBalance > 0) {
+                        const futureLi = document.createElement('li');
+                        futureLi.className = 'list-group-item d-flex justify-content-between align-items-center';
+                        const formattedFuture = formatCurrency(futureBalance, 'USDT');
+                        futureLi.innerHTML = '<span>선물 잔액</span><span class="badge bg-primary rounded-pill">' + formattedFuture + '</span>';
+                        balanceListElem.appendChild(futureLi);
+                    }
+                    
+                    // 총 잔액 항목 추가
+                    const totalLi = document.createElement('li');
+                    totalLi.className = 'list-group-item d-flex justify-content-between align-items-center font-weight-bold';
+                    const formattedTotal = formatCurrency(totalBalance, 'USDT');
+                    totalLi.innerHTML = '<span><strong>총 잔액</strong></span><span class="badge bg-success rounded-pill">' + formattedTotal + '</span>';
+                    balanceListElem.appendChild(totalLi);
                 }
                 
-                console.log('지갑 잔액 정보 업데이트 완료:', formattedAmount, data.data.currency);
+                console.log('지갑 잔액 정보 업데이트 완료:', formattedAmount, 'USDT');
             } else {
                 console.warn('잔액 정보 없음:', data.message);
                 showAlert('잔액 정보를 가져올 수 없습니다: ' + (data.message || '알 수 없는 오류'), 'warning');
@@ -275,6 +300,19 @@ function getBalance() {
             balanceAmountElem.textContent = '0.00';
             balanceCurrencyElem.textContent = 'USDT';
         });
+}
+
+// 통화 형식 포맷팅 함수
+function formatCurrency(amount, currency = 'USDT') {
+    // 숫자를 소수점 두 자리까지 표시 (반올림)
+    const formattedNumber = parseFloat(amount).toFixed(2);
+    
+    // 천 단위 구분자 추가
+    const parts = formattedNumber.toString().split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    
+    // 숫자와 화폐 단위 조합
+    return parts.join('.') + ' ' + currency;
 }
 
 // 경고 메시지 표시 함수

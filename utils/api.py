@@ -337,7 +337,7 @@ def create_standardized_balance_response(spot_data: Dict[str, Any], future_data:
         'balance': {
             'spot': spot_data,
             'future': future_data,
-            'total_usdt': spot_data.get('amount', 0) + future_data.get('amount', 0)
+            'total_usdt': spot_data.get('balance', 0) + future_data.get('balance', 0)
         },
         'error': {
             'spot': spot_data.get('error') if 'error' in spot_data else None,
