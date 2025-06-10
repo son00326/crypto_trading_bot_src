@@ -14,6 +14,9 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from urllib.parse import urlparse
+
+# 새로 추가한 API 키 관리 유틸리티 모듈
+from utils.config import get_api_credentials, validate_api_key, get_validated_api_credentials
 from PyQt5.QtWidgets import QApplication
 from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash
 from flask_cors import CORS
@@ -172,9 +175,8 @@ class TradingBotAPIServer:
                                 os.environ[key] = value
                     logger.info(f"GUI에서 저장한 API 키 설정을 로드했습니다.")
                 
-                # 환경 변수에서 API 키 확인
-                api_key = os.getenv('BINANCE_API_KEY')
-                api_secret = os.getenv('BINANCE_API_SECRET')
+                # 환경 변수에서 API 키 확인 - 새로운 유틸리티 함수 사용
+                api_key, api_secret = get_api_credentials()
                 
                 if api_key and api_secret:
                     logger.info(f"API 키가 설정되어 있습니다: {api_key[:5]}...")
@@ -339,9 +341,8 @@ class TradingBotAPIServer:
                     logger.info("[STATUS API] 최신 잔액 정보 직접 요청 중")
                     # exchange_api에서 최신 잔액 가져오기
                     if hasattr(self.bot_gui, 'exchange_api') and self.bot_gui.exchange_api:
-                        # API 키가 있는지 확인
-                        api_key = os.environ.get('BINANCE_API_KEY', None)
-                        api_secret = os.environ.get('BINANCE_API_SECRET', None)
+                        # API 키가 있는지 확인 - 새로운 유틸리티 함수 사용
+                        api_key, api_secret = get_api_credentials()
                         
                         if api_key and api_secret:
                             # 바이낸스에서 직접 잔액 정보 가져오기
@@ -587,32 +588,28 @@ class TradingBotAPIServer:
                                     logger.info(f"[STEP 11] get_balance 메서드 시그니처: {sig}")
                                 except Exception as e:
                                     logger.warning(f"[WARNING] 시그니처 검사 실패: {str(e)}")
-                                
-                                # 실제 메서드 호출 - 오류 해결을 위한 수정
-                                logger.info("[STEP 12] get_balance 메서드 호출 직전 - 데코레이터 오류 해결 시도")
-                                
-                                # API 키 확인 - 바이낸스 API 키가 설정되어 있는지 검증
-                                api_key = os.getenv('BINANCE_API_KEY')
-                                api_secret = os.getenv('BINANCE_API_SECRET')
-                                
-                                if not api_key or not api_secret:
-                                    logger.error("[ERROR] 바이낸스 API 키가 설정되어 있지 않습니다. 환경 변수를 확인하세요.")
-                                    raise ValueError("API 키가 설정되어 있지 않습니다.")
                                     
-                                logger.info(f"[INFO] API 키 확인 완료: {api_key[:5]}...")
+                                # API 키 확인 - 새로운 유틸리티 모듈 사용
+                                api_result = get_validated_api_credentials()
+                                
+                                if not api_result['success']:
+                                    logger.error(f"[ERROR] 바이낸스 API 키 검증 실패: {api_result['message']}")
+                                    # 에러를 발생시키지 않고 오류 응답 반환
+                                    return jsonify({
+                                        "error": f"API 키 오류: {api_result['message']}",
+                                        "balance": {
+                                            "spot": {"amount": 0, "currency": "USDT", "type": "spot"},
+                                            "future": {"amount": 0, "currency": "USDT", "type": "future"}
+                                        }
+                                    }), 401
+                                    
+                                # API 키 정보 가져오기
+                                api_key = api_result['api_key']
+                                api_secret = api_result['api_secret']
+                                logger.info(f"[INFO] API 키 검증 성공: {api_key[:5]}... ({api_result['message']})")
                                 
                                 # 새로운 방식으로 바이낸스 API 직접 호출
                                 all_balances = {'spot': {'total': {}}, 'future': {'total': {}}}
-                                
-                                # API 키는 환경 변수에서만 가져옵니다
-                                # 환경 변수가 설정되어 있지 않으면 에러 로그를 남깁니다
-                                if not api_key or not api_secret:
-                                    logger.error("[CRITICAL] 바이낸스 API 키가 설정되어 있지 않습니다.")
-                                    logger.error("환경 변수 BINANCE_API_KEY와 BINANCE_API_SECRET를 설정하세요.")
-                                    # 여기서 return하거나 예외를 발생시킬 수 있습니다
-                                    return jsonify({"error": "API 키가 설정되어 있지 않습니다."}), 500
-                                
-                                logger.info(f"[INFO] 환경 변수에서 API 키 사용: {api_key[:5]}..., 시크릿 길이: {len(api_secret)}")
                                 
                                 # 중요: API 키는 환경변수를 통해 안전하게 관리합니다.
                                 
@@ -622,6 +619,7 @@ class TradingBotAPIServer:
                                     # 1. 현물 계정 정보 가져오기
                                     try:
                                         import ccxt
+                                        # 이미 검증된 API 키 사용
                                         binance_spot = ccxt.binance({
                                             'apiKey': api_key,
                                             'secret': api_secret,
@@ -688,73 +686,73 @@ class TradingBotAPIServer:
                                 except Exception as e:
                                     logger.error(f"[ERROR] 잔액 조회 중 오류 발생: {str(e)}")
                                     logger.error(traceback.format_exc())
-                                    
-                                    # 밸런스가 정상적으로 가져와졌는지 확인
-                                    logger.info(f"[STEP 13] get_balance('all') 결과: {all_balances}")
-                                except Exception as e1:
-                                    logger.warning(f"[STEP 12.2] 기본 호출 실패, 대체 메서드 시도: {str(e1)}")
-                                    
-                                    # 메서드 2: fetch_balance 사용 시도
-                                    if hasattr(exchange_api, 'fetch_balance'):
-                                        try:
-                                            logger.info("[STEP 12.2] fetch_balance 사용 시도")
-                                            raw_balance = exchange_api.fetch_balance()
-                                            logger.info(f"[STEP 12.2] fetch_balance 결과: {raw_balance}")
-                                            
-                                            # 결과 변환
-                                            if isinstance(raw_balance, dict):
-                                                if 'total' in raw_balance:
-                                                    all_balances['spot']['total'] = raw_balance['total']
-                                                elif 'info' in raw_balance and isinstance(raw_balance['info'], dict):
-                                                    all_balances['spot']['total'] = raw_balance['info']
-                                        except Exception as e2:
-                                            logger.warning(f"[STEP 12.2] fetch_balance 실패: {str(e2)}")
-                                    
-                                    # 메서드 3: 직접 CCXT 라이브러리 사용 시도
+                                
+                                # 밸런스가 정상적으로 가져왔는지 확인
+                                logger.info(f"[STEP 13] get_balance('all') 결과: {all_balances}")
+                            except Exception as e1:
+                                logger.warning(f"[STEP 12.2] 기본 호출 실패, 대체 메서드 시도: {str(e1)}")
+                                
+                                # 메서드 2: fetch_balance 사용 시도
+                                if hasattr(exchange_api, 'fetch_balance'):
                                     try:
-                                        logger.info("[STEP 12.3] 직접 CCXT 라이브러리 사용 시도")
-                                        import ccxt
+                                        logger.info("[STEP 12.2] fetch_balance 사용 시도")
+                                        raw_balance = exchange_api.fetch_balance()
+                                        logger.info(f"[STEP 12.2] fetch_balance 결과: {raw_balance}")
                                         
-                                        # API 키 가져오기
-                                        api_key = os.getenv('BINANCE_API_KEY')
-                                        api_secret = os.getenv('BINANCE_API_SECRET')
+                                        # 결과 변환
+                                        if isinstance(raw_balance, dict):
+                                            if 'total' in raw_balance:
+                                                all_balances['spot']['total'] = raw_balance['total']
+                                            elif 'info' in raw_balance and isinstance(raw_balance['info'], dict):
+                                                all_balances['spot']['total'] = raw_balance['info']
+                                    except Exception as e2:
+                                        logger.warning(f"[STEP 12.2] fetch_balance 실패: {str(e2)}")
+                                
+                                # 메서드 3: 직접 CCXT 라이브러리 사용 시도
+                                try:
+                                    logger.info("[STEP 12.3] 직접 CCXT 라이브러리 사용 시도")
+                                    import ccxt
+                                    
+                                    # 직접 CCXT 바이낸스 인스턴스 생성
+                                    binance = ccxt.binance({
+                                        'apiKey': api_key,
+                                        'secret': api_secret,
+                                        'enableRateLimit': True,
+                                        'timeout': 30000,  # 타임아웃 30초로 설정
+                                        'options': {
+                                            'recvWindow': 10000,  # API 요청 수신 윈도우 확장
+                                            'adjustForTimeDifference': True  # 시간 차이 보정
+                                        }
+                                    })
+                                    
+                                    # 현물 잔고 조회
+                                    spot_raw_balance = binance.fetch_balance()
+                                    logger.info(f"[STEP 12.3] 직접 CCXT 현물 잔고 결과: {spot_raw_balance['total'] if 'total' in spot_raw_balance else 'No total in response'}")
+                                    
+                                    # 선물 잔고 조회
+                                    binance_futures = ccxt.binance({
+                                        'apiKey': api_key,
+                                        'secret': api_secret,
+                                        'enableRateLimit': True,
+                                        'options': {
+                                            'defaultType': 'future',
+                                        }
+                                    })
+                                    
+                                    futures_raw_balance = binance_futures.fetch_balance()
+                                    logger.info(f"[STEP 12.3] 직접 CCXT 선물 잔고 결과: {futures_raw_balance['total'] if 'total' in futures_raw_balance else 'No total in response'}")
+                                    
+                                    # 결과 변환
+                                    if 'total' in spot_raw_balance:
+                                        all_balances['spot']['total'] = spot_raw_balance['total']
+                                    
+                                    if 'total' in futures_raw_balance:
+                                        all_balances['future']['total'] = futures_raw_balance['total']
                                         
-                                        if api_key and api_secret:
-                                            # 직접 CCXT 바이낸스 인스턴스 생성
-                                            binance = ccxt.binance({
-                                                'apiKey': api_key,
-                                                'secret': api_secret,
-                                                'enableRateLimit': True,
-                                            })
-                                            
-                                            # 현물 잔고 조회
-                                            spot_raw_balance = binance.fetch_balance()
-                                            logger.info(f"[STEP 12.3] 직접 CCXT 현물 잔고 결과: {spot_raw_balance['total'] if 'total' in spot_raw_balance else 'No total in response'}")
-                                            
-                                            # 선물 잔고 조회
-                                            binance_futures = ccxt.binance({
-                                                'apiKey': api_key,
-                                                'secret': api_secret,
-                                                'enableRateLimit': True,
-                                                'options': {
-                                                    'defaultType': 'future',
-                                                }
-                                            })
-                                            
-                                            futures_raw_balance = binance_futures.fetch_balance()
-                                            logger.info(f"[STEP 12.3] 직접 CCXT 선물 잔고 결과: {futures_raw_balance['total'] if 'total' in futures_raw_balance else 'No total in response'}")
-                                            
-                                            # 결과 변환
-                                            if 'total' in spot_raw_balance:
-                                                all_balances['spot']['total'] = spot_raw_balance['total']
-                                            
-                                            if 'total' in futures_raw_balance:
-                                                all_balances['future']['total'] = futures_raw_balance['total']
-                                                
-                                            logger.info(f"[STEP 12.3] 최종 변환된 잔고 정보: {all_balances}")
-                                    except Exception as e3:
-                                        logger.error(f"[STEP 12.3] 직접 CCXT 시도 실패: {str(e3)}")
-                                        logger.error(traceback.format_exc())
+                                    logger.info(f"[STEP 12.3] 최종 변환된 잔고 정보: {all_balances}")
+                                except Exception as e3:
+                                    logger.error(f"[STEP 12.3] 직접 CCXT 시도 실패: {str(e3)}")
+                                    logger.error(traceback.format_exc())
                                     
                                     # 메서드 4: 클래스 성질 직접 확인
                                     try:
@@ -777,14 +775,14 @@ class TradingBotAPIServer:
                                     except Exception as e4:
                                         logger.warning(f"[STEP 12.4] API 직접 호출 실패: {str(e4)}")
                                 
-                                # 기본 스테이블코인 가지고 있다고 가정 (테스트용)
+                                # API 호출 실패 시 빈 값으로 표시
                                 if not all_balances.get('spot', {}).get('total'):
-                                    logger.warning("[STEP 12.5] 모든 시도 실패, 테스트용 값 사용")
+                                    logger.warning("[STEP 12.5] 모든 시도 실패, 실제 잔액을 가져오지 못했습니다.")
                                     all_balances = {
-                                        'spot': {'total': {'USDT': 100.0}},
-                                        'future': {'total': {'USDT': 50.0}}
+                                        'spot': {'total': {'USDT': 0.0}},
+                                        'future': {'total': {'USDT': 0.0}}
                                     }
-                                    logger.info(f"[STEP 13] 테스트용 밸런스 설정: {all_balances}")
+                                    logger.info(f"[STEP 13] 잔액 정보 없음: {all_balances}")
                                 else:
                                     logger.info(f"[STEP 13] 최종 밸런스 결과: {all_balances}")
 
@@ -825,28 +823,36 @@ class TradingBotAPIServer:
                             except Exception as outer_e:
                                 logger.error(f"[ERROR] 외부 try 블록 예외 발생: {str(outer_e)}")
                                 logger.error(traceback.format_exc())
-                                # 기본값 설정
+                                # 기본값 설정 - 이제 0으로 초기화
                                 all_balances = {
-                                    'spot': {'total': {'USDT': 10.0}},
-                                    'future': {'total': {'USDT': 5.0}}
+                                    'spot': {'total': {'USDT': 0.0}},
+                                    'future': {'total': {'USDT': 0.0}}
                                 }
-                                logger.warning(f"[RECOVERY] 외부 예외 처리로 기본값 설정: {all_balances}")
-                                # 기본 잔고 설정
+                                logger.warning(f"[RECOVERY] 외부 예외 처리로 0 값 초기화: {all_balances}")
+                                # 0 잔고 설정
                                 spot_balance = {
-                                    'amount': 10.0,
+                                    'amount': 0.0,
                                     'currency': 'USDT',
                                     'type': 'spot'
                                 }
                                 future_balance = {
-                                    'amount': 5.0,
+                                    'amount': 0.0,
                                     'currency': 'USDT',
                                     'type': 'future'
                                 }
                 
-                # 종합 밸런스 정보 초기화
+                # 종합 밸런스 정보 초기화 - 기본값은 0 USDT로 설정
                 balance = {
-                    'spot': None,
-                    'future': None
+                    'spot': {
+                        'amount': 0,
+                        'currency': 'USDT',
+                        'type': 'spot'
+                    },
+                    'future': {
+                        'amount': 0,
+                        'currency': 'USDT',
+                        'type': 'future'
+                    }
                 }
                 
                 # 대체 값 설정 - spot_balance가 None이거나 필수 필드가 없는 경우
@@ -1068,22 +1074,24 @@ class TradingBotAPIServer:
                 # 잔액 정보 초기화
                 balance_data = None
                 
-                # CCXT 직접 사용 - API 키 확인
-                api_key = os.getenv('BINANCE_API_KEY')
-                api_secret = os.getenv('BINANCE_API_SECRET')
+                # CCXT 직접 사용 - API 키 확인 유틸리티 함수 사용
+                api_result = get_validated_api_credentials()
                 
-                if not api_key or not api_secret:
-                    logger.error("API 키가 설정되지 않았습니다.")
+                if not api_result['success']:
+                    logger.error(f"API 키 오류: {api_result['message']}")
                     return jsonify({
                         'success': False,
-                        'message': '오류: Binance API 키가 환경 변수에 설정되지 않았습니다.',
+                        'message': f'오류: {api_result["message"]}',
                         'error_code': 'API_KEYS_MISSING',
                         'debug_info': {
-                            'api_key_exists': bool(api_key),
-                            'api_secret_exists': bool(api_secret)
+                            'api_key_exists': api_result['api_key'] is not None,
+                            'api_secret_exists': api_result['api_secret'] is not None
                         }
                     })
                 
+                # API 키 및 시크릿 가져오기
+                api_key = api_result['api_key']
+                api_secret = api_result['api_secret']
                 logger.info(f"API 키 확인됨: {api_key[:5]}...")
                 
                 try:
