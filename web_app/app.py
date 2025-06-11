@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger('crypto_bot_web')
 
 # API 서버 임포트
-from web_app.bot_api_server import TradingBotAPIServer
+from web_app.bot_api_server import BotAPIServer
 
 # CSP 헤더 추가 함수
 def add_csp_headers(app):
@@ -55,7 +55,7 @@ def run_api_server(host='0.0.0.0', port=8080, headless=True, debug=True):
     """
     try:
         # API 서버 생성
-        server = TradingBotAPIServer(host=host, port=port, headless=headless)
+        server = BotAPIServer(host=host, port=port, headless=headless)
         logger.info(f"API 서버 실행 준비 완료. 호스트: {host}, 포트: {port}")
         
         # CSP 헤더 추가

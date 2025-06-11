@@ -2232,6 +2232,9 @@ def main(headless=False):
     """
     if headless:
         # 헤드리스 모드 - GUI 표시 없이 인스턴스 반환
+        # Qt 애플리케이션이 없으면 생성
+        if not QApplication.instance():
+            app = QApplication(sys.argv)
         window = CryptoTradingBotGUI(headless=True)
         return window
     else:

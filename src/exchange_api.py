@@ -331,7 +331,7 @@ class ExchangeAPI:
                             self.logger.warning(f"레버리지 설정 확인 실패: {str(leverage_check_error)}")
                         
                         # 2. 마진 타입 설정 (교차 또는 격리)
-                        margin_mode = 'cross'  # 기본값은 교차 마진
+                        margin_mode = 'isolated'  # 격리 마진 사용
                         try:
                             log_api_call(f"/exchange/{self.exchange_id}/marginMode", "POST", request_data={
                                 "symbol": futures_symbol,
