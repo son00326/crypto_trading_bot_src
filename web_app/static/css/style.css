@@ -1,0 +1,126 @@
+/* 슬라이더 스타일 */
+.position-relative {
+    position: relative;
+    padding-top: 30px;
+}
+
+.slider-value {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background-color: #007bff;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    transition: left 0.1s ease;
+}
+
+.slider-value::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid #007bff;
+}
+
+/* Form range 커스터마이징 */
+.form-range {
+    height: 5px;
+    background: #ddd;
+    outline: none;
+    opacity: 0.9;
+    transition: opacity 0.2s;
+}
+
+.form-range:hover {
+    opacity: 1;
+}
+
+.form-range::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+    background: #007bff;
+    cursor: pointer;
+    border-radius: 50%;
+}
+
+.form-range::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    background: #007bff;
+    cursor: pointer;
+    border-radius: 50%;
+}
+
+/* 카드 스타일 */
+.card {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: box-shadow 0.3s ease;
+}
+
+.card:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+/* 버튼 스타일 */
+.btn-success:disabled,
+.btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 상태 표시 스타일 */
+.badge-success {
+    background-color: #28a745;
+}
+
+.badge-danger {
+    background-color: #dc3545;
+}
+
+/* 로딩 스피너 */
+.spinner-border {
+    width: 1rem;
+    height: 1rem;
+    border-width: 0.15em;
+}
+
+/* 알림 메시지 */
+.alert {
+    animation: slideIn 0.3s ease;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateY(-20px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+    .container-fluid {
+        padding: 10px;
+    }
+    
+    .card {
+        margin-bottom: 15px;
+    }
+    
+    .slider-value {
+        font-size: 10px;
+        padding: 2px 6px;
+    }
+}

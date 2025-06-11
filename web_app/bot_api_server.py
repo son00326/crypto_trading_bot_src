@@ -71,7 +71,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger('crypto_bot_web')
 
-class TradingBotAPIServer:
+class BotAPIServer:
     """GUI 코드를 웹 API로 노출하는 서버 클래스"""
     
     def __init__(self, host='0.0.0.0', port=8080, headless=True):
@@ -150,7 +150,22 @@ class TradingBotAPIServer:
             from gui.crypto_trading_bot_gui_complete import main as run_gui
             self.bot_gui = run_gui(headless=headless)
             
-            # 서버 설정
+            # 봇 관련 변수 초기화
+            self.bot = None
+            self.trading_thread = None
+            self.bot_status = {
+                'is_running': False,
+                'strategy': None,
+                'symbol': None,
+                'timeframe': None,
+                'market_type': 'spot',
+                'leverage': 1,
+                'test_mode': False,
+                'started_at': None,
+                'last_update': None
+            }
+            
+            # 서버 설정  
             self.host = host
             self.port = port
             
@@ -417,31 +432,45 @@ class TradingBotAPIServer:
         @app.route('/api/status', methods=['GET'])
         @login_required
         def get_status():
-            """봇 상태 조회 API - 거래 봇의 운영 상태 정보 제공"""
+            """봇 상태 조회"""
             try:
-                # GUI에서 상태 정보 가져오기
-                status = self.bot_gui.get_bot_status()
-                status['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                # 현재 봇 상태 로깅
+                logger.info(f"봇 상태 조회 - is_running: {self.bot_status.get('is_running', False)}")
+                logger.info(f"봇 상태 상세: {self.bot_status}")
                 
-                # 캐시된 잔액 정보 추가 (실시간 조회 안함)
-                if hasattr(self.bot_gui, 'balance_data') and self.bot_gui.balance_data:
-                    status['cached_balance'] = {
-                        'spot': self.bot_gui.balance_data.get('spot', {}),
-                        'future': self.bot_gui.balance_data.get('future', {}),
-                        'cache_time': status['last_update']
-                    }
+                # symbol 형식을 UI에 맞게 변환
+                status_copy = self.bot_status.copy()
+                
+                # ui_symbol 추가: 마켓 타입에 따라 심볼 형식 변환
+                if status_copy.get('symbol') and status_copy.get('market_type'):
+                    market_type = status_copy.get('market_type', 'spot')
+                    original_symbol = status_copy.get('symbol', '')
+                    
+                    if market_type == 'futures':
+                        # 선물: 슬래시 제거 (BTC/USDT → BTCUSDT)
+                        ui_symbol = original_symbol.replace('/', '')
+                    else:
+                        # 현물: 슬래시 추가 (BTCUSDT → BTC/USDT)
+                        if '/' not in original_symbol and len(original_symbol) > 4:
+                            # USDT로 끝나는 경우
+                            if original_symbol.endswith('USDT'):
+                                ui_symbol = original_symbol[:-4] + '/' + original_symbol[-4:]
+                            else:
+                                ui_symbol = original_symbol
+                        else:
+                            ui_symbol = original_symbol
+                    
+                    status_copy['ui_symbol'] = ui_symbol
                 
                 return jsonify({
                     'success': True,
-                    'data': status
+                    'data': status_copy
                 })
-                
             except Exception as e:
-                logger.error(f"상태 조회 중 오류: {e}")
+                logger.error(f"봇 상태 조회 오류: {str(e)}")
                 return jsonify({
                     'success': False,
-                    'message': f'상태 조회 중 오류가 발생했습니다: {str(e)}',
-                    'error_code': 'SERVER_ERROR'
+                    'error': str(e)
                 }), 500
         
         # 시장 데이터 조회 API 수정 - utils/api.py 활용
@@ -536,7 +565,7 @@ class TradingBotAPIServer:
 
                 # 포지션 정보 기록 (DB 저장)
                 if positions_data and isinstance(positions_data, list):
-                    self.db.save_positions(positions_data)
+                    self.save_positions(positions_data)
                     logger.info(f"포지션 정보 저장 완료: {len(positions_data)}개 포지션")
                     
                 return jsonify({
@@ -650,8 +679,29 @@ class TradingBotAPIServer:
         @app.route('/api/start_bot', methods=['POST'])
         @login_required
         def start_bot():
+            """봇 시작"""
+            logger.info("봇 시작 요청 받음")
+            
+            if self.bot_status.get('is_running', False):
+                logger.warning("봇이 이미 실행 중입니다")
+                return jsonify({
+                    'success': False,
+                    'error': '봇이 이미 실행 중입니다'
+                }), 400
+            
             try:
-                data = request.json or {}
+                data = request.get_json()
+                logger.info(f"봇 시작 요청 데이터: {data}")
+                
+                # 필수 매개변수 검증
+                required_fields = ['strategy', 'symbol', 'timeframe']
+                for field in required_fields:
+                    if field not in data:
+                        logger.error(f"필수 필드 누락: {field}")
+                        return jsonify({
+                            'success': False,
+                            'error': f'{field}는 필수 항목입니다'
+                        }), 400
                 
                 # GUI API를 통해 봇 시작
                 strategy = data.get('strategy')
@@ -660,6 +710,23 @@ class TradingBotAPIServer:
                 market_type = data.get('market_type', 'spot')
                 leverage = data.get('leverage', 1)
                 test_mode = data.get('test_mode', False)
+                
+                # 마켓 타입에 따라 심볼 형식 변환
+                if symbol:
+                    if market_type == 'futures':
+                        # 선물: 슬래시 제거 (BTC/USDT → BTCUSDT)
+                        if '/' in symbol:
+                            symbol = symbol.replace('/', '')
+                            logger.info(f"선물 거래용 심볼 형식으로 변환: {data.get('symbol')} → {symbol}")
+                    else:
+                        # 현물: 슬래시 추가 (BTCUSDT → BTC/USDT)
+                        if '/' not in symbol and (symbol.endswith('USDT') or symbol.endswith('BUSD')):
+                            for quote in ['USDT', 'BUSD']:
+                                if symbol.endswith(quote):
+                                    base = symbol[:-len(quote)]
+                                    symbol = f"{base}/{quote}"
+                                    logger.info(f"현물 거래용 심볼 형식으로 변환: {data.get('symbol')} → {symbol}")
+                                    break
                 
                 # 전략 파라미터 추출
                 strategy_params = data.get('strategy_params', {})
@@ -693,6 +760,19 @@ class TradingBotAPIServer:
                 
                 # 성공적으로 시작되면 상태 저장
                 if result.get('success', False):
+                    # 봇 상태 업데이트
+                    self.bot_status.update({
+                        'is_running': True,
+                        'strategy': strategy,
+                        'symbol': symbol,
+                        'timeframe': timeframe,
+                        'market_type': market_type,
+                        'leverage': leverage,
+                        'test_mode': test_mode,
+                        'started_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    })
+                    
                     # 반환값에서 비밀번호 필드 제거 (JSON 직렬화 문제 방지)
                     if 'api_key' in result:
                         del result['api_key']
@@ -739,6 +819,13 @@ class TradingBotAPIServer:
             try:
                 # GUI API를 통해 봇 중지
                 result = self.bot_gui.stop_bot_api()
+                
+                # 봇 상태 업데이트
+                if result.get('success', False):
+                    self.bot_status.update({
+                        'is_running': False,
+                        'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    })
                 
                 # 봇을 중지할 때 상태 저장 (실행 중지 상태로 갱신)
                 try:
@@ -925,11 +1012,11 @@ class TradingBotAPIServer:
                 
             # 현재 심볼 가격 가져오기
             try:
-                # 원래 심볼에서 콜론(:) 이후 부분 제거 (BTCUSDT:USDT -> BTCUSDT)
+                # 원래 심볼에서 콜론(:) 이후 부분 제거 (BTCUSDT:USDT → BTCUSDT)
                 symbol = self.exchange_api.symbol
                 if ':' in symbol:
                     symbol = symbol.split(':')[0]
-                    logger.info(f"심볼 형식 변환: {self.exchange_api.symbol} -> {symbol}")
+                    logger.info(f"심볼 형식 변환: {self.exchange_api.symbol} → {symbol}")
                 
                 # API 키 가져오기 (utils/config.py 사용)
                 api_result = get_validated_api_credentials()
@@ -1051,7 +1138,7 @@ class TradingBotAPIServer:
         거래소에서 현재 포지션 정보를 가져와 DB에 저장
         """
         try:
-            # 시장 타입이 'futures'가 아닀 경우 실제 포지션 조회 스킵
+            # 시장 타입이 'futures'가 아닐 경우 실제 포지션 조회 스킵
             if not self.exchange_api or self.exchange_api.market_type != 'futures':
                 logger.info("선물 포지션 정보를 조회할 수 없습니다.")
                 return
@@ -1164,6 +1251,32 @@ class TradingBotAPIServer:
             'take_profit_price': position.get('take_profit_price')
         }
     
+    def save_positions(self, positions_list):
+        """
+        여러 포지션을 DB에 저장하는 메서드
+        
+        Args:
+            positions_list (list): 포지션 데이터 리스트
+        """
+        try:
+            if not isinstance(positions_list, list):
+                logger.error("save_positions: positions_list가 리스트가 아닙니다.")
+                return
+            
+            saved_count = 0
+            for position in positions_list:
+                try:
+                    # DatabaseManager의 save_position 메서드 호출
+                    self.db.save_position(position)
+                    saved_count += 1
+                except Exception as e:
+                    logger.error(f"포지션 저장 중 오류: {str(e)}, 포지션 데이터: {position}")
+                    continue
+            
+            logger.info(f"save_positions: {saved_count}/{len(positions_list)}개 포지션 저장 완료")
+        except Exception as e:
+            logger.error(f"save_positions 메서드 실행 중 오류: {str(e)}")
+    
     # API 오류 응답 유틸리티 메서드
     def _create_error_response(self, error, status_code=500, endpoint=None):
         """
@@ -1196,7 +1309,6 @@ class TradingBotAPIServer:
             
         return jsonify(response), status_code
     
-    # 봇 상태 저장 유틸리티 메서드
     def _save_bot_state(self, is_running, additional_info=None, update_existing=False, **kwargs):
         """
         봇 상태를 데이터베이스에 저장하는 유틸리티 메서드
@@ -1368,6 +1480,6 @@ class TradingBotAPIServer:
 
 if __name__ == '__main__':
     # 직접 실행 시 서버 시작 - 외부 접속 허용
-    server = TradingBotAPIServer(host='0.0.0.0', port=8080)
-    # 데이터 동기화는 이미 TradingBotAPIServer 초기화 시 시작됨
+    server = BotAPIServer(host='0.0.0.0', port=8080)
+    # 데이터 동기화는 이미 BotAPIServer 초기화 시 시작됨
     server.run()
