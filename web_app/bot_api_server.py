@@ -1,49 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-# Binance API를 통한 암호화폐 트레이딩 봇 구현
-# Author: Yong Son
+"""
+Crypto Trading Bot API Server
+Binance API를 통한 암호화폐 트레이딩 봇 구현
+Author: Yong Son
+"""
 
 # 프로젝트 루트 디렉토리를 시스템 경로에 추가하여 어디서든 동일한 임포트 구조 사용 가능
 import os
 import sys
-
-root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if root_dir not in sys.path:
-    sys.path.append(root_dir)
-
-# 암호화폐 자동 매매 봇 API 서버
-import json
-import time
-import logging
-import secrets
-import uuid
-import urllib.parse
-import urllib.request
-import webbrowser
 import threading
-import random
-import string
-import requests
-import ssl
-import urllib
-import configparser
-import traceback
-import datetime
-import logging
-from datetime import datetime
-from dotenv import load_dotenv
-from urllib.parse import urlparse
-
-# 유틸리티 모듈 가져오기
-from utils.config import get_api_credentials, validate_api_key, get_validated_api_credentials
-import utils.api as api
-from utils.api import get_formatted_balances, get_spot_balance, get_future_balance
-from PyQt5.QtWidgets import QApplication
-from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash, session
-from flask_cors import CORS
-from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
 
 # 프로젝트 루트 디렉토리 설정 및 환경 구성
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +19,36 @@ sys.path.append(project_root)
 
 # 작업 디렉토리 변경 (상대 경로 문제 해결을 위해)
 os.chdir(project_root)
+
+import json
+import time
+import logging
+import asyncio
+from threading import Thread
+from flask import Flask
+from flask_socketio import SocketIO, emit
+import random
+import signal
+import socket
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import configparser
+import traceback
+import datetime
+from datetime import datetime
+from dotenv import load_dotenv
+from urllib.parse import urlparse
+
+# 유틸리티 모듈 가져오기
+from utils.config import validate_api_key, get_validated_api_credentials
+import utils.api as api
+from utils.api import get_formatted_balances, get_spot_balance, get_future_balance, get_ticker, get_orderbook, get_positions, set_stop_loss_take_profit
+from PyQt5.QtWidgets import QApplication
+from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash, session
+from flask_cors import CORS
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # .env 파일 로드
 env_path = os.path.join(project_root, '.env')
@@ -67,10 +63,6 @@ from web_app.models import User
 from src.db_manager import DatabaseManager
 from src.exchange_api import ExchangeAPI
 from src.config import DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
-
-# API 기능 임포트
-from utils.config import load_env_variable, get_api_credentials, validate_api_key
-from utils.api import create_binance_client, get_formatted_balances
 
 # 로깅 설정
 logging.basicConfig(
@@ -202,12 +194,14 @@ class TradingBotAPIServer:
                     logger.info(f"GUI에서 저장한 API 키 설정을 로드했습니다.")
                 
                 # 환경 변수에서 API 키 확인 - 새로운 유틸리티 함수 사용
-                api_key, api_secret = get_api_credentials()
+                api_result = get_validated_api_credentials()
                 
-                if api_key and api_secret:
+                if api_result['success']:
+                    api_key = api_result['api_key']
+                    api_secret = api_result['api_secret']
                     logger.info(f"API 키가 설정되어 있습니다: {api_key[:5]}...")
                 else:
-                    logger.warning("API 키가 설정되어 있지 않습니다. 지갑 정보를 가져올 수 없습니다.")
+                    logger.warning(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
                 
                 # 심볼 형식 확인 및 수정 (BTCUSDT:USDT -> BTCUSDT)
                 symbol_to_use = symbol
@@ -360,82 +354,144 @@ class TradingBotAPIServer:
         def index():
             return render_template('index.html')
         
-        # 상태 확인 API
+        # 잔액 조회 통합 API
+        @app.route('/api/balance', methods=['GET'])
+        @login_required
+        def get_balance():
+            """통합 잔액 조회 API - 현물/선물 잔액과 추가 정보 제공"""
+            try:
+                # utils/config.py의 검증된 API 키 가져오기
+                from utils.config import get_validated_api_credentials
+                from utils.api import get_formatted_balances
+                
+                # API 키 검증 및 가져오기
+                api_result = get_validated_api_credentials()
+                
+                if not api_result['success']:
+                    logger.error(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
+                    return jsonify({
+                        'success': False,
+                        'message': api_result.get('message', ''),
+                        'error_code': 'API_VALIDATION_FAILED'
+                    }), 401
+                
+                # 표준화된 잔액 정보 가져오기
+                balance_result = get_formatted_balances(
+                    api_result['api_key'], 
+                    api_result['api_secret']
+                )
+                
+                # success가 false더라도 데이터가 있으면 정상 응답으로 처리
+                if balance_result.get('balance'):
+                    # GUI 객체가 있으면 balance_data 업데이트
+                    if hasattr(self, 'bot_gui') and self.bot_gui:
+                        self.bot_gui.balance_data = {
+                            'spot': balance_result['balance']['spot'],
+                            'future': balance_result['balance']['future']
+                        }
+                    
+                    # 데이터 수정: success 필드 업데이트
+                    balance_data = balance_result.get('balance', {})
+                    spot_success = balance_data.get('spot', {}).get('success', False)
+                    future_success = balance_data.get('future', {}).get('success', False)
+                    
+                    # 하나라도 성공했으면 전체를 성공으로 처리
+                    if spot_success or future_success:
+                        balance_result['success'] = True
+                    
+                    return jsonify(balance_result)
+                else:
+                    # 데이터가 없는 경우만 에러 처리
+                    return jsonify(balance_result), 400
+                
+            except Exception as e:
+                logger.error(f"잔액 조회 중 오류: {e}")
+                logger.error(traceback.format_exc())
+                return jsonify({
+                    'success': False,
+                    'message': f'서버 오류가 발생했습니다: {str(e)}',
+                    'error_code': 'SERVER_ERROR'
+                }), 500
+        
+        # 상태 확인 API (봇 상태 중심)
         @app.route('/api/status', methods=['GET'])
         @login_required
         def get_status():
+            """봇 상태 조회 API - 거래 봇의 운영 상태 정보 제공"""
             try:
                 # GUI에서 상태 정보 가져오기
                 status = self.bot_gui.get_bot_status()
                 status['last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
-                # 표준화된 /api/balance 엔드포인트와 동일한 방식으로 잔액 정보 가져오기
-                try:
-                    logger.info("[STATUS API] /api/balance 엔드포인트 로직으로 최신 잔액 정보 요청 중")
-                    
-                    # utils/api.py의 표준 함수 사용
-                    import utils.api as api
-                    
-                    # API 키 가져오기
-                    from utils.config import get_api_credentials
-                    api_key, api_secret = get_api_credentials()
-                    
-                    if api_key and api_secret:
-                        # 표준화된 함수로 잔액 조회
-                        balanced_result = api.get_formatted_balances(api_key, api_secret)
-                        
-                        if balanced_result.get('success', False):
-                            # 잔액 정보 추출
-                            spot_data = balanced_result.get('balance', {}).get('spot', {})
-                            future_data = balanced_result.get('balance', {}).get('future', {})
-                            
-                            # 일관된 형식으로 balance와 amount 키 모두 포함
-                            if 'balance' in spot_data:
-                                spot_data['amount'] = spot_data['balance']
-                            if 'balance' in future_data:
-                                future_data['amount'] = future_data['balance']
-                                
-                            # GUI 객체 업데이트
-                            try:
-                                spot_balance = float(spot_data.get('balance', 0))
-                                future_balance = float(future_data.get('balance', 0))
-                                
-                                # 선물 계정 우선, 없으면 현물 계정 사용
-                                if future_balance > 0:
-                                    self.bot_gui.balance_data = {
-                                        'amount': future_balance,
-                                        'balance': future_balance,  # 두 키 모두 제공
-                                        'currency': 'USDT',
-                                        'type': 'future'
-                                    }
-                                elif spot_balance > 0:
-                                    self.bot_gui.balance_data = {
-                                        'amount': spot_balance,
-                                        'balance': spot_balance,  # 두 키 모두 제공
-                                        'currency': 'USDT',
-                                        'type': 'spot'
-                                    }
-                                
-                                logger.info(f"[STATUS API] GUI 객체의 balance_data 업데이트 성공: {self.bot_gui.balance_data}")
-                            except Exception as update_err:
-                                logger.error(f"[STATUS API] GUI 객체의 balance_data 업데이트 중 오류: {update_err}")
-                            
-                            # 상태에 잔액 정보 추가
-                            status['balance'] = {
-                                'spot': spot_data,
-                                'future': future_data,
-                                'total_usdt': balanced_result.get('balance', {}).get('total_usdt', 0)
-                            }
-                            
-                            logger.info(f"[STATUS API] 잔액 정보 업데이트 성공 (표준 방식): {status['balance']}")
-                except Exception as balance_err:
-                    logger.error(f"[STATUS API] 잔액 업데이트 중 오류: {balance_err}")
-                    # 오류가 발생해도 API 응답은 계속 반환
+                # 캐시된 잔액 정보 추가 (실시간 조회 안함)
+                if hasattr(self.bot_gui, 'balance_data') and self.bot_gui.balance_data:
+                    status['cached_balance'] = {
+                        'spot': self.bot_gui.balance_data.get('spot', {}),
+                        'future': self.bot_gui.balance_data.get('future', {}),
+                        'cache_time': status['last_update']
+                    }
                 
-                status['success'] = True
-                return jsonify(status)
+                return jsonify({
+                    'success': True,
+                    'data': status
+                })
+                
             except Exception as e:
-                return self._create_error_response(e, status_code=500, endpoint='get_status')
+                logger.error(f"상태 조회 중 오류: {e}")
+                return jsonify({
+                    'success': False,
+                    'message': f'상태 조회 중 오류가 발생했습니다: {str(e)}',
+                    'error_code': 'SERVER_ERROR'
+                }), 500
+        
+        # 시장 데이터 조회 API 수정 - utils/api.py 활용
+        @app.route('/api/market/<symbol>')
+        @login_required
+        def get_market_data(symbol):
+            """시장 데이터 조회 API"""
+            try:
+                from utils.config import get_validated_api_credentials
+                from utils.api import get_ticker, get_orderbook
+                
+                # API 키 검증
+                api_result = get_validated_api_credentials()
+                
+                if not api_result['success']:
+                    return jsonify({
+                        'success': False,
+                        'message': api_result.get('message', ''),
+                        'error_code': 'API_VALIDATION_FAILED'
+                    }), 401
+                
+                # 티커 정보 가져오기
+                ticker_result = get_ticker(
+                    api_result['api_key'],
+                    api_result['api_secret'],
+                    symbol
+                )
+                
+                if not ticker_result['success']:
+                    return jsonify(ticker_result), 400
+                
+                # 추가 시장 정보 (필요시 orderbook 등)
+                # orderbook_result = get_orderbook(...)
+                
+                return jsonify({
+                    'success': True,
+                    'data': {
+                        'symbol': symbol,
+                        'ticker': ticker_result['data'],
+                        'timestamp': datetime.now().isoformat()
+                    }
+                })
+                
+            except Exception as e:
+                logger.error(f"시장 데이터 조회 중 오류: {e}")
+                return jsonify({
+                    'success': False,
+                    'message': f'시장 데이터 조회 중 오류가 발생했습니다: {str(e)}',
+                    'error_code': 'SERVER_ERROR'
+                }), 500
         
         # 거래 내역 조회 API
         @app.route('/api/trades', methods=['GET'])
@@ -458,23 +514,26 @@ class TradingBotAPIServer:
         # 포지션 정보 조회 API
         @app.route('/api/positions', methods=['GET'])
         @login_required
-        def get_positions():
+        def api_get_positions():
+            """현재 열린 포지션 정보 가져오기"""
             try:
-                # API 키 및 시크릿 가져오기
-                from utils.config import get_api_credentials
-                api_key, api_secret = get_api_credentials()
+                logger.info("포지션 정보 조회 시작")
                 
-                if not api_key or not api_secret:
-                    return self._create_error_response(
-                        Exception("API 키 정보가 없습니다"), 
-                        status_code=500, 
-                        endpoint='get_positions'
-                    )
+                # API 키 가져오기
+                api_result = get_validated_api_credentials()
+                if not api_result['success']:
+                    logger.warning(f"API 키 검증 실패: {api_result['error']}")
+                    return jsonify({
+                        'success': False,
+                        'error': api_result['error']
+                    }), 401 if 'API credentials' in api_result['error'] else 400
+                
+                api_key = api_result['api_key']
+                api_secret = api_result['api_secret']
                     
                 # 새롭게 구현한 함수로 포지션 정보 가져오기
-                from utils.api import get_positions
                 positions_data = get_positions(api_key, api_secret)
-                
+
                 # 포지션 정보 기록 (DB 저장)
                 if positions_data and isinstance(positions_data, list):
                     self.db.save_positions(positions_data)
@@ -516,15 +575,17 @@ class TradingBotAPIServer:
                     )
                 
                 # API 키 및 시크릿 가져오기
-                from utils.config import get_api_credentials
-                api_key, api_secret = get_api_credentials()
+                api_result = get_validated_api_credentials()
                 
-                if not api_key or not api_secret:
+                if not api_result['success']:
                     return self._create_error_response(
-                        Exception("API 키 정보가 없습니다"), 
+                        Exception(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}"), 
                         status_code=500, 
                         endpoint='set_stop_loss_take_profit'
                     )
+                
+                api_key = api_result['api_key']
+                api_secret = api_result['api_secret']
                 
                 # 새로운 유틸리티 함수를 사용하여 손절/이익실현 설정
                 from utils.api import set_stop_loss_take_profit
@@ -585,260 +646,6 @@ class TradingBotAPIServer:
                 logger.error(traceback.format_exc())
                 return self._create_error_response(e, status_code=500, endpoint='set_stop_loss_take_profit')
 
-        # 시장 데이터 API
-        @app.route('/api/market_data', methods=['GET'])
-        @login_required
-        def get_market_data():
-            """
-            시장 데이터 조회 엔드포인트 (티커, 호가창, 봉 데이터 등)
-            """
-            try:
-                # 필수 파라미터 검증
-                symbol = request.args.get('symbol')
-                if not symbol:
-                    return jsonify({
-                        'success': False,
-                        'message': '심볼 정보가 필요합니다',
-                        'error_code': 'MISSING_SYMBOL'
-                    }), 400
-                
-                # 데이터 타입 파라미터 검증
-                data_type = request.args.get('type', 'ticker').lower()
-                valid_types = ['ticker', 'orderbook', 'ohlcv']
-                
-                if data_type not in valid_types:
-                    return jsonify({
-                        'success': False,
-                        'message': f'유효하지 않은 데이터 타입입니다. 가능한 값: {", ".join(valid_types)}',
-                        'error_code': 'INVALID_DATA_TYPE'
-                    }), 400
-                
-                # API 키 가져오기
-                api_key, api_secret = self._get_api_keys_from_session()
-                if not api_key or not api_secret:
-                    return jsonify({
-                        'success': False, 
-                        'message': 'API 키가 설정되지 않았습니다',
-                        'error_code': 'NO_API_KEYS'
-                    }), 401
-                
-                # 데이터 타입에 따라 적절한 함수 호출
-                if data_type == 'ticker':
-                    result = api.get_ticker(
-                        api_key=api_key, 
-                        api_secret=api_secret, 
-                        symbol=symbol
-                    )
-                    
-                elif data_type == 'orderbook':
-                    # 추가 파라미터 처리
-                    try:
-                        limit = int(request.args.get('limit', 20))
-                        if limit < 1 or limit > 1000:
-                            limit = 20  # 기본값으로 재설정
-                    except ValueError:
-                        limit = 20  # 숫자가 아닌 경우 기본값 사용
-                    
-                    result = api.get_orderbook(
-                        api_key=api_key, 
-                        api_secret=api_secret, 
-                        symbol=symbol, 
-                        limit=limit
-                    )
-                    
-                elif data_type == 'ohlcv':
-                    # 추가 파라미터 처리
-                    timeframe = request.args.get('timeframe', '1h')
-                    
-                    try:
-                        limit = int(request.args.get('limit', 100))
-                        if limit < 1 or limit > 1000:
-                            limit = 100  # 기본값으로 재설정
-                    except ValueError:
-                        limit = 100  # 숫자가 아닌 경우 기본값 사용
-                    
-                    result = api.get_ohlcv(
-                        api_key=api_key, 
-                        api_secret=api_secret, 
-                        symbol=symbol, 
-                        timeframe=timeframe, 
-                        limit=limit
-                    )
-                
-                # 결과 반환
-                if result.get('success', False):
-                    # DB에 최신 가격 데이터 저장 (티커 정보인 경우)
-                    if data_type == 'ticker' and 'last' in result:
-                        try:
-                            self.db.update_price_data({
-                                'symbol': symbol,
-                                'price': result['last'],
-                                'timestamp': datetime.now().isoformat()
-                            })
-                        except Exception as db_err:
-                            logger.warning(f"가격 데이터 DB 저장 실패: {str(db_err)}")
-                    
-                    return jsonify(result), 200
-                else:
-                    return jsonify(result), 400
-                
-            except Exception as e:
-                logger.error(f"시장 데이터 조회 중 오류: {str(e)}")
-                logger.error(traceback.format_exc())
-                return jsonify({
-                    'success': False,
-                    'message': f'시장 데이터 조회 중 오류가 발생했습니다: {str(e)}',
-                    'error': str(e),
-                    'error_code': 'SERVER_ERROR'
-                }), 500
-        
-        # 지갑 잔액 및 요약 정보 API
-        @app.route('/api/summary', methods=['GET'])
-        @login_required
-        def get_summary():
-            # 클래스 인스턴스를 직접 참조
-            bot_api_server = self
-            try:
-                logger.info("[SUMMARY API] 표준화된 방식으로 잔액 및 요약 정보 조회 시작")
-                
-                # utils/api.py의 표준 함수 사용
-                import utils.api as api
-                from utils.config import get_api_credentials
-                
-                # API 키/시크릿 가져오기
-                api_key, api_secret = get_api_credentials()
-                
-                if not api_key or not api_secret:
-                    logger.error("API 키 오류: API 키와 시크릿이 없습니다")
-                    return jsonify({
-                        'success': False,
-                        'message': '오류: API 키와 시크릿이 필요합니다',
-                        'error_code': 'API_KEYS_MISSING',
-                    })
-                
-                logger.info(f"API 키 확인됨: {api_key[:5]}...")
-                
-                # 표준화된 함수로 잔액 조회
-                balanced_result = api.get_formatted_balances(api_key, api_secret)
-                
-                # 결과 확인 및 구조화
-                if balanced_result.get('success', False):
-                    logger.info(f"[SUMMARY API] 잔액 조회 성공: {balanced_result}")
-                    
-                    # 표준화된 잔액 정보 추출
-                    spot_data = balanced_result.get('balance', {}).get('spot', {})
-                    future_data = balanced_result.get('balance', {}).get('future', {})
-                    total_usdt = balanced_result.get('balance', {}).get('total_usdt', 0)
-                    
-                    # 일관된 형식을 위해 balance와 amount 키 모두 포함
-                    if 'balance' in spot_data and 'amount' not in spot_data:
-                        spot_data['amount'] = spot_data['balance']
-                    elif 'amount' in spot_data and 'balance' not in spot_data:
-                        spot_data['balance'] = spot_data['amount']
-                        
-                    if 'balance' in future_data and 'amount' not in future_data:
-                        future_data['amount'] = future_data['balance']
-                    elif 'amount' in future_data and 'balance' not in future_data:
-                        future_data['balance'] = future_data['amount']
-                    
-                    # 잔액 정보를 balance 객체로 구조화
-                    balance = {
-                        'spot': spot_data,
-                        'future': future_data,
-                        'total_usdt': total_usdt
-                    }
-                    
-                    logger.info(f"[SUMMARY API] 최종 잔액 정보: {balance}")
-                else:
-                    logger.error(f"[SUMMARY API] 잔액 조회 실패: {balanced_result.get('message', '알 수 없는 오류')}")
-                    # 오류 시 기본값 설정
-                    balance = {
-                        'spot': {'amount': 0, 'balance': 0, 'currency': 'USDT', 'type': 'spot'},
-                        'future': {'amount': 0, 'balance': 0, 'currency': 'USDT', 'type': 'future'},
-                        'total_usdt': 0
-                    }
-                
-                # 성능 정보 가져오기
-                try:
-                    if hasattr(bot_api_server, 'db') and hasattr(bot_api_server.db, 'load_performance_stats'):
-                        logger.info("[SUMMARY API] 거래 성능 정보 로드 중...")
-                        performance = bot_api_server.db.load_performance_stats()
-                        logger.info(f"[SUMMARY API] 성능 정보 로드 완료: {performance}")
-                    else:
-                        logger.warning("[SUMMARY API] 성능 정보를 가져올 수 없습니다. DB 객체 또는 load_performance_stats 메서드가 없습니다.")
-                        performance = None
-                except Exception as perf_err:
-                    logger.error(f"[SUMMARY API] 성능 정보 로드 중 오류: {perf_err}")
-                    performance = None
-                
-                # GUI 객체 업데이트 (있는 경우)
-                try:
-                    if hasattr(bot_api_server, 'bot_gui'):
-                        spot_amount = float(balance['spot'].get('balance', 0))
-                        future_amount = float(balance['future'].get('balance', 0))
-                        
-                        # 선물 계정 우선, 없으면 현물 계정 사용
-                        if future_amount > 0:
-                            bot_api_server.bot_gui.balance_data = {
-                                'amount': future_amount,
-                                'balance': future_amount,
-                                'currency': 'USDT', 
-                                'type': 'future'
-                            }
-                            logger.info(f"[SUMMARY API] GUI 객체 업데이트 (선물 잔액): {bot_api_server.bot_gui.balance_data}")
-                        elif spot_amount > 0:
-                            bot_api_server.bot_gui.balance_data = {
-                                'amount': spot_amount,
-                                'balance': spot_amount,
-                                'currency': 'USDT',
-                                'type': 'spot'
-                            }
-                            logger.info(f"[SUMMARY API] GUI 객체 업데이트 (현물 잔액): {bot_api_server.bot_gui.balance_data}")
-                except Exception as gui_err:
-                    logger.error(f"[SUMMARY API] GUI 객체 업데이트 중 오류: {gui_err}")
-                
-                # 최종 요약 응답 준비
-                summary = {
-                    'success': True,
-                    'balance': balance,
-                    'last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                }
-                
-                # 성능 정보 추가 (있는 경우)
-                if performance:
-                    summary['performance'] = performance
-                
-                # 추가 정보 반환
-                try:
-                    # 거래 기록 가져오기 (선택적)
-                    if hasattr(bot_api_server, 'db') and hasattr(bot_api_server.db, 'get_recent_trades'):
-                        try:
-                            recent_trades = bot_api_server.db.get_recent_trades(limit=5)
-                            if recent_trades:
-                                summary['recent_trades'] = recent_trades
-                                logger.info(f"[SUMMARY API] 최근 거래 기록 추가: {len(recent_trades)} 건")
-                        except Exception as trade_err:
-                            logger.error(f"[SUMMARY API] 최근 거래 가져오기 실패: {trade_err}")
-                    
-                    # 봇 상태 정보 추가
-                    if hasattr(bot_api_server, 'bot_gui') and hasattr(bot_api_server.bot_gui, 'get_bot_status'):
-                        try:
-                            bot_status = bot_api_server.bot_gui.get_bot_status()
-                            summary['bot_status'] = bot_status
-                            logger.info(f"[SUMMARY API] 봇 상태 정보 추가")
-                        except Exception as status_err:
-                            logger.error(f"[SUMMARY API] 봇 상태 정보 가져오기 실패: {status_err}")
-                except Exception as extra_err:
-                    logger.error(f"[SUMMARY API] 추가 정보 처리 중 오류: {extra_err}")
-                
-                # 최종 응답 반환
-                return jsonify(summary)
-
-            except Exception as e:
-                logger.error(f"요약 정보 조회 중 오류: {str(e)}")
-                logger.error(traceback.format_exc())
-                return bot_api_server._create_error_response(e, status_code=500, endpoint='get_summary')
-        
         # 봇 시작 API
         @app.route('/api/start_bot', methods=['POST'])
         @login_required
@@ -956,173 +763,7 @@ class TradingBotAPIServer:
                 return jsonify(result)
             except Exception as e:
                 return self._create_error_response(e, status_code=500, endpoint='stop_bot')
-        # 잔액 정보 API
-        @self.flask_app.route('/api/balance')
-        @login_required
-        def get_balance():
-            try:
-                # utils/api.py의 표준 함수 사용
-                import utils.api as api
-                import os
-                
-                # 다른 엔드포인트와 일관성 있게 API 키/시크릿 가져오기
-                api_key, api_secret = get_api_credentials()
-                
-                if not api_key or not api_secret:
-                    logger.error("API 키 오류: API 키와 시크릿이 없습니다")
-                    return jsonify({
-                        'success': False,
-                        'message': '오류: API 키와 시크릿이 필요합니다',
-                        'error_code': 'API_KEYS_MISSING',
-                    })
-                
-                logger.info(f"API 키 확인됨: {api_key[:5]}...")
-                
-                # utils/api.py의 표준화된 함수 호출
-                balanced_result = api.get_formatted_balances(api_key, api_secret)
-                
-                # utils/api.py의 원래 형식 그대로 사용
-                if balanced_result.get('success', False):
-                    logger.info(f"잔액 조회 성공: {balanced_result}")
-                    
-                    # GUI 업데이트용 데이터 준비
-                    spot_balance = balanced_result.get('balance', {}).get('spot', {}).get('balance', 0)
-                    future_balance = balanced_result.get('balance', {}).get('future', {}).get('balance', 0)
-                    
-                    # GUI 업데이트 - 선물 계정 기준으로 업데이트
-                    balance_to_use = {
-                        'balance': future_balance if future_balance > 0 else spot_balance,
-                        'currency': 'USDT',
-                        'type': 'future' if future_balance > 0 else 'spot'
-                    }
-                    
-                    try:
-                        if hasattr(self.bot_gui, 'balance_data'):
-                            self.bot_gui.balance_data = balance_to_use
-                            logger.info(f"[get_balance] GUI 객체의 balance_data 업데이트 성공: {balance_to_use}")
-                    except Exception as update_err:
-                        logger.error(f"[get_balance] GUI 객체의 balance_data 업데이트 중 오류: {update_err}")
-                    
-                    # 디버깅을 위해 추가 로그 출력
-                    logger.info(f"잔액 조회 성공 - 반환할 데이터 구조: {balanced_result}")
-                    logger.info(f"balance 객체 구조: {balanced_result.get('balance', {})}")
-                    logger.info(f"spot 객체 구조: {balanced_result.get('balance', {}).get('spot', {})}")
-                    logger.info(f"future 객체 구조: {balanced_result.get('balance', {}).get('future', {})}")
-                    
-                    # 심화 디버깅: 심볼 형식과 API 키 사용 추적
-                    logger.info(f"API 키 사용 확인: {api_key[:5]}...{api_key[-5:] if len(api_key) > 10 else ''} 정상")                    
-                    logger.info(f"balanced_result 구조: {type(balanced_result)}, 길이: {len(str(balanced_result)) if balanced_result else 0}")
-                    logger.info(f"balanced_result keys: {balanced_result.keys() if isinstance(balanced_result, dict) else '(not a dict)'}")
-                    logger.info(f"success 여부: {balanced_result.get('success', False)}")
-                    
-                    # API 응답 생성 - utils/api.py의 표준 구조와 일치
-                    # 보다 일관된 구조를 제공하고 amount와 balance 키를 모두 포함
-                    spot_data = balanced_result.get('balance', {}).get('spot', {})
-                    future_data = balanced_result.get('balance', {}).get('future', {})
-                    
-                    logger.info(f"spot_data: {spot_data}")
-                    logger.info(f"future_data: {future_data}")
-                    
-                    # 프론트엔드 호환성을 위해 balance와 amount 키 모두 포함
-                    if 'balance' in spot_data:
-                        spot_data['amount'] = spot_data['balance']
-                        logger.info(f"spot balance 값: {spot_data['balance']}")
-                    else:
-                        logger.warning("spot 객체에 balance 키 없음")
-                    
-                    if 'balance' in future_data:
-                        future_data['amount'] = future_data['balance']
-                        logger.info(f"future balance 값: {future_data['balance']}")
-                    else:
-                        logger.warning("future 객체에 balance 키 없음")
-                    
-                    # 응답 데이터
-                    response_data = {
-                        'success': True,
-                        'data': {
-                            'balance': {
-                                'spot': spot_data,
-                                'future': future_data,
-                                'total_usdt': balanced_result.get('balance', {}).get('total_usdt', 0)
-                            },
-                            'performance': {
-                                'total_trades': 0,
-                                'win_trades': 0,
-                                'loss_trades': 0,
-                                'win_rate': '0.0%',
-                                'avg_profit': '0.00',
-                                'total_profit': '0.00'
-                            }
-                        }
-                    }
-                    
-                    logger.info(f"최종 응답 구조: {response_data}")
-                    
-                    logger.info(f"최종 API 응답: {response_data}")
-                    return jsonify(response_data)
-                else:
-                    logger.error(f"잔액 조회 실패: {balanced_result}")
-                    error_msg = balanced_result.get('error', {})
-                    
-                    # 디버깅을 위한 로그
-                    logger.info(f"실패 시 응답 구조 로깅")
-                    
-                    fail_response = {
-                        'success': False,
-                        'data': {
-                            'balance': {
-                                'spot': {'balance': 0, 'currency': 'USDT', 'type': 'spot'},
-                                'future': {'balance': 0, 'currency': 'USDT', 'type': 'future'}
-                            },
-                            'performance': {
-                                'total_trades': 0,
-                                'win_trades': 0,
-                                'loss_trades': 0,
-                                'win_rate': '0.0%',
-                                'avg_profit': '0.00',
-                                'total_profit': '0.00'
-                            }
-                        }
-                    }
-                    
-                    logger.info(f"실패 시 최종 응답: {fail_response}")
-                    return jsonify(fail_response)
-                    
-            except ValueError as e:
-                logger.error(f"API 키 인증 오류: {str(e)}")
-                logger.error(traceback.format_exc())
-                return jsonify({
-                    'success': False,
-                    'message': str(e),
-                    'error_code': 'API_AUTH_ERROR',
-                    'status_code': 401
-                }), 401
-            except Exception as e:
-                logger.error(f"잔액 정보 조회 중 오류: {str(e)}")
-                logger.error(traceback.format_exc())
-                
-                # 오류 유형에 따라 다른 오류 코드와 메시지 제공
-                if 'connection' in str(e).lower():
-                    error_code = 'CONNECTION_ERROR'
-                    message = '바이낸스 API에 연결할 수 없습니다. 인터넷 연결을 확인하세요.'
-                    status_code = 503
-                elif 'timeout' in str(e).lower():
-                    error_code = 'TIMEOUT_ERROR'
-                    message = '바이낸스 API 요청 시간이 초과되었습니다. 나중에 다시 시도하세요.'
-                    status_code = 504
-                else:
-                    error_code = 'GENERIC_ERROR'
-                    message = f'잔액 정보 조회 중 오류 발생: {str(e)}'
-                    status_code = 500
-                    
-                return jsonify({
-                    'success': False,
-                    'message': message,
-                    'error_code': error_code,
-                    'error_details': str(e),
-                    'status_code': status_code
-                }), status_code
-
+        
         # 데이터 동기화 스레드 시작
     def start_data_sync(self):
         """
@@ -1290,11 +931,15 @@ class TradingBotAPIServer:
                     symbol = symbol.split(':')[0]
                     logger.info(f"심볼 형식 변환: {self.exchange_api.symbol} -> {symbol}")
                 
-                # API 키 가져오기 (세션에서)
-                api_key, api_secret = self._get_api_keys_from_session()
-                if not api_key or not api_secret:
-                    logger.warning("API 키가 설정되지 않아 가격 동기화를 수행할 수 없습니다.")
+                # API 키 가져오기 (utils/config.py 사용)
+                api_result = get_validated_api_credentials()
+                
+                if not api_result['success']:
+                    logger.warning(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
                     return
+                
+                api_key = api_result['api_key']
+                api_secret = api_result['api_secret']
                 
                 # 새로 추가된 표준 API 호출 함수 사용
                 ticker_result = api.get_ticker(
@@ -1341,59 +986,6 @@ class TradingBotAPIServer:
         except Exception as e:
             logger.error(f"가격 데이터 동기화 중 오류: {str(e)}")
             logger.error(traceback.format_exc())
-    
-    # API 키 가져오기
-    def _get_api_keys_from_session(self):
-        """
-        세션에서 API 키와 시크릿을 가져오는 헬퍼 함수
-        반환값:
-            tuple: (api_key, api_secret) 형태로 반환, 없으면 (None, None) 반환
-        """
-        try:
-            # 현재 로그인된 사용자 확인 - current_user가 None일 수 있음
-            if not hasattr(current_user, 'is_authenticated') or not current_user.is_authenticated:
-                # 로그인하지 않은 경우에도 환경 변수에서 API 키를 가져올 수 있음
-                api_key = os.environ.get('BINANCE_API_KEY')
-                api_secret = os.environ.get('BINANCE_API_SECRET')
-                
-                if api_key and api_secret:
-                    return api_key, api_secret
-                    
-                logger.warning("인증된 사용자가 아닙니다. API 키를 가져올 수 없습니다.")
-                return None, None
-            
-            # 환경변수에서 우선 시도
-            api_key = os.environ.get('BINANCE_API_KEY')
-            api_secret = os.environ.get('BINANCE_API_SECRET')
-            
-            # 업데이트 된 환경변수가 있는지 확인
-            if not api_key or not api_secret:
-                # 세션에서 찾기
-                api_key = session.get('api_key')
-                api_secret = session.get('api_secret')
-            
-            # 여전히 없는 경우, 사용자 데이터베이스에서 시도
-            if not api_key or not api_secret:
-                # 데이터베이스에서 사용자의 API 키 정보 가져오기
-                if hasattr(self, 'db') and self.db:
-                    user_id = current_user.get_id()
-                    user_data = self.db.get_user_data(user_id)
-                    
-                    if user_data and 'api_key' in user_data and 'api_secret' in user_data:
-                        api_key = user_data.get('api_key')
-                        api_secret = user_data.get('api_secret')
-            
-            # 불필요한 로깅 방지를 위해 API 키가 없는 경우에만 로그 출력
-            if not api_key or not api_secret:
-                logger.warning("세션 또는 DB에서 API 키를 찾을 수 없습니다.")
-                return None, None
-            
-            return api_key, api_secret
-            
-        except Exception as e:
-            logger.error(f"API 키 가져오기 중 오류: {str(e)}")
-            logger.error(traceback.format_exc())
-            return None, None
     
     # 주문 상태 동기화
     def _sync_orders(self):

@@ -7,15 +7,19 @@
 - API 응답 파싱 및 표준화
 - 오류 처리 및 재시도 로직
 """
-
+import json
 import time
+import os
 import logging
 import traceback
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, List, Any, Optional, Tuple
+
+# config 모듈 가져오기
+from utils.config import is_testnet_enabled
 
 logger = logging.getLogger(__name__)
 
-def create_binance_client(api_key: str, api_secret: str, is_future: bool = False) -> Any:
+def create_binance_client(api_key: str, api_secret: str, is_future: bool = False, use_testnet: bool = None) -> Any:
     """
     CCXT 바이낸스 클라이언트 생성 함수
     
@@ -23,6 +27,7 @@ def create_binance_client(api_key: str, api_secret: str, is_future: bool = False
         api_key: 바이낸스 API 키
         api_secret: 바이낸스 API 시크릿
         is_future: 선물 거래용 클라이언트 생성 여부
+        use_testnet: 테스트넷 사용 여부 (기본값: True)
         
     Returns:
         ccxt.binance 인스턴스
@@ -39,14 +44,36 @@ def create_binance_client(api_key: str, api_secret: str, is_future: bool = False
             options['defaultType'] = 'future'
         else:
             options['defaultType'] = 'spot'
-            
+        
+        # 테스트넷 설정 결정
+        # 명시적으로 지정되지 않은 경우 config 모듈의 is_testnet_enabled() 함수 활용
+        if use_testnet is None:
+            use_testnet = is_testnet_enabled()
+        
+        # 테스트넷 로깅
+        if use_testnet:
+            logger.info("테스트넷 환경으로 설정됨")
+        else:
+            logger.info("실제 바이낸스 API 환경으로 설정됨")
+        
         binance = ccxt.binance({
             'apiKey': api_key,
             'secret': api_secret,
             'enableRateLimit': True,
             'timeout': 10000,  # 10초 타임아웃
-            'options': options
+            'options': options,
+            # 테스트넷 URL 설정
+            'urls': {
+                'api': {
+                    'spot': 'https://testnet.binance.vision/api' if use_testnet else 'https://api.binance.com',
+                    'future': 'https://testnet.binancefuture.com/fapi' if use_testnet else 'https://fapi.binance.com'
+                },
+                'test': True if use_testnet else False
+            } if use_testnet else {}
         })
+        
+        # 추가 로그
+        logger.info(f"바이낸스 클라이언트 생성 완료: {'테스트넷' if use_testnet else '실제 API'} / {'선물' if is_future else '현물'} 모드")
         
         return binance
     except ImportError:
@@ -490,7 +517,7 @@ def get_open_orders(api_key: str, api_secret: str, symbol: Optional[str] = None)
         return []
 
 
-def cancel_order(api_key: str, api_secret: str, order_id: str, symbol: str) -> Dict[str, Any]:
+def cancel_order(api_key: str, api_secret: str, order_id: str, symbol: str, use_testnet: bool = False) -> Dict[str, Any]:
     """
     특정 주문을 취소하는 함수
     
@@ -499,13 +526,14 @@ def cancel_order(api_key: str, api_secret: str, order_id: str, symbol: str) -> D
         api_secret: 바이낸스 API 시크릿
         order_id: 취소할 주문 ID
         symbol: 주문 심볼
+        use_testnet: 테스트넷 사용 여부
         
     Returns:
         주문 취소 결과를 포함한 딕셔너리
     """
     try:
         # 선물 거래 클라이언트 생성
-        client = create_binance_client(api_key, api_secret, is_future=True)
+        client = create_binance_client(api_key, api_secret, is_future=True, use_testnet=use_testnet)
         
         # 주문 취소
         response = client.cancel_order(id=order_id, symbol=symbol)

@@ -30,6 +30,16 @@ def load_env_variable(name: str, default: Any = None, required: bool = False) ->
         return default
     return value
 
+def is_testnet_enabled() -> bool:
+    """
+    테스트넷 사용 여부를 환경 변수에서 확인하는 함수
+    
+    Returns:
+        테스트넷 사용 여부 (True/False)
+    """
+    use_testnet_env = load_env_variable('USE_TESTNET', 'false').lower()
+    return use_testnet_env in ('true', '1', 'yes')
+
 def get_api_credentials() -> Tuple[Optional[str], Optional[str]]:
     """
     바이낸스 API 키 정보를 가져오는 함수
