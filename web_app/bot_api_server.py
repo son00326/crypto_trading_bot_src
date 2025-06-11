@@ -1337,13 +1337,29 @@ class TradingBotAPIServer:
         
         logger.info(f"API 서버 실행 준비 완료. 호스트: {self.host}, 포트: {self.port}")
         try:
+            # SSL 인증서 설정 (있는 경우)
+            cert_path = os.getenv('SSL_CERT_PATH', None)
+            key_path = os.getenv('SSL_KEY_PATH', None)
+            
+            ssl_context = None
+            if cert_path and key_path and os.path.exists(cert_path) and os.path.exists(key_path):
+                ssl_context = (cert_path, key_path)
+                logger.info(f"SSL 인증서를 사용하여 HTTPS 모드로 서버를 실행합니다.")
+            else:
+                logger.warning("SSL 인증서가 없어 HTTP 모드로 서버를 실행합니다. 프로덕션 환경에서는 HTTPS 사용을 권장합니다.")
+            
             # debug=True는 개발 환경에서만 사용
-            debug_mode = os.getenv('DEBUG', 'true').lower() == 'true'
+            # 재시작 경로 문제를 해결하기 위해 디버그 모드를 비활성화
+            debug_mode = os.getenv('DEBUG', 'false').lower() == 'true'
+            if debug_mode:
+                logger.warning("디버그 모드가 활성화되어 있습니다. 프로덕션 환경에서는 비활성화하세요.")
+            
             self.flask_app.run(
                 host=self.host,
                 port=self.port,
                 debug=debug_mode,
-                ssl_context=ssl_context
+                ssl_context=ssl_context,
+                use_reloader=False  # 파일 변경 감지에 의한 자동 재시작 비활성화
             )
         finally:
             # 서버 종료 시 데이터 동기화 스레드 중지

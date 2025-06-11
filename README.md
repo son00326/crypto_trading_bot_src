@@ -98,7 +98,19 @@ GUI가 실행되면:
 
 ```bash
 # Linux/Mac 사용자
-./run_web.sh
+./start_web_server.sh
+```
+
+**직접 실행 (가장 안정적):**
+
+```bash
+# 프로젝트 루트에서 실행
+cd web_app
+python bot_api_server.py
+```
+
+**주의:** 다른 실행 방법(`app.py` 또는 `main.py --mode web`)은 사용하지 마세요. 
+`bot_api_server.py`를 직접 실행하는 것이 가장 안정적이고 모든 기능이 포함되어 있습니다.
 
 # Windows 사용자
 run_web.bat
