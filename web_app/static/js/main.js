@@ -16,7 +16,14 @@ const balanceDetailsElem = document.getElementById('summary-balance-details');
 const summaryLoadingMsg = document.getElementById('summary-loading-message');
 const summaryContent = document.getElementById('summary-content');
 const statusContainer = document.getElementById('status-container');
-const positionsContainer = document.getElementById('positions-container');
+// 포지션 관련 요소
+const positionsLoadingMessage = document.getElementById('positions-loading-message');
+const positionsTable = document.getElementById('positions-table');
+const positionsTableBody = document.getElementById('positions-table-body');
+
+// 거래 관련 요소
+const tradesLoadingMessage = document.getElementById('trades-loading-message');
+const tradesTable = document.getElementById('trades-table');
 const tradesTableBody = document.getElementById('trades-table-body');
 const botStartBtn = document.getElementById('start-bot-btn');
 const botStopBtn = document.getElementById('stop-bot-btn');
@@ -124,6 +131,10 @@ function updateStatus() {
 
 // 포지션 정보 업데이트 함수
 function updatePositions() {
+    // 로딩 메시지 표시, 테이블 숨기기
+    if (positionsLoadingMessage) positionsLoadingMessage.classList.remove('d-none');
+    if (positionsTable) positionsTable.classList.add('d-none');
+
     fetch(API_URLS.POSITIONS, {
         method: 'GET',
         credentials: 'same-origin'  // 쿠키 포함
@@ -135,13 +146,15 @@ function updatePositions() {
             return response.json();
         })
         .then(data => {
-            if (data.success && data.data && positionsContainer) {
+            // 로딩 메시지 숨기고, 테이블 표시
+            if (positionsLoadingMessage) positionsLoadingMessage.classList.add('d-none');
+            if (positionsTable) positionsTable.classList.remove('d-none');
+            
+            if (data.success && data.data && positionsTableBody) {
                 if (data.data.length === 0) {
-                    positionsContainer.innerHTML = '<p class="text-muted">열린 포지션이 없습니다.</p>';
+                    positionsTableBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">열린 포지션이 없습니다.</td></tr>';
                 } else {
-                    let html = '<div class="table-responsive"><table class="table table-sm"><thead><tr>';
-                    html += '<th>심볼</th><th>방향</th><th>수량</th><th>진입가</th><th>현재가</th><th>손익</th><th>작업</th>';
-                    html += '</tr></thead><tbody>';
+                    let html = '';
                     
                     data.data.forEach(position => {
                         const profitClass = position.unrealized_pnl >= 0 ? 'text-success' : 'text-danger';
@@ -158,23 +171,29 @@ function updatePositions() {
                         `;
                     });
                     
-                    html += '</tbody></table></div>';
-                    positionsContainer.innerHTML = html;
+                    positionsTableBody.innerHTML = html;
                 }
-            } else if (!data.success && positionsContainer) {
-                positionsContainer.innerHTML = `<p class="text-danger">오류: ${data.error || '포지션 데이터를 불러올 수 없습니다.'}</p>`;
+            } else if (!data.success && positionsTableBody) {
+                positionsTableBody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">오류: ${data.error || '포지션 데이터를 불러올 수 없습니다.'}</td></tr>`;
+                if (positionsTable) positionsTable.classList.remove('d-none');
             }
         })
         .catch(error => {
             console.error('포지션 정보 업데이트 오류:', error);
-            if (positionsContainer) {
-                positionsContainer.innerHTML = `<p class="text-danger">포지션 데이터 로드 실패: ${error.message}</p>`;
+            if (positionsLoadingMessage) positionsLoadingMessage.classList.add('d-none');
+            if (positionsTable) positionsTable.classList.remove('d-none');
+            if (positionsTableBody) {
+                positionsTableBody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">포지션 데이터 로드 실패: ${error.message}</td></tr>`;
             }
         });
 }
 
 // 거래 내역 업데이트 함수
 function updateTrades() {
+    // 로딩 메시지 표시, 테이블 숨기기
+    if (tradesLoadingMessage) tradesLoadingMessage.classList.remove('d-none');
+    if (tradesTable) tradesTable.classList.add('d-none');
+
     fetch(API_URLS.TRADES + '?limit=10', {
         method: 'GET',
         credentials: 'same-origin'  // 쿠키 포함
@@ -186,6 +205,10 @@ function updateTrades() {
             return response.json();
         })
         .then(data => {
+            // 로딩 메시지 숨기고, 테이블 표시
+            if (tradesLoadingMessage) tradesLoadingMessage.classList.add('d-none');
+            if (tradesTable) tradesTable.classList.remove('d-none');
+
             if (data.success && data.data && tradesTableBody) {
                 if (data.data.length === 0) {
                     tradesTableBody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">거래 내역이 없습니다.</td></tr>';
@@ -209,10 +232,13 @@ function updateTrades() {
                 }
             } else if (!data.success && tradesTableBody) {
                 tradesTableBody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">오류: ${data.error || '거래 데이터를 불러올 수 없습니다.'}</td></tr>`;
+                if (tradesTable) tradesTable.classList.remove('d-none');
             }
         })
         .catch(error => {
             console.error('거래 내역 업데이트 오류:', error);
+            if (tradesLoadingMessage) tradesLoadingMessage.classList.add('d-none');
+            if (tradesTable) tradesTable.classList.remove('d-none');
             if (tradesTableBody) {
                 tradesTableBody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">거래 데이터 로드 실패: ${error.message}</td></tr>`;
             }
