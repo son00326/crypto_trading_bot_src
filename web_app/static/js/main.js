@@ -43,6 +43,18 @@ function formatDate(dateString) {
 }
 
 // 상태 업데이트 함수
+// 설정 비활성화 함수 추가
+function toggleSettingsAvailability(isRunning) {
+    // 모든 설정 입력 요소를 비활성화
+    const settingsForm = document.getElementById('bot-config-form');
+    if (settingsForm) {
+        const formElements = settingsForm.querySelectorAll('input, select, button');
+        formElements.forEach(element => {
+            element.disabled = isRunning;
+        });
+    }
+}
+
 function updateStatus() {
     fetch(API_URLS.STATUS, {
         method: 'GET',
@@ -50,7 +62,7 @@ function updateStatus() {
     })
         .then(response => response.json())
         .then(data => {
-            if (data.success && data.data && statusContainer) {
+            if (data.success && data.data) {
                 const status = data.data;
                 const isRunning = status.is_running;
                 
@@ -69,20 +81,37 @@ function updateStatus() {
                     }
                 }
                 
-                let statusClass = isRunning ? 'success' : 'danger';
-                let statusText = isRunning ? '실행 중' : '중지됨';
-                let marketTypeText = status.market_type === 'futures' ? '선물' : '현물';
-                let modeText = status.test_mode ? '테스트 모드' : '실거래 모드';
+                // 설정 양식 비활성화
+                toggleSettingsAvailability(isRunning);
                 
-                statusContainer.innerHTML = `
-                    <span class="badge bg-${statusClass}">${statusText}</span>
-                    <small class="text-muted ms-2">${marketTypeText} | ${modeText}</small>
-                    ${status.strategy ? `<p class="mb-1">전략: ${status.strategy}</p>` : ''}
-                    ${status.ui_symbol ? `<p class="mb-1">심볼: ${status.ui_symbol}</p>` : ''}
-                    ${status.timeframe ? `<p class="mb-1">시간프레임: ${status.timeframe}</p>` : ''}
-                    ${status.leverage && status.leverage > 1 ? `<p>레버리지: ${status.leverage}x</p>` : ''}
-                    ${status.started_at ? `<p class="text-muted small">시작 시간: ${formatDate(status.started_at)}</p>` : ''}
-                `;
+                // 봇 상태 배지 업데이트
+                const botStatusElem = document.getElementById('bot-status');
+                if (botStatusElem) {
+                    botStatusElem.className = isRunning ? 'badge bg-success' : 'badge bg-danger';
+                    botStatusElem.textContent = isRunning ? '실행 중' : '중지됨';
+                }
+                
+                // 거래소, 심볼, 전략 정보 업데이트
+                const exchangeElem = document.getElementById('exchange-name');
+                const symbolElem = document.getElementById('symbol-name');
+                const strategyElem = document.getElementById('strategy-name');
+                
+                if (exchangeElem) exchangeElem.textContent = status.exchange || '-';
+                if (symbolElem) symbolElem.textContent = status.ui_symbol || status.symbol || '-';
+                if (strategyElem) strategyElem.textContent = status.strategy || '-';
+                
+                // 상태 컨테이너 업데이트
+                if (statusContainer) {
+                    let marketTypeText = status.market_type === 'futures' ? '선물' : '현물';
+                    let modeText = status.test_mode ? '테스트 모드' : '실거래 모드';
+                    
+                    statusContainer.innerHTML = `
+                        <small class="text-muted ms-2">${marketTypeText} | ${modeText}</small>
+                        ${status.timeframe ? `<p class="mb-1">시간프레임: ${status.timeframe}</p>` : ''}
+                        ${status.leverage && status.leverage > 1 ? `<p>레버리지: ${status.leverage}x</p>` : ''}
+                        ${status.started_at ? `<p class="text-muted small">시작 시간: ${formatDate(status.started_at)}</p>` : ''}
+                    `;
+                }
             }
         })
         .catch(error => {
@@ -236,6 +265,18 @@ function startBot() {
             strategyParams.period = parseInt(document.getElementById('rsi-period')?.value || 14);
             strategyParams.overbought = parseInt(document.getElementById('rsi-overbought')?.value || 70);
             strategyParams.oversold = parseInt(document.getElementById('rsi-oversold')?.value || 30);
+        } else if (strategy === 'BollingerBandsStrategy') {
+            strategyParams.period = parseInt(document.getElementById('bb-period')?.value || 20);
+            strategyParams.std_dev = parseFloat(document.getElementById('bb-std-dev')?.value || 2.0);
+        } else if (strategy === 'MACDStrategy') {
+            strategyParams.fast_period = parseInt(document.getElementById('macd-fast-period')?.value || 12);
+            strategyParams.slow_period = parseInt(document.getElementById('macd-slow-period')?.value || 26);
+            strategyParams.signal_period = parseInt(document.getElementById('macd-signal-period')?.value || 9);
+        } else if (strategy === 'CombinedStrategy') {
+            strategyParams.ma_short_period = parseInt(document.getElementById('combo-ma-short-period')?.value || 9);
+            strategyParams.ma_long_period = parseInt(document.getElementById('combo-ma-long-period')?.value || 26);
+            strategyParams.rsi_period = parseInt(document.getElementById('combo-rsi-period')?.value || 14);
+            strategyParams.rsi_threshold = parseInt(document.getElementById('combo-rsi-threshold')?.value || 50);
         }
         
         const requestData = {
@@ -520,6 +561,47 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // 초기 심볼 형식 설정
         marketTypeSelect.dispatchEvent(new Event('change'));
+    }
+    
+    // 전략 선택 시 파라미터 섹션 표시 이벤트 리스너
+    const strategySelect = document.getElementById('strategy');
+    if (strategySelect) {
+        // 전략 값과 HTML ID 매핑
+        const strategyToParamsMap = {
+            'MovingAverageCrossover': 'ma-crossover-params',
+            'RSIStrategy': 'rsi-params',
+            'MACDStrategy': 'macd-params',
+            'BollingerBandsStrategy': 'bb-params',
+            'CombinedStrategy': 'combined-params'
+        };
+        
+        strategySelect.addEventListener('change', function() {
+            // 모든 전략 파라미터 섹션 숨기기
+            document.querySelectorAll('.strategy-params').forEach(section => {
+                section.style.display = 'none';
+            });
+            
+            // 선택된 전략의 파라미터 섹션만 표시
+            const selectedStrategy = strategySelect.value;
+            const paramSectionId = strategyToParamsMap[selectedStrategy];
+            const selectedParamSection = document.getElementById(paramSectionId);
+            
+            if (selectedParamSection) {
+                selectedParamSection.style.display = 'block';
+            }
+        });
+        
+        // 페이지 로드 시 현재 선택된 전략의 파라미터 섹션 표시
+        const initialStrategy = strategySelect.value;
+        document.querySelectorAll('.strategy-params').forEach(section => {
+            section.style.display = 'none';
+        });
+        
+        const initialParamSectionId = strategyToParamsMap[initialStrategy];
+        const initialParamSection = document.getElementById(initialParamSectionId);
+        if (initialParamSection) {
+            initialParamSection.style.display = 'block';
+        }
     }
     
     // 슬라이더 이벤트 핸들러 추가

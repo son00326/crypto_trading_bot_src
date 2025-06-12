@@ -77,7 +77,7 @@
                         <p><strong>거래소:</strong> <span id="exchange-name">-</span></p>
                         <p><strong>심볼:</strong> <span id="symbol-name">-</span></p>
                         <p><strong>전략:</strong> <span id="strategy-name">-</span></p>
-                        <p><strong>마지막 업데이트:</strong> <span id="last-update">-</span></p>
+
                         <div class="d-grid gap-2">
                             <button id="start-bot-btn" class="btn btn-success">봇 시작</button>
                             <button id="stop-bot-btn" class="btn btn-danger">봇 중지</button>
@@ -154,7 +154,7 @@
                                     </div>
                                     
                                     <!-- RSI 전략 파라미터 -->
-                                    <div id="rsi-params" class="strategy-params d-none">
+                                    <div id="rsi-params" class="strategy-params">
                                         <div class="mb-2">
                                             <label for="rsi-period" class="form-label">RSI 기간</label>
                                             <input type="number" class="form-control" id="rsi-period" value="14" min="2" max="30">
@@ -170,7 +170,7 @@
                                     </div>
                                     
                                     <!-- MACD 전략 파라미터 -->
-                                    <div id="macd-params" class="strategy-params d-none">
+                                    <div id="macd-params" class="strategy-params">
                                         <div class="mb-2">
                                             <label for="macd-fast-period" class="form-label">빠른 EMA 기간</label>
                                             <input type="number" class="form-control" id="macd-fast-period" value="12" min="2" max="50">
@@ -186,7 +186,7 @@
                                     </div>
                                     
                                     <!-- 볼린저 밴드 전략 파라미터 -->
-                                    <div id="bb-params" class="strategy-params d-none">
+                                    <div id="bb-params" class="strategy-params">
                                         <div class="mb-2">
                                             <label for="bb-period" class="form-label">이동평균 기간</label>
                                             <input type="number" class="form-control" id="bb-period" value="20" min="5" max="50">
@@ -198,7 +198,7 @@
                                     </div>
                                     
                                     <!-- 복합 전략 파라미터 -->
-                                    <div id="combined-params" class="strategy-params d-none">
+                                    <div id="combined-params" class="strategy-params">
                                         <div class="alert alert-info" role="alert">
                                             복합 전략은 이동평균 교차와 RSI 전략을 함께 사용합니다.
                                         </div>
