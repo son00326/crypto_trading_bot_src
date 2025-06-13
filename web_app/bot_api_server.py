@@ -232,7 +232,7 @@ class BotAPIServer:
             symbol_to_use = symbol
             if ':' in symbol_to_use:
                 clean_symbol = symbol_to_use.split(':')[0]
-                logger.info(f"심볼 형식 수정: {symbol_to_use} -> {clean_symbol}")
+                logger.info(f"심볼 형식 수정: {symbol_to_use} → {clean_symbol}")
                 symbol_to_use = clean_symbol
                 
             self.exchange_api = ExchangeAPI(
@@ -279,6 +279,21 @@ class BotAPIServer:
             
             # 실제 봇 시작 API 호출
             result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe)
+            
+            # 저장된 포지션 정보와 거래 정보 복원
+            if result.get('success') and self.bot_gui.algo:
+                # 포지션 정보 복원
+                if 'positions' in saved_state and saved_state['positions']:
+                    logger.info(f"저장된 포지션 정보 복원: {len(saved_state['positions'])}개")
+                    # 포지션 정보는 참조용으로만 사용 (실제 포지션은 거래소에서 조회)
+                
+                # 거래 정보 복원 (진입가, 목표가, 손절가 등)
+                if 'current_trade_info' in saved_state and saved_state['current_trade_info']:
+                    logger.info(f"저장된 거래 정보 복원: {saved_state['current_trade_info']}")
+                    if hasattr(self.bot_gui.algo, 'current_trade_info'):
+                        self.bot_gui.algo.current_trade_info = saved_state['current_trade_info']
+                        logger.info("거래 정보 복원 완료")
+            
             logger.info(f"저장된 설정으로 봇 재시작 결과: {result}")
             return result
         except Exception as e:
@@ -576,7 +591,7 @@ class BotAPIServer:
 
                 # 포지션 정보 기록 (DB 저장)
                 if positions_data and isinstance(positions_data, list):
-                    self.save_positions(positions_data)
+                    self.save_positions(positions_list=positions_data)
                     logger.info(f"포지션 정보 저장 완료: {len(positions_data)}개 포지션")
                     
                 return jsonify({
@@ -1278,6 +1293,7 @@ class BotAPIServer:
             for position in positions_list:
                 try:
                     # DatabaseManager의 save_position 메서드 호출
+                    # 별도 변환 없이 API 데이터를 그대로 사용
                     self.db.save_position(position)
                     saved_count += 1
                 except Exception as e:
@@ -1350,6 +1366,22 @@ class BotAPIServer:
                         saved_state['additional_info'] = {}
                     saved_state['additional_info'].update(additional_info)
                 
+                # 현재 포지션 정보 저장
+                if is_running and hasattr(self.bot_gui, 'algo') and self.bot_gui.algo:
+                    try:
+                        # 현재 포지션 정보 가져오기
+                        positions = self.bot_gui.algo.get_positions()
+                        if positions:
+                            saved_state['positions'] = positions
+                            logger.info(f"현재 포지션 정보 저장: {len(positions)}개")
+                        
+                        # 현재 전략 상태 저장 (진입가, 목표가, 손절가 등)
+                        if hasattr(self.bot_gui.algo, 'current_trade_info'):
+                            saved_state['current_trade_info'] = self.bot_gui.algo.current_trade_info
+                            logger.info(f"현재 거래 정보 저장: {saved_state['current_trade_info']}")
+                    except Exception as e:
+                        logger.error(f"포지션 정보 저장 중 오류: {e}")
+                
                 # 업데이트된 상태 저장
                 self.db.save_bot_state(saved_state)
                 return True
@@ -1394,6 +1426,22 @@ class BotAPIServer:
             'partial_tp': kwargs.get('partial_tp', False),
             'updated_at': datetime.now().isoformat()
         }
+        
+        # 현재 포지션 정보 저장 (새 상태 생성 시에도)
+        if is_running and hasattr(self.bot_gui, 'algo') and self.bot_gui.algo:
+            try:
+                # 현재 포지션 정보 가져오기
+                positions = self.bot_gui.algo.get_positions()
+                if positions:
+                    bot_state['positions'] = positions
+                    logger.info(f"새 상태에 포지션 정보 저장: {len(positions)}개")
+                
+                # 현재 전략 상태 저장 (진입가, 목표가, 손절가 등)
+                if hasattr(self.bot_gui.algo, 'current_trade_info'):
+                    bot_state['current_trade_info'] = self.bot_gui.algo.current_trade_info
+                    logger.info(f"새 상태에 거래 정보 저장: {bot_state['current_trade_info']}")
+            except Exception as e:
+                logger.error(f"포지션 정보 저장 중 오류: {e}")
         
         # 추가 정보 적용
         if additional_info:

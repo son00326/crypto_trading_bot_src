@@ -12,6 +12,8 @@ import time
 import traceback
 import functools
 import threading
+import json
+from typing import Optional, List, Dict
 from src.config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     UPBIT_API_KEY, UPBIT_API_SECRET,
@@ -326,68 +328,72 @@ class ExchangeAPI:
                 "timeframe": self.timeframe
             })
             
-            exchange_class = getattr(ccxt, self.exchange_id)
-            exchange = exchange_class(config)
-            
-            # 선물 거래인 경우 레버리지와 마진 타입 설정
-            if self.market_type == 'futures' and self.exchange_id == 'binance':
-                # 심볼 형식 변환
-                futures_symbol = self.format_symbol()
+            if self.exchange_id == 'binance':
+                # 바이낸스의 경우 create_binance_client 함수 사용
+                from utils.api import create_binance_client
+                is_future = self.market_type == 'futures'
+                use_testnet = config.get('test', {}).get('sandbox', False)
                 
-                try:
-                    # 실제 API 키가 설정된 경우에만 설정 시도
-                    if config['apiKey'] and config['secret'] and config['apiKey'] != 'your_api_key_here':
-                        # 1. 레버리지 설정
-                        log_api_call(f"/exchange/{self.exchange_id}/leverage", "POST", request_data={
-                            "symbol": futures_symbol,
-                            "leverage": self.leverage
+                exchange = create_binance_client(
+                    api_key=config.get('apiKey'),
+                    api_secret=config.get('secret'),
+                    is_future=is_future,
+                    use_testnet=use_testnet
+                )
+            else:
+                # 다른 거래소는 기존 방식 사용
+                exchange_class = getattr(ccxt, self.exchange_id)
+                exchange = exchange_class(config)
+            
+            # 바이낸스 선물의 경우 positionRisk 엔드포인트가 v2를 사용하도록 수정
+            if self.exchange_id == 'binance' and self.market_type == 'futures':
+                # URL 패치 제거 - utils/api.py에서 선택적 패치 적용
+                # positionRisk 엔드포인트만 v2 사용하도록 이미 처리됨
+                self.logger.info("바이낸스 선물 모드 - positionRisk는 v2, 나머지는 v1 사용")
+                
+                # 바이낸스 선물 전용 옵션 설정
+                exchange.options['defaultType'] = 'future'
+                exchange.options['adjustForTimeDifference'] = True
+                exchange.options['recvWindow'] = 10000
+                
+                # 레버리지 설정 (실제 거래만)
+                if config['apiKey'] and config['secret'] and config['apiKey'] != 'your_api_key_here':
+                    # 1. 레버리지 설정
+                    log_api_call(f"/exchange/{self.exchange_id}/leverage", "POST", request_data={
+                        "symbol": self.format_symbol(),
+                        "leverage": self.leverage
+                    })
+                    
+                    leverage_result = exchange.setLeverage(self.leverage, self.format_symbol())
+                    self.logger.info(f"레버리지 설정 완료: {self.format_symbol()}, {self.leverage}배")
+                    
+                    # 2. 마진 타입 설정 (교차 또는 격리)
+                    margin_mode = 'isolated'  # 격리 마진 사용
+                    try:
+                        log_api_call(f"/exchange/{self.exchange_id}/marginMode", "POST", request_data={
+                            "symbol": self.format_symbol(),
+                            "marginMode": margin_mode
                         })
                         
-                        leverage_result = exchange.setLeverage(self.leverage, futures_symbol)
-                        self.logger.info(f"레버리지 설정 완료: {futures_symbol}, {self.leverage}배")
-                        
-                        # 레버리지 설정 확인
-                        try:
-                            positions = exchange.fetch_positions([futures_symbol])
-                            if positions and len(positions) > 0:
-                                actual_leverage = float(positions[0].get('leverage', 0))
-                                if actual_leverage != self.leverage:
-                                    self.logger.warning(f"레버리지 설정 불일치: 요청={self.leverage}, 실제={actual_leverage}")
-                                    # 다시 시도
-                                    exchange.setLeverage(self.leverage, futures_symbol)
-                        except Exception as leverage_check_error:
-                            self.logger.warning(f"레버리지 설정 확인 실패: {str(leverage_check_error)}")
-                        
-                        # 2. 마진 타입 설정 (교차 또는 격리)
-                        margin_mode = 'isolated'  # 격리 마진 사용
-                        try:
-                            log_api_call(f"/exchange/{self.exchange_id}/marginMode", "POST", request_data={
-                                "symbol": futures_symbol,
-                                "marginMode": margin_mode
-                            })
-                            
-                            exchange.set_margin_mode(margin_mode, futures_symbol)
-                            self.logger.info(f"마진 타입 설정 완료: {futures_symbol}, {margin_mode} 모드")
-                        except Exception as margin_error:
-                            if "already" in str(margin_error):
-                                self.logger.info(f"이미 {margin_mode} 마진 모드로 설정되어 있습니다: {futures_symbol}")
-                            else:
-                                self.logger.error(f"마진 타입 설정 실패: {str(margin_error)}")
-                        
-                        # 3. 포지션 모드 설정 (예: one-way 모드)
-                        try:
-                            exchange.set_position_mode(False, futures_symbol)  # False: 단일 포지션 모드 (one-way)
-                            self.logger.info(f"포지션 모드 설정 완료: {futures_symbol}, one-way 모드")
-                        except Exception as position_mode_error:
-                            if "already" in str(position_mode_error):
-                                self.logger.info(f"이미 one-way 포지션 모드로 설정되어 있습니다: {futures_symbol}")
-                            else:
-                                self.logger.error(f"포지션 모드 설정 실패: {str(position_mode_error)}")
-                    else:
-                        self.logger.warning("API 키가 설정되지 않아 레버리지 및 마진 설정을 건너뚝니다.")
-                except Exception as e:
-                    log_api_call(f"/exchange/{self.exchange_id}/futures_settings", "POST", error=e)
-                    self.logger.error(f"선물 설정 중 오류 발생: {e}")
+                        exchange.set_margin_mode(margin_mode, self.format_symbol())
+                        self.logger.info(f"마진 타입 설정 완료: {self.format_symbol()}, {margin_mode} 모드")
+                    except Exception as margin_error:
+                        if "already" in str(margin_error):
+                            self.logger.info(f"이미 {margin_mode} 마진 모드로 설정되어 있습니다: {self.format_symbol()}")
+                        else:
+                            self.logger.error(f"마진 타입 설정 실패: {str(margin_error)}")
+                    
+                    # 3. 포지션 모드 설정 (예: one-way 모드)
+                    try:
+                        exchange.set_position_mode(False, self.format_symbol())  # False: 단일 포지션 모드 (one-way)
+                        self.logger.info(f"포지션 모드 설정 완료: {self.format_symbol()}, one-way 모드")
+                    except Exception as position_mode_error:
+                        if "already" in str(position_mode_error):
+                            self.logger.info(f"이미 one-way 포지션 모드로 설정되어 있습니다: {self.format_symbol()}")
+                        else:
+                            self.logger.error(f"포지션 모드 설정 실패: {str(position_mode_error)}")
+                else:
+                    self.logger.warning("API 키가 설정되지 않아 레버리지 및 마진 설정을 건너뚝니다.")
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
@@ -584,163 +590,50 @@ class ExchangeAPI:
     @api_error_handler
     @measure_api_performance
     @log_api_request(endpoint_format="/positions/{symbol}")
-    def get_positions(self, symbol=None):
-        """현재 포지션 정보 조회
-        
-        Args:
-            symbol (str, optional): 거래 심볼. 기본값은 인스턴스의 symbol
-            
-        Returns:
-            list: 포지션 정보 리스트
-            
-        Raises:
-            ValueError: 값이 유효하지 않은 경우
-            APIError: API 호출 오류
-            MarketTypeError: 현물 계좌에서 포지션 조회 시 발생
-        """
-        if self.market_type != 'futures':
-            # 현물 계좌에서는 포지션을 반환하지 않음
-            error_msg = f"현물 계좌에서는 포지션 조회가 불가능합니다: {self.exchange_id}"
-            self.logger.warning(error_msg)
-            raise MarketTypeError(error_msg)
-        
-        # 심볼 처리
-        original_symbol = symbol or self.symbol
-        symbol = self.format_symbol(original_symbol)
-            
-        # 거래소별 특수 처리
-        params = {}
-        if self.exchange_id == 'binance':
-            # 바이낸스 특정 파라미터
-            params = {'type': 'future'}
-            self.logger.debug(f"바이낸스 선물 포지션 조회 추가 파라미터 적용")
-        elif self.exchange_id == 'bybit':
-            # 바이빗 특정 파라미터
-            params = {'type': 'swap'}
-            self.logger.debug(f"바이빗 선물 포지션 조회 추가 파라미터 적용")
-        elif self.exchange_id == 'bithumb':
-            # 빗썸의 경우 선물 거래 지원 확인
-            self.logger.warning(f"빗썸에서는 포지션 조회가 제한될 수 있습니다")
-        
+    def get_positions(self, symbol: Optional[str] = None) -> List[Dict]:
+        """현재 포지션 정보 조회"""
         try:
-            # 바이낸스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
+            # 로그 추가
+            self.logger.info(f"get_positions 호출: symbol={symbol}, market_type={self.market_type}, exchange_id={self.exchange_id}")
+            
+            # 현물 거래는 포지션이 없음
+            if self.market_type != 'futures':
+                return []
+            
+            # 바이낸스 선물의 경우 특별 처리
             if self.exchange_id == 'binance' and self.market_type == 'futures':
-                self.logger.info(f"바이낸스 선물 API: 모든 포지션 조회 후 {symbol} 필터링")
-                # 바이낸스 선물은 심볼 파라미터 없이 호출
-                positions = self.exchange.fetch_positions()
-                # 특정 심볼만 필터링
-                if symbol and positions:
-                    filtered_positions = [pos for pos in positions if pos.get('symbol') == symbol]
-                    self.logger.info(f"전체 {len(positions)}개 포지션 중 {symbol}: {len(filtered_positions)}개")
-                    positions = filtered_positions
-            else:
-                positions = self.exchange.fetch_positions(symbol, params=params)
-        except Exception as e:
-            # 오류 발생시 다른 형식 시도
-            error_msg = str(e)
-            self.logger.error(f"포지션 조회 오류: {error_msg}")
-            
-            # 심볼 형식 관련 오류인 경우
-            if "requires an array argument for symbols" in error_msg and self.exchange_id == 'binance':
                 try:
-                    # 심볼 없이 모든 포지션 조회 후 필터링
-                    self.logger.info(f"바이낸스 선물: 심볼 없이 전체 포지션 조회 후 필터링 시도")
-                    positions = self.exchange.fetch_positions()
-                    if symbol and positions:
-                        positions = [pos for pos in positions if pos.get('symbol') == symbol]
-                except Exception as e2:
-                    # 다시 실패하면 원래 오류 발생
-                    raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
-            # 다른 심볼 형식 오류인 경우
-            else:
-                raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e)
-
-        # 반환된 데이터가 없는 경우
-        if positions is None or not positions:
-            self.logger.info(f"현재 열린 포지션이 없습니다: {self.exchange_id}, {symbol}")
-            return []
-        
-        # 필요한 추가 계산 수행
-        processed_positions = []
-        for position in positions:
-            # 업데이트할 포지션 복사본 생성 (원본 변경 방지)
-            processed_position = position.copy()
-            
-            # 필수 필드 검사
-            required_fields = ['entryPrice', 'markPrice', 'side']
-            if not all(field in position for field in required_fields):
-                self.logger.warning(f"필요한 필드가 누락된 포지션 정보: {position}")
-                continue
-            
-            # 유효한 포지션인지 확인
-            if position.get('entryPrice', 0) == 0:
-                continue
+                    # 바이낸스 선물은 심볼 파라미터 없이 모든 포지션을 조회
+                    self.logger.info("바이낸스 선물 포지션 조회 - 전체 포지션 요청")
                     
-            try:
-                # 수치 변환
-                entry_price = float(position['entryPrice'])
-                mark_price = float(position['markPrice'])
+                    # ccxt 객체의 URL 상태 확인
+                    if hasattr(self.exchange, 'urls') and 'api' in self.exchange.urls:
+                        self.logger.info(f"현재 API URLs: {json.dumps(self.exchange.urls['api'], indent=2)}")
+                    
+                    # fetch_positions_risk를 직접 호출 (빈 배열 전달)
+                    positions = self.exchange.fetch_positions_risk([])  # 빈 배열로 모든 포지션 조회
+                    
+                    # 특정 심볼로 필터링
+                    if symbol and positions:
+                        formatted_symbol = self.format_symbol(symbol)
+                        positions = [pos for pos in positions if pos.get('symbol') == formatted_symbol]
+                        self.logger.info(f"전체 {len(positions)}개 포지션 중 {formatted_symbol}: {len(positions)}개")
+                    
+                    return positions
+                except Exception as e:
+                    self.logger.error(f"바이낸스 선물 포지션 조회 실패: {str(e)}")
+                    self.logger.error(traceback.format_exc())
+                    return []
+            else:
+                # 다른 거래소는 기본 방식 사용
+                positions = self.exchange.fetch_positions([symbol] if symbol else None)
                 
-                # 포지션 크기 추출 (거래소별 필드 명 다를 수 있음)
-                if 'size' in position:
-                    size = float(position['size'])
-                elif 'contracts' in position:
-                    size = float(position['contracts'])
-                elif 'positionAmt' in position:  # 바이낸스 스타일
-                    size = float(position['positionAmt'])
-                else:
-                    size = 0
-                    self.logger.warning(f"포지션 크기 정보 없음: {position}")
-                        
-                side = position['side']
-                leverage = float(position.get('leverage', self.leverage))
-                
-                # PNL 계산
-                if side == 'long':
-                    pnl_percent = ((mark_price - entry_price) / entry_price) * 100 * leverage
-                else:  # short
-                    pnl_percent = ((entry_price - mark_price) / entry_price) * 100 * leverage
-                
-                # 추가 정보 저장
-                processed_position['pnl_percent'] = round(pnl_percent, 2)  # 소수점 2자리까지
-                processed_position['position_value'] = round(size * mark_price, 2)
-                processed_position['liquidation_price'] = position.get('liquidationPrice', 0)
-                processed_position['updated_at'] = time.time() * 1000  # 밀리세컨드 타임스태프
-                processed_position['exchange'] = self.exchange_id
-                
-                # 경고 상태 표시 (청산율 또는 손실율 상황)
-                if pnl_percent <= -50:  # 50% 이상 손실
-                    processed_position['warning_level'] = 'high'
-                elif pnl_percent <= -30:  # 30% 이상 손실
-                    processed_position['warning_level'] = 'medium'
-                elif pnl_percent <= -10:  # 10% 이상 손실
-                    processed_position['warning_level'] = 'low'
-                elif pnl_percent >= 50:  # 50% 이상 수익
-                    processed_position['warning_level'] = 'take_profit'
-                else:
-                    processed_position['warning_level'] = 'normal'
-                        
-                processed_positions.append(processed_position)
-            except (ValueError, TypeError, KeyError) as e:
-                self.logger.error(f"포지션 데이터 처리 중 오류: {e} - 데이터: {position}")
-        
-        # 성공적인 응답 로깅
-        position_summary = [{
-            "symbol": p.get('symbol', ''),
-            "side": p.get('side', ''),
-            "size": p.get('size', 0) if 'size' in p else (p.get('contracts', 0) if 'contracts' in p else 0),
-            "pnl_percent": p.get('pnl_percent', 0),
-            "warning_level": p.get('warning_level', 'normal')
-        } for p in processed_positions[:3]]  # 처음 3개만 로깅
-        
-        log_api_call(f"/positions/{symbol}", "GET", response_data={
-            "count": len(processed_positions),
-            "positions": position_summary
-        })
-        
-        self.logger.info(f"포지션 정보 조회 성공: {symbol}, {len(processed_positions)}개 포지션 발견")
-        return processed_positions
+            return positions
             
+        except Exception as e:
+            self.logger.error(f"포지션 조회 오류: {str(e)}")
+            return []
+    
     @api_error_handler
     def create_market_buy_order(self, symbol=None, amount=None):
         """시장가 매수 주문
@@ -1362,9 +1255,7 @@ class ExchangeAPI:
             params = {}
             if self.market_type == 'futures' and self.exchange_id == 'binance':
                 # 바이낸스 선물의 경우 필요한 파라미터
-                params = {
-                    'type': 'future',
-                }
+                params = {'type': 'future'}
                 
             # 주문 상태 조회 실행
             self.logger.info(f"주문 상태 조회 요청: {symbol}, 주문 ID: {order_id}")

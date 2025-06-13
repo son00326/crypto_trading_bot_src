@@ -92,8 +92,13 @@ class DatabaseManager:
                 id INTEGER PRIMARY KEY,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
-                amount REAL NOT NULL,
+                contracts REAL NOT NULL,
+                notional REAL,
                 entry_price REAL NOT NULL,
+                mark_price REAL,
+                liquidation_price REAL,
+                unrealized_pnl REAL,
+                margin_mode TEXT DEFAULT 'cross',
                 leverage INTEGER DEFAULT 1,
                 opened_at TIMESTAMP NOT NULL,
                 closed_at TIMESTAMP,
@@ -102,6 +107,38 @@ class DatabaseManager:
                 additional_info TEXT
             )
             ''')
+            
+            # 기존 positions 테이블 마이그레이션
+            # amount 컬럼이 있는 경우 contracts로 이름 변경
+            try:
+                cursor.execute("PRAGMA table_info(positions)")
+                columns = [column[1] for column in cursor.fetchall()]
+                
+                if 'amount' in columns and 'contracts' not in columns:
+                    logger.info("positions 테이블 마이그레이션: amount -> contracts")
+                    cursor.execute('''
+                        ALTER TABLE positions RENAME COLUMN amount TO contracts
+                    ''')
+                
+                # 새로운 컬럼들 추가 (이미 존재하면 무시)
+                new_columns = [
+                    ('notional', 'REAL'),
+                    ('mark_price', 'REAL'),
+                    ('liquidation_price', 'REAL'),
+                    ('unrealized_pnl', 'REAL'),
+                    ('margin_mode', "TEXT DEFAULT 'cross'")
+                ]
+                
+                for col_name, col_type in new_columns:
+                    if col_name not in columns:
+                        try:
+                            cursor.execute(f'ALTER TABLE positions ADD COLUMN {col_name} {col_type}')
+                            logger.info(f"positions 테이블에 {col_name} 컬럼 추가")
+                        except sqlite3.OperationalError:
+                            # 컬럼이 이미 존재하는 경우 무시
+                            pass
+            except Exception as e:
+                logger.warning(f"positions 테이블 마이그레이션 중 경고: {e}")
             
             # 거래 내역 테이블
             cursor.execute('''
@@ -402,6 +439,22 @@ class DatabaseManager:
             # 기존 상태 삭제 (항상 최신 상태만 유지)
             cursor.execute("DELETE FROM bot_state")
             
+            # 복잡한 객체를 additional_info에 저장
+            additional_info = state_data.get('additional_info', {})
+            if not isinstance(additional_info, dict):
+                additional_info = {}
+            
+            # positions와 current_trade_info를 additional_info로 이동
+            if 'positions' in state_data:
+                additional_info['positions'] = state_data.pop('positions')
+            
+            if 'current_trade_info' in state_data:
+                additional_info['current_trade_info'] = state_data.pop('current_trade_info')
+            
+            # additional_info가 있으면 다시 state_data에 설정
+            if additional_info:
+                state_data['additional_info'] = additional_info
+            
             # JSON으로 직렬화해야 하는 필드 처리
             if 'parameters' in state_data and isinstance(state_data['parameters'], dict):
                 state_data['parameters'] = json.dumps(state_data['parameters'])
@@ -411,10 +464,22 @@ class DatabaseManager:
             
             state_data['updated_at'] = datetime.now().isoformat()
             
+            # bot_state 테이블의 컬럼만 남기기
+            valid_columns = [
+                'exchange_id', 'symbol', 'timeframe', 'strategy', 'market_type', 
+                'leverage', 'is_running', 'test_mode', 'updated_at', 
+                'parameters', 'additional_info'
+            ]
+            
+            filtered_state = {}
+            for col in valid_columns:
+                if col in state_data:
+                    filtered_state[col] = state_data[col]
+            
             # 새 상태 저장
-            placeholders = ', '.join(['?'] * len(state_data))
-            columns = ', '.join(state_data.keys())
-            values = list(state_data.values())
+            placeholders = ', '.join(['?'] * len(filtered_state))
+            columns = ', '.join(filtered_state.keys())
+            values = list(filtered_state.values())
             
             query = f"INSERT INTO bot_state ({columns}) VALUES ({placeholders})"
             cursor.execute(query, values)
@@ -435,7 +500,7 @@ class DatabaseManager:
             position_data (dict): 포지션 정보
         
         Returns:
-            bool: 저장 성공 여부
+            int: 새로 생성된 포지션 ID
         """
         try:
             # 스레드 안전 연결 가져오기
@@ -504,6 +569,16 @@ class DatabaseManager:
                 
                 if 'additional_info' in state and state['additional_info']:
                     state['additional_info'] = json.loads(state['additional_info'])
+                    
+                    # additional_info에서 positions와 current_trade_info 복원
+                    if isinstance(state['additional_info'], dict):
+                        if 'positions' in state['additional_info']:
+                            state['positions'] = state['additional_info'].pop('positions')
+                            logger.info(f"포지션 정보 복원: {len(state['positions'])}개")
+                        
+                        if 'current_trade_info' in state['additional_info']:
+                            state['current_trade_info'] = state['additional_info'].pop('current_trade_info')
+                            logger.info(f"거래 정보 복원: {state['current_trade_info']}")
                 
                 logger.info("봇 상태 불러오기 완료")
                 return state
@@ -748,124 +823,6 @@ class DatabaseManager:
                 query += " LIMIT ?"
                 params.append(limit)
 
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            
-            trades = []
-            for row in rows:
-                trade = dict(row)
-                
-                # JSON 필드 역직렬화
-                if 'additional_info' in trade and trade['additional_info']:
-                    try:
-                        trade['additional_info'] = json.loads(trade['additional_info'])
-                    except json.JSONDecodeError:
-                        trade['additional_info'] = {}
-                        logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
-                
-                trades.append(trade)
-            
-            return trades
-            
-        except sqlite3.Error as e:
-            logger.error(f"거래 내역 로드 오류: {e}")
-            return []
-    
-    def save_trade(self, trade_data):
-        """
-        거래 내역 저장
-        
-        Args:
-            trade_data (dict): 거래 정보
-        
-        Returns:
-            int: 새로 생성된 거래 ID
-        """
-        try:
-            # JSON으로 직렬화해야 하는 필드 처리
-            if 'additional_info' in trade_data and isinstance(trade_data['additional_info'], dict):
-                trade_data['additional_info'] = json.dumps(trade_data['additional_info'])
-            
-            # 새 거래 저장
-            placeholders = ', '.join(['?'] * len(trade_data))
-            columns = ', '.join(trade_data.keys())
-            values = list(trade_data.values())
-            
-            query = f"INSERT INTO trades ({columns}) VALUES ({placeholders})"
-            self.cursor.execute(query, values)
-            self.conn.commit()
-            
-            trade_id = self.cursor.lastrowid
-            logger.info(f"거래 내역 저장 완료 (ID: {trade_id})")
-            return trade_id
-        except sqlite3.Error as e:
-            logger.error(f"거래 내역 저장 오류: {e}")
-            self.conn.rollback()
-            return None
-    
-    def get_trades(self, symbol=None, limit=50, offset=0):
-        """
-        거래 내역 가져오기
-        
-        Args:
-            symbol (str, optional): 특정 심볼 필터링
-            limit (int, optional): 반환할 최대 결과 수
-            offset (int, optional): 결과 오프셋
-        
-        Returns:
-            list: 거래 내역 목록
-        """
-        try:
-            query = "SELECT * FROM trades"
-            params = []
-            
-            if symbol:
-                query += " WHERE symbol = ?"
-                params.append(symbol)
-            
-            query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
-            
-            self.cursor.execute(query, params)
-            rows = self.cursor.fetchall()
-            
-            trades = []
-            for row in rows:
-                trade = dict(row)
-                
-                # JSON 필드 역직렬화
-                if 'additional_info' in trade and trade['additional_info']:
-                    trade['additional_info'] = json.loads(trade['additional_info'])
-                
-                trades.append(trade)
-            
-            return trades
-        except sqlite3.Error as e:
-            logger.error(f"거래 내역 조회 오류: {e}")
-            return []
-    
-    def load_trades(self, limit=20):
-        """
-        최근 거래 내역 로드 (API용)
-        
-        Args:
-            limit (int, optional): 가져올 거래 내역 수
-            
-        Returns:
-            list: 거래 내역 목록
-        """
-        try:
-            # 스레드 안전 연결 가져오기
-            conn, cursor = self._get_connection()
-            
-            # 거래 내역 쿼리
-            query = "SELECT * FROM trades ORDER BY timestamp DESC"
-            params = []
-            
-            if limit:
-                query += " LIMIT ?"
-                params.append(limit)
-            
             cursor.execute(query, params)
             rows = cursor.fetchall()
             

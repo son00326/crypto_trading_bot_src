@@ -14,75 +14,120 @@ import logging
 import traceback
 from typing import Dict, List, Any, Optional, Tuple
 
+# CCXT 라이브러리
+import ccxt
+
 # config 모듈 가져오기
 from utils.config import is_testnet_enabled
 
 logger = logging.getLogger(__name__)
 
-def create_binance_client(api_key: str, api_secret: str, is_future: bool = False, use_testnet: bool = None) -> Any:
-    """
-    CCXT 바이낸스 클라이언트 생성 함수
+def create_binance_client(api_key=None, api_secret=None, is_future=False, use_testnet=False):
+    """바이낸스 클라이언트 생성"""
     
-    Args:
-        api_key: 바이낸스 API 키
-        api_secret: 바이낸스 API 시크릿
-        is_future: 선물 거래용 클라이언트 생성 여부
-        use_testnet: 테스트넷 사용 여부 (기본값: True)
-        
-    Returns:
-        ccxt.binance 인스턴스
-    """
-    try:
-        import ccxt
-        
-        options = {
-            'adjustForTimeDifference': True,
-            'recvWindow': 5000
-        }
-        
+    # options 설정
+    options = {
+        'adjustForTimeDifference': True,
+        'recvWindow': 10000
+    }
+    
+    # 선물 거래인 경우 defaultType 설정
+    if is_future:
+        options['defaultType'] = 'future'
+        # fetchPositions는 기본값(positionRisk) 사용
+    
+    # 기본 설정
+    config = {
+        'apiKey': api_key,
+        'secret': api_secret,
+        'enableRateLimit': True,
+        'timeout': 10000,  # 10초 타임아웃
+        'options': options
+    }
+    
+    # 테스트넷 설정
+    if use_testnet:
         if is_future:
-            options['defaultType'] = 'future'
-        else:
-            options['defaultType'] = 'spot'
-        
-        # 테스트넷 설정 결정
-        # 명시적으로 지정되지 않은 경우 config 모듈의 is_testnet_enabled() 함수 활용
-        if use_testnet is None:
-            use_testnet = is_testnet_enabled()
-        
-        # 테스트넷 로깅
-        if use_testnet:
-            logger.info("테스트넷 환경으로 설정됨")
-        else:
-            logger.info("실제 바이낸스 API 환경으로 설정됨")
-        
-        binance = ccxt.binance({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'enableRateLimit': True,
-            'timeout': 10000,  # 10초 타임아웃
-            'options': options,
-            # 테스트넷 URL 설정
-            'urls': {
+            # 테스트넷 선물 URL
+            config['urls'] = {
+                'logo': 'https://user-images.githubusercontent.com/1294454/29604020-d5483cdc-87ee-11e7-94c7-d1a8d9169293.jpg',
                 'api': {
-                    'spot': 'https://testnet.binance.vision/api' if use_testnet else 'https://api.binance.com',
-                    'future': 'https://testnet.binancefuture.com/fapi' if use_testnet else 'https://fapi.binance.com'
-                },
-                'test': True if use_testnet else False
-            } if use_testnet else {}
-        })
+                    'public': 'https://testnet.binancefuture.com/fapi/v1',
+                    'private': 'https://testnet.binancefuture.com/fapi/v1',
+                    'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
+                    'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
+                    'fapiPublicV2': 'https://testnet.binancefuture.com/fapi/v2',
+                    'fapiPrivateV2': 'https://testnet.binancefuture.com/fapi/v2'
+                }
+            }
+        else:
+            # 테스트넷 현물 URL
+            config['urls'] = {
+                'logo': 'https://user-images.githubusercontent.com/1294454/29604020-d5483cdc-87ee-11e7-94c7-d1a8d9169293.jpg',
+                'api': {
+                    'public': 'https://testnet.binance.vision/api/v3',
+                    'private': 'https://testnet.binance.vision/api/v3'
+                }
+            }
+    else:
+        # 실제 API URL 설정
+        if is_future:
+            # ccxt 3.0.51 호환 선물 URL 설정
+            config['urls'] = {
+                'logo': 'https://user-images.githubusercontent.com/1294454/29604020-d5483cdc-87ee-11e7-94c7-d1a8d9169293.jpg',
+                'api': {
+                    'public': 'https://fapi.binance.com/fapi/v1',
+                    'private': 'https://fapi.binance.com/fapi/v1',
+                    'fapiPublic': 'https://fapi.binance.com/fapi/v1',
+                    'fapiPrivate': 'https://fapi.binance.com/fapi/v1',
+                    'fapiPublicV2': 'https://fapi.binance.com/fapi/v2',
+                    'fapiPrivateV2': 'https://fapi.binance.com/fapi/v2'
+                }
+            }
+    
+    # 바이낸스 객체 생성 (URL이 이미 config에 포함됨)
+    binance = ccxt.binance(config)
+    
+    # 선물 거래의 경우 has 속성 활성화
+    if is_future:
+        binance.has['fetchPositions'] = True
+        binance.has['fetchPositionMode'] = True
+        binance.has['setPositionMode'] = True
+        binance.has['setMarginMode'] = True
+        binance.has['setLeverage'] = True
         
-        # 추가 로그
-        logger.info(f"바이낸스 클라이언트 생성 완료: {'테스트넷' if use_testnet else '실제 API'} / {'선물' if is_future else '현물'} 모드")
+        # positionRisk 엔드포인트만 v2로 동적 패치
+        if hasattr(binance, 'api') and 'fapiPrivateGetPositionrisk' in binance.api:
+            original_func = binance.api['fapiPrivateGetPositionrisk']
+            def patched_position_risk(params={}):
+                # 임시로 URL을 v2로 변경
+                if hasattr(binance, 'urls') and 'api' in binance.urls and 'fapiPrivate' in binance.urls['api']:
+                    old_url = binance.urls['api']['fapiPrivate']
+                    binance.urls['api']['fapiPrivate'] = old_url.replace('/fapi/v1', '/fapi/v2')
+                    try:
+                        result = original_func(params)
+                        return result
+                    finally:
+                        # 다시 v1로 복원
+                        binance.urls['api']['fapiPrivate'] = old_url
+                else:
+                    return original_func(params)
+            binance.api['fapiPrivateGetPositionrisk'] = patched_position_risk
+            logger.info("positionRisk 엔드포인트에 v2 패치 적용")
         
-        return binance
-    except ImportError:
-        logger.error("CCXT 라이브러리가 설치되지 않았습니다. 'pip install ccxt'로 설치하세요.")
-        raise
-    except Exception as e:
-        logger.error(f"바이낸스 클라이언트 생성 중 오류: {str(e)}")
-        logger.error(traceback.format_exc())
-        raise
+        # 마켓 로드
+        try:
+            binance.load_markets()
+            logger.info(f"Markets 로드 완료. defaultType: {binance.options.get('defaultType')}")
+            logger.info(f"실제 API URLs: {json.dumps(binance.urls.get('api', {}), indent=2)}")
+            
+        except Exception as e:
+            logger.error(f"Markets 로드 실패: {str(e)}")
+    
+    # 추가 로그
+    logger.info(f"바이낸스 클라이언트 생성 완료: {'테스트넷' if use_testnet else '실제 API'} / {'선물' if is_future else '현물'} 모드")
+    
+    return binance
 
 def handle_api_error(e: Exception) -> Dict[str, Any]:
     """
@@ -585,8 +630,12 @@ def get_positions(api_key: str, api_secret: str, symbol: Optional[str] = None) -
         # 선물 거래 클라이언트 생성
         client = create_binance_client(api_key, api_secret, is_future=True)
         
-        # 포지션 조회
-        positions = client.fetch_positions(symbol)
+        # 포지션 조회 - 바이낸스는 심볼 파라미터 없이 호출
+        positions = client.fetch_positions()
+        
+        # 특정 심볼로 필터링
+        if symbol:
+            positions = [pos for pos in positions if pos.get('symbol') == symbol]
         
         # 실제 열린 포지션만 필터링 (포지션 크기가 0이 아닌 것들)
         active_positions = []

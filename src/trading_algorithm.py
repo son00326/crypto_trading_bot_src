@@ -230,6 +230,9 @@ class TradingAlgorithm:
         self.trading_active = False
         self.last_signal = 0  # 0: 중립, 1: 매수, -1: 매도
         
+        # 현재 거래 정보 (진입가, 목표가, 손절가 등)
+        self.current_trade_info = {}
+        
         # 자동 포지션 관리자 초기화
         self.auto_position_manager = AutoPositionManager(self)
         self.auto_sl_tp_enabled = False  # 자동 손절매/이익실현 활성화 여부
@@ -768,7 +771,7 @@ class TradingAlgorithm:
             # 3. 현재 가격 가져오기
             current_price = self.get_current_price(self.symbol)
             if current_price is None:
-                self.logger.warning("현재 가격을 가져올 수 없습니다. 거래 사이클을 건너뜩니다.")
+                self.logger.warning("현재 가격을 가져올 수 없습니다. 거래 사이클을 건너뜁니다.")
                 return
             
             # 4. 전략에 데이터 전달하여 거래 신호 생성
@@ -822,6 +825,28 @@ class TradingAlgorithm:
             # 8. 주문 결과 처리
             if order_result and order_result.get('success'):
                 self.logger.info(f"주문 성공: {signal.direction}, 주문 ID: {order_result.get('order_id')}, 금액: {position_size}")
+                
+                # 거래 정보 저장 (매수 시)
+                if signal.direction == 'buy':
+                    self.current_trade_info = {
+                        'entry_price': current_price,
+                        'entry_time': datetime.now().isoformat(),
+                        'position_size': position_size,
+                        'order_id': order_result.get('order_id'),
+                        'take_profit': risk_assessment.get('take_profit'),
+                        'stop_loss': risk_assessment.get('stop_loss'),
+                        'signal': {
+                            'direction': signal.direction,
+                            'strength': signal.strength,
+                            'strategy': signal.strategy
+                        }
+                    }
+                    self.logger.info(f"거래 정보 저장: {self.current_trade_info}")
+                elif signal.direction == 'sell':
+                    # 매도 시 거래 정보 초기화
+                    if self.current_trade_info:
+                        self.logger.info(f"포지션 청산 - 진입가: {self.current_trade_info.get('entry_price')}, 청산가: {current_price}")
+                        self.current_trade_info = {}
                 
                 # 이벤트 발행
                 self.event_manager.publish(EventType.ORDER_EXECUTED, {
