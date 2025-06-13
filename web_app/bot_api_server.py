@@ -187,59 +187,70 @@ class BotAPIServer:
         
         # 거래소 API 인스턴스 초기화 (데이터 동기화용)
         self.exchange_api = None
-        if saved_state:
-            try:
+        
+        try:
+            # saved_state가 있으면 그 값을 사용, 없으면 기본값 사용
+            if saved_state:
                 exchange_id = saved_state.get('exchange_id', DEFAULT_EXCHANGE)
                 symbol = saved_state.get('symbol', DEFAULT_SYMBOL)
                 timeframe = saved_state.get('timeframe', DEFAULT_TIMEFRAME)
                 market_type = saved_state.get('market_type', 'futures')  # 기본값을 futures로 설정
                 leverage = saved_state.get('leverage', 1)
+            else:
+                # saved_state가 없으면 기본값 사용
+                exchange_id = DEFAULT_EXCHANGE
+                symbol = DEFAULT_SYMBOL
+                timeframe = DEFAULT_TIMEFRAME
+                market_type = 'futures'
+                leverage = 1
+                logger.info("저장된 봇 상태가 없습니다. 기본값으로 초기화합니다.")
+            
+            # GUI에서 저장한 API 키 불러오기
+            home_dir = os.path.expanduser("~")
+            config_file = os.path.join(home_dir, ".crypto_trading_bot_src", "config.env")
+            
+            if os.path.exists(config_file):
+                # 저장된 API 키 파일이 있으면 환경 변수에 로드
+                with open(config_file, 'r') as f:
+                    for line in f:
+                        if '=' in line:
+                            key, value = line.strip().split('=', 1)
+                            os.environ[key] = value
+                logger.info(f"GUI에서 저장한 API 키 설정을 로드했습니다.")
+            
+            # 환경 변수에서 API 키 확인 - 새로운 유틸리티 함수 사용
+            api_result = get_validated_api_credentials()
+            
+            if api_result['success']:
+                api_key = api_result['api_key']
+                api_secret = api_result['api_secret']
+                logger.info(f"API 키가 설정되어 있습니다: {api_key[:5]}...")
+            else:
+                logger.warning(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
+            
+            # 심볼 형식 확인 및 수정 (BTCUSDT:USDT -> BTCUSDT)
+            symbol_to_use = symbol
+            if ':' in symbol_to_use:
+                clean_symbol = symbol_to_use.split(':')[0]
+                logger.info(f"심볼 형식 수정: {symbol_to_use} -> {clean_symbol}")
+                symbol_to_use = clean_symbol
                 
-                # GUI에서 저장한 API 키 불러오기
-                home_dir = os.path.expanduser("~")
-                config_file = os.path.join(home_dir, ".crypto_trading_bot_src", "config.env")
-                
-                if os.path.exists(config_file):
-                    # 저장된 API 키 파일이 있으면 환경 변수에 로드
-                    with open(config_file, 'r') as f:
-                        for line in f:
-                            if '=' in line:
-                                key, value = line.strip().split('=', 1)
-                                os.environ[key] = value
-                    logger.info(f"GUI에서 저장한 API 키 설정을 로드했습니다.")
-                
-                # 환경 변수에서 API 키 확인 - 새로운 유틸리티 함수 사용
-                api_result = get_validated_api_credentials()
-                
-                if api_result['success']:
-                    api_key = api_result['api_key']
-                    api_secret = api_result['api_secret']
-                    logger.info(f"API 키가 설정되어 있습니다: {api_key[:5]}...")
-                else:
-                    logger.warning(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
-                
-                # 심볼 형식 확인 및 수정 (BTCUSDT:USDT -> BTCUSDT)
-                symbol_to_use = symbol
-                if ':' in symbol_to_use:
-                    clean_symbol = symbol_to_use.split(':')[0]
-                    logger.info(f"심볼 형식 수정: {symbol_to_use} -> {clean_symbol}")
-                    symbol_to_use = clean_symbol
-                    
-                self.exchange_api = ExchangeAPI(
-                    exchange_id=exchange_id,
-                    symbol=symbol_to_use,  # 수정된 심볼 사용
-                    timeframe=timeframe,  # timeframe 매개변수 추가
-                    market_type=market_type,
-                    leverage=leverage
-                )
-                logger.info(f"거래소 API 초기화 완료: {exchange_id}, {symbol}, {market_type}")
-                
-                # 생성된 exchange_api 객체를 GUI 인스턴스에도 전달
-                if hasattr(self.bot_gui, '__dict__'):
-                    self.bot_gui.exchange_api = self.exchange_api
-                    logger.info("GUI 인스턴스에 거래소 API 객체 전달 완료")
-            except Exception as e:
-                logger.error(f"거래소 API 초기화 오류: {str(e)}")
+            self.exchange_api = ExchangeAPI(
+                exchange_id=exchange_id,
+                symbol=symbol_to_use,  # 수정된 심볼 사용
+                timeframe=timeframe,  # timeframe 매개변수 추가
+                market_type=market_type,
+                leverage=leverage
+            )
+            logger.info(f"거래소 API 초기화 완료: {exchange_id}, {symbol}, {market_type}")
+            
+            # 생성된 exchange_api 객체를 GUI 인스턴스에도 전달
+            if hasattr(self.bot_gui, '__dict__'):
+                self.bot_gui.exchange_api = self.exchange_api
+                logger.info("GUI 인스턴스에 거래소 API 객체 전달 완료")
+        except Exception as e:
+            logger.error(f"거래소 API 초기화 오류: {str(e)}")
+            logger.exception("상세 오류 정보:")
         
         # 데이터 동기화 스레드 시작
         self.sync_thread = None
@@ -551,7 +562,7 @@ class BotAPIServer:
                 # API 키 가져오기
                 api_result = get_validated_api_credentials()
                 if not api_result['success']:
-                    logger.warning(f"API 키 검증 실패: {api_result['error']}")
+                    logger.warning(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
                     return jsonify({
                         'success': False,
                         'error': api_result['error']
