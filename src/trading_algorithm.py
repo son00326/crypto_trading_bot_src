@@ -666,6 +666,193 @@ class TradingAlgorithm:
         except Exception as e:
             self.logger.error(f"포트폴리오 요약 정보 생성 중 오류 발생: {e}")
             return {}
+            
+    def start_trading_thread(self, interval=60):
+        """
+        별도 스레드에서 거래 사이클을 주기적으로 실행
+        
+        Args:
+            interval (int): 거래 사이클 실행 간격 (초)
+            
+        Returns:
+            threading.Thread: 거래 스레드 객체
+        """
+        self.logger.info(f"거래 스레드 시작 (간격: {interval}초)")
+        
+        # 거래 스레드 상태 설정
+        self.trading_active = True
+        self.trading_interval = interval
+        
+        # 거래 루프를 실행할 스레드 생성
+        def trading_loop():
+            self.logger.info("거래 루프 시작")
+            consecutive_errors = 0
+            max_consecutive_errors = 5  # 연속 오류 최대 허용 횟수
+            
+            while self.trading_active:
+                try:
+                    # 거래 사이클 실행
+                    self.execute_trading_cycle()
+                    
+                    # 성공 시 연속 오류 카운트 초기화
+                    consecutive_errors = 0
+                    
+                    # 포트폴리오 상태 저장
+                    try:
+                        self.save_state()
+                    except Exception as save_error:
+                        self.logger.error(f"상태 저장 중 오류 발생: {save_error}")
+                    
+                    # 다음 사이클까지 대기
+                    time.sleep(interval)
+                    
+                except Exception as e:
+                    consecutive_errors += 1
+                    self.logger.error(f"거래 사이클 실행 중 오류 발생 ({consecutive_errors}/{max_consecutive_errors}): {e}")
+                    self.logger.debug(traceback.format_exc())
+                    
+                    # 연속 오류가 최대 허용치를 넘으면 일시 중지
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.logger.critical(f"연속 오류가 {max_consecutive_errors}회를 초과하여 거래를 일시 중지합니다.")
+                        
+                        # 경고 이벤트 발행
+                        try:
+                            self.event_manager.publish(EventType.TRADING_ERROR, {
+                                'timestamp': datetime.now().isoformat(),
+                                'error': str(e),
+                                'consecutive_errors': consecutive_errors,
+                                'action': 'pause_trading'
+                            })
+                        except Exception as event_error:
+                            self.logger.error(f"이벤트 발행 중 오류 발생: {event_error}")
+                        
+                        # 복구 대기 시간
+                        recovery_wait = min(300, 30 * consecutive_errors)  # 최대 5분까지 대기
+                        self.logger.warning(f"{recovery_wait}초 후 거래를 재개합니다.")
+                        time.sleep(recovery_wait)
+                    else:
+                        # 일반 오류는 짧은 시간 대기 후 재시도
+                        time.sleep(5)
+        
+        # 스레드 생성 및 시작
+        trading_thread = threading.Thread(target=trading_loop, daemon=True)
+        trading_thread.start()
+        
+        return trading_thread
+        
+    def execute_trading_cycle(self):
+        """
+        한 번의 거래 사이클을 실행합니다.
+        1. 시장 데이터 가져오기
+        2. 전략에 데이터 전달하여 거래 신호 생성
+        3. 리스크 평가 및 관리
+        4. 신호가 있다면 주문 실행
+        """
+        self.logger.info(f"거래 사이클 실행 시작 - 심볼: {self.symbol}")
+        cycle_start_time = datetime.now()
+        
+        try:
+            # 1. 현재 포트폴리오 상태 확인
+            portfolio_status = self.portfolio_manager.get_portfolio_status()
+            self.logger.debug(f"포트폴리오 상태: {portfolio_status}")
+            
+            # 2. 시장 데이터 가져오기 (OHLCV 데이터)
+            market_data = self.data_collector.fetch_recent_data(
+                limit=self.strategy.required_data_points
+            )
+            
+            if market_data is None or len(market_data) < self.strategy.required_data_points:
+                self.logger.warning(f"충분한 시장 데이터를 가져올 수 없습니다. 가져온 데이터: {len(market_data) if market_data is not None else 0}/{self.strategy.required_data_points}")
+                return
+            
+            # 3. 현재 가격 가져오기
+            current_price = self.get_current_price(self.symbol)
+            if current_price is None:
+                self.logger.warning("현재 가격을 가져올 수 없습니다. 거래 사이클을 건너뜩니다.")
+                return
+            
+            # 4. 전략에 데이터 전달하여 거래 신호 생성
+            self.logger.info(f"신호 생성 중 - 전략: {self.strategy.__class__.__name__}, 현재 가격: {current_price}")
+            signal = self.strategy.generate_signal(
+                market_data=market_data, 
+                current_price=current_price,
+                portfolio=portfolio_status
+            )
+            
+            # 5. 신호 로깅
+            if signal:
+                self.logger.info(f"거래 신호 발생: {signal.direction}, 심볼: {self.symbol}, 가격: {current_price}, 신뢰도: {signal.confidence:.2f}")
+            else:
+                self.logger.debug(f"거래 신호 없음 - 현재 가격: {current_price}")
+                return
+            
+            # 6. 리스크 평가 및 관리
+            risk_assessment = self.risk_manager.assess_risk(
+                signal=signal,
+                portfolio_status=portfolio_status,
+                current_price=current_price
+            )
+            
+            if not risk_assessment['should_execute']:
+                self.logger.warning(f"리스크 평가 결과 거래 금지: {risk_assessment['reason']}")
+                return
+            
+            # 7. 신호에 따른 주문 실행
+            position_size = risk_assessment['position_size']
+            if signal.direction == 'buy':
+                self.logger.info(f"매수 주문 실행 - 금액: {position_size}, 가격: {current_price}")
+                order_result = self.order_executor.execute_buy(
+                    symbol=self.symbol,
+                    amount=position_size,
+                    price=current_price,
+                    signal=signal
+                )
+            elif signal.direction == 'sell':
+                self.logger.info(f"매도 주문 실행 - 금액: {position_size}, 가격: {current_price}")
+                order_result = self.order_executor.execute_sell(
+                    symbol=self.symbol,
+                    amount=position_size,
+                    price=current_price,
+                    signal=signal
+                )
+            else:
+                self.logger.warning(f"알 수 없는 신호 디렉션: {signal.direction}")
+                return
+            
+            # 8. 주문 결과 처리
+            if order_result and order_result.get('success'):
+                self.logger.info(f"주문 성공: {signal.direction}, 주문 ID: {order_result.get('order_id')}, 금액: {position_size}")
+                
+                # 이벤트 발행
+                self.event_manager.publish(EventType.ORDER_EXECUTED, {
+                    'timestamp': datetime.now().isoformat(),
+                    'symbol': self.symbol,
+                    'direction': signal.direction,
+                    'price': current_price,
+                    'amount': position_size,
+                    'order_id': order_result.get('order_id')
+                })
+            else:
+                error_msg = order_result.get('error', '알 수 없는 오류') if order_result else '주문 처리 결과가 없습니다'
+                self.logger.error(f"주문 실패: {signal.direction}, 오류: {error_msg}")
+            
+            # 거래 사이클 완료 시간 로깅
+            execution_time = (datetime.now() - cycle_start_time).total_seconds()
+            self.logger.info(f"거래 사이클 완료 - 실행 시간: {execution_time:.2f}초")
+            
+        except Exception as e:
+            self.logger.error(f"거래 사이클 실행 중 예외 발생: {e}")
+            self.logger.debug(traceback.format_exc())
+            
+            # 심각한 오류의 경우 이벤트 발행
+            try:
+                self.event_manager.publish(EventType.TRADING_ERROR, {
+                    'timestamp': datetime.now().isoformat(),
+                    'error': str(e),
+                    'traceback': traceback.format_exc()
+                })
+            except Exception as event_error:
+                self.logger.error(f"오류 이벤트 발행 중 추가 오류: {event_error}")
 
 # 테스트 코드
 if __name__ == "__main__":

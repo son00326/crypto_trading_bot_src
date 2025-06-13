@@ -8,6 +8,7 @@
 import pandas as pd
 import numpy as np
 import logging
+from datetime import datetime
 from src.indicators import (
     simple_moving_average, exponential_moving_average, 
     moving_average_convergence_divergence, relative_strength_index,
@@ -32,6 +33,8 @@ class Strategy:
             name (str): 전략 이름
         """
         self.name = name
+        # 기본 데이터 포인트 요구사항 설정 (30개를 기본값으로 설정)
+        self.required_data_points = 30
         logger.info(f"{self.name} 전략이 초기화되었습니다.")
         
     def validate_parameters(self, params):
@@ -96,6 +99,52 @@ class Strategy:
         """
         raise NotImplementedError("자식 클래스에서 구현해야 합니다.")
     
+    def generate_signal(self, market_data, current_price, portfolio=None):
+        """
+        현재 데이터에 기반해 거래 신호를 생성
+        
+        Args:
+            market_data (DataFrame): OHLCV 데이터
+            current_price (float): 현재 가격
+            portfolio (dict): 포트폴리오 정보
+            
+        Returns:
+            TradeSignal: 거래 신호 객체 또는 None
+        """
+        try:
+            # OHLCV 데이터에 신호 추가
+            df_with_signals = self.generate_signals(market_data)
+            
+            # 마지막 신호 가져오기
+            last_signal = df_with_signals['signal'].iloc[-1] if len(df_with_signals) > 0 else 0
+            last_position = df_with_signals['position'].iloc[-1] if 'position' in df_with_signals.columns and len(df_with_signals) > 0 else 0
+            
+            # 신호가 없으면 None 반환
+            if last_position == 0:
+                return None
+                
+            # 포지션 변화가 있으면 신호 생성
+            direction = 'buy' if last_position > 0 else 'sell' if last_position < 0 else None
+            
+            if direction:
+                from src.models import TradeSignal
+                confidence = abs(last_signal) if -1 <= last_signal <= 1 else 0.5
+                
+                return TradeSignal(
+                    direction=direction,
+                    symbol=market_data['symbol'].iloc[0] if 'symbol' in market_data.columns else None,
+                    price=current_price,
+                    confidence=confidence,
+                    timestamp=datetime.now(),
+                    strategy_name=self.name,
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"신호 생성 중 오류 발생: {e}")
+            return None
+    
 class MovingAverageCrossover(Strategy):
     def calculate_positions(self, df):
         """
@@ -156,6 +205,55 @@ class MovingAverageCrossover(Strategy):
         self.long_period = long_period
         self.ma_type = ma_type
         
+        # 데이터 포인트 요구사항 설정 (장기 이동평균 기간의 3배로 설정하여 충분한 데이터 확보)
+        self.required_data_points = self.long_period * 3
+        
+    def generate_signal(self, market_data, current_price, portfolio=None):
+        """
+        현재 데이터에 기반해 거래 신호를 생성
+        
+        Args:
+            market_data (DataFrame): OHLCV 데이터
+            current_price (float): 현재 가격
+            portfolio (dict): 포트폴리오 정보
+            
+        Returns:
+            TradeSignal: 거래 신호 객체 또는 None
+        """
+        try:
+            # OHLCV 데이터에 신호 추가
+            df_with_signals = self.generate_signals(market_data)
+            
+            # 마지막 신호 가져오기
+            last_signal = df_with_signals['signal'].iloc[-1] if len(df_with_signals) > 0 else 0
+            last_position = df_with_signals['position'].iloc[-1] if 'position' in df_with_signals.columns and len(df_with_signals) > 0 else 0
+            
+            # 신호가 없으면 None 반환
+            if last_position == 0:
+                return None
+                
+            # 포지션 변화가 있으면 신호 생성
+            direction = 'buy' if last_position > 0 else 'sell' if last_position < 0 else None
+            
+            if direction:
+                from src.models import TradeSignal
+                confidence = abs(last_signal) if -1 <= last_signal <= 1 else 0.5
+                
+                return TradeSignal(
+                    direction=direction,
+                    symbol=market_data['symbol'].iloc[0] if 'symbol' in market_data.columns else None,
+                    price=current_price,
+                    confidence=confidence,
+                    timestamp=datetime.now(),
+                    strategy_name=self.name,
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"신호 생성 중 오류 발생: {e}")
+            return None
+    
     def validate_parameters(self, params):
         """
         이동평균 교차 전략 파라미터 유효성 검사

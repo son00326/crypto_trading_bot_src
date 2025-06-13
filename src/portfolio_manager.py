@@ -423,7 +423,40 @@ class PortfolioManager:
         except Exception as e:
             logger.error(f"포트폴리오 상태 저장 중 오류 발생: {e}")
             return False
+    
+    @simple_error_handler(default_return=None)
+    def get_portfolio_status(self):
+        """
+        현재 포트폴리오 상태 정보 반환
+        
+        Returns:
+            dict: 포트폴리오 상태 정보
+        """
+        try:
+            if not self.test_mode:
+                # 실제 모드에서는 최신 잔고 정보 가져오기
+                self.update_portfolio()
+                
+            # 현재 심볼에 대한 열린 포지션 정보 추가
+            open_positions = self.get_open_positions(self.symbol)
             
+            # 포트폴리오 상태 구성
+            portfolio_status = {
+                'base_currency': self.portfolio['base_currency'],
+                'quote_currency': self.portfolio['quote_currency'],
+                'base_balance': self.portfolio['base_balance'],
+                'quote_balance': self.portfolio['quote_balance'],
+                'positions': open_positions,
+                'symbol': self.symbol,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            return portfolio_status
+            
+        except Exception as e:
+            logger.error(f"포트폴리오 상태 조회 중 오류 발생: {e}")
+            return None
+    
     def add_position(self, position):
         """
         포트폴리오에 새 포지션 추가
