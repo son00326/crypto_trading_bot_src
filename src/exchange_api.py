@@ -625,8 +625,14 @@ class ExchangeAPI:
         try:
             # 바이낸스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
             if self.exchange_id == 'binance' and self.market_type == 'futures':
-                self.logger.info(f"바이낸스 선물 API 요구사항에 따라 배열로 심볼 전달: [{symbol}]")
-                positions = self.exchange.fetch_positions([symbol], params=params)
+                self.logger.info(f"바이낸스 선물 API: 모든 포지션 조회 후 {symbol} 필터링")
+                # 바이낸스 선물은 심볼 파라미터 없이 호출
+                positions = self.exchange.fetch_positions()
+                # 특정 심볼만 필터링
+                if symbol and positions:
+                    filtered_positions = [pos for pos in positions if pos.get('symbol') == symbol]
+                    self.logger.info(f"전체 {len(positions)}개 포지션 중 {symbol}: {len(filtered_positions)}개")
+                    positions = filtered_positions
             else:
                 positions = self.exchange.fetch_positions(symbol, params=params)
         except Exception as e:
@@ -637,9 +643,11 @@ class ExchangeAPI:
             # 심볼 형식 관련 오류인 경우
             if "requires an array argument for symbols" in error_msg and self.exchange_id == 'binance':
                 try:
-                    # 배열 형태로 다시 시도
-                    self.logger.info(f"배열 형태로 다시 시도: [{symbol}]")
-                    positions = self.exchange.fetch_positions([symbol], params=params)
+                    # 심볼 없이 모든 포지션 조회 후 필터링
+                    self.logger.info(f"바이낸스 선물: 심볼 없이 전체 포지션 조회 후 필터링 시도")
+                    positions = self.exchange.fetch_positions()
+                    if symbol and positions:
+                        positions = [pos for pos in positions if pos.get('symbol') == symbol]
                 except Exception as e2:
                     # 다시 실패하면 원래 오류 발생
                     raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
