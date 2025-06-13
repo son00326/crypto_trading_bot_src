@@ -384,7 +384,7 @@ class ExchangeAPI:
                             else:
                                 self.logger.error(f"포지션 모드 설정 실패: {str(position_mode_error)}")
                     else:
-                        self.logger.warning("API 키가 설정되지 않아 레버리지 및 마진 설정을 건너뚩니다.")
+                        self.logger.warning("API 키가 설정되지 않아 레버리지 및 마진 설정을 건너뚝니다.")
                 except Exception as e:
                     log_api_call(f"/exchange/{self.exchange_id}/futures_settings", "POST", error=e)
                     self.logger.error(f"선물 설정 중 오류 발생: {e}")
@@ -455,7 +455,7 @@ class ExchangeAPI:
         }
         
         if self.market_type == 'futures' and self.exchange_id == 'binance':
-            # 바이났스 선물의 경우 필요한 추가 파라미터
+            # 바이낸스 선물의 경우 필요한 추가 파라미터
             params['contract'] = True  # 선물 계약 데이터 지정
         
         try:
@@ -611,9 +611,9 @@ class ExchangeAPI:
         # 거래소별 특수 처리
         params = {}
         if self.exchange_id == 'binance':
-            # 바이났스 특정 파라미터
+            # 바이낸스 특정 파라미터
             params = {'type': 'future'}
-            self.logger.debug(f"바이났스 선물 포지션 조회 추가 파라미터 적용")
+            self.logger.debug(f"바이낸스 선물 포지션 조회 추가 파라미터 적용")
         elif self.exchange_id == 'bybit':
             # 바이빗 특정 파라미터
             params = {'type': 'swap'}
@@ -623,9 +623,9 @@ class ExchangeAPI:
             self.logger.warning(f"빗썸에서는 포지션 조회가 제한될 수 있습니다")
         
         try:
-            # 바이났스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
+            # 바이낸스 선물 거래의 경우 배열 형태로 심볼 전달 (API 요구사항)
             if self.exchange_id == 'binance' and self.market_type == 'futures':
-                self.logger.info(f"바이났스 선물 API 요구사항에 따라 배열로 심볼 전달: [{symbol}]")
+                self.logger.info(f"바이낸스 선물 API 요구사항에 따라 배열로 심볼 전달: [{symbol}]")
                 positions = self.exchange.fetch_positions([symbol], params=params)
             else:
                 positions = self.exchange.fetch_positions(symbol, params=params)
@@ -644,140 +644,95 @@ class ExchangeAPI:
                     # 다시 실패하면 원래 오류 발생
                     raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e2)
             # 다른 심볼 형식 오류인 경우
-            return []
-
-        try:
-            # API 요청 전송
-            positions = self.exchange.fetch_positions(symbol) if symbol else self.exchange.fetch_positions()
-            
-            # 반환된 데이터가 없는 경우
-            if positions is None or not positions:
-                self.logger.info(f"현재 열린 포지션이 없습니다: {self.exchange_id}, {symbol}")
-                return []
-            
-            # 필요한 추가 계산 수행
-            processed_positions = []
-            for position in positions:
-                # 업데이트할 포지션 복사본 생성 (원본 변경 방지)
-                processed_position = position.copy()
-                
-                # 필수 필드 검사
-                required_fields = ['entryPrice', 'markPrice', 'side']
-                if not all(field in position for field in required_fields):
-                    self.logger.warning(f"필요한 필드가 누락된 포지션 정보: {position}")
-                    continue
-                
-                # 유효한 포지션인지 확인
-                if position.get('entryPrice', 0) == 0:
-                    continue
-                    
-                try:
-                    # 수치 변환
-                    entry_price = float(position['entryPrice'])
-                    mark_price = float(position['markPrice'])
-                    
-                    # 포지션 크기 추출 (거래소별 필드 명 다를 수 있음)
-                    if 'size' in position:
-                        size = float(position['size'])
-                    elif 'contracts' in position:
-                        size = float(position['contracts'])
-                    elif 'positionAmt' in position:  # 바이낸스 스타일
-                        size = float(position['positionAmt'])
-                    else:
-                        size = 0
-                        self.logger.warning(f"포지션 크기 정보 없음: {position}")
-                        
-                    side = position['side']
-                    leverage = float(position.get('leverage', self.leverage))
-                    
-                    # PNL 계산
-                    if side == 'long':
-                        pnl_percent = ((mark_price - entry_price) / entry_price) * 100 * leverage
-                    else:  # short
-                        pnl_percent = ((entry_price - mark_price) / entry_price) * 100 * leverage
-                    
-                    # 추가 정보 저장
-                    processed_position['pnl_percent'] = round(pnl_percent, 2)  # 소수점 2자리까지
-                    processed_position['position_value'] = round(size * mark_price, 2)
-                    processed_position['liquidation_price'] = position.get('liquidationPrice', 0)
-                    processed_position['updated_at'] = time.time() * 1000  # 밀리세컨드 타임스태프
-                    processed_position['exchange'] = self.exchange_id
-                    
-                    # 경고 상태 표시 (청산율 또는 손실율 상황)
-                    if pnl_percent <= -50:  # 50% 이상 손실
-                        processed_position['warning_level'] = 'high'
-                    elif pnl_percent <= -30:  # 30% 이상 손실
-                        processed_position['warning_level'] = 'medium'
-                    elif pnl_percent <= -10:  # 10% 이상 손실
-                        processed_position['warning_level'] = 'low'
-                    elif pnl_percent >= 50:  # 50% 이상 수익
-                        processed_position['warning_level'] = 'take_profit'
-                    else:
-                        processed_position['warning_level'] = 'normal'
-                        
-                    processed_positions.append(processed_position)
-                except (ValueError, TypeError, KeyError) as e:
-                    self.logger.error(f"포지션 데이터 처리 중 오류: {e} - 데이터: {position}")
-            
-            # 성공적인 응답 로깅
-            position_summary = [{
-                "symbol": p.get('symbol', ''),
-                "side": p.get('side', ''),
-                "size": p.get('size', 0) if 'size' in p else (p.get('contracts', 0) if 'contracts' in p else 0),
-                "pnl_percent": p.get('pnl_percent', 0),
-                "warning_level": p.get('warning_level', 'normal')
-            } for p in processed_positions[:3]]  # 처음 3개만 로깅
-            
-            log_api_call(f"/positions/{symbol}", "GET", response_data={
-                "count": len(processed_positions),
-                "positions": position_summary
-            })
-            
-            self.logger.info(f"포지션 정보 조회 성공: {symbol}, {len(processed_positions)}개 포지션 발견")
-            return processed_positions
-            
-        except ccxt.AuthenticationError as e:
-            error_msg = f"인증 오류로 포지션 조회 실패: {self.exchange_id}"
-            log_api_call(f"/positions/{symbol if symbol else self.symbol}", "GET", error=e)
-            self.logger.error(f"{error_msg}: {str(e)}")
-            raise AuthenticationError(error_msg, original_exception=e)
-            
-        except ccxt.PermissionDenied as e:
-            error_msg = f"권한 부족으로 포지션 조회 불가: {self.exchange_id}"
-            log_api_call(f"/positions/{symbol if symbol else self.symbol}", "GET", error=e)
-            self.logger.error(f"{error_msg}: {str(e)}")
-            raise APIError(error_msg, original_exception=e)
-        
-        except ccxt.ExchangeNotAvailable as e:
-            error_msg = f"거래소 서버 연결 불가: {self.exchange_id}"
-            log_api_call(f"/positions/{symbol if symbol else self.symbol}", "GET", error=e)
-            self.logger.error(f"{error_msg}: {str(e)}")
-            raise APIError(error_msg, original_exception=e)
-            
-        except ccxt.ExchangeError as e:
-            # 포지션 조회 기능 지원 여부 확인
-            if "not supported" in str(e).lower() or "지원하지 않는" in str(e):
-                error_msg = f"해당 거래소에서 포지션 조회를 지원하지 않습니다: {self.exchange_id}"
-                self.logger.warning(error_msg)
-                raise MarketTypeError(error_msg, original_exception=e)
             else:
-                error_msg = f"거래소 오류: {self.exchange_id}, {symbol if symbol else self.symbol}"
-                log_api_call(f"/positions/{symbol if symbol else self.symbol}", "GET", error=e)
-                self.logger.error(f"{error_msg}: {str(e)}")
-                raise APIError(error_msg, original_exception=e)
+                raise APIError(f"거래소 오류: {self.exchange_id}, {symbol}", original_exception=e)
+
+        # 반환된 데이터가 없는 경우
+        if positions is None or not positions:
+            self.logger.info(f"현재 열린 포지션이 없습니다: {self.exchange_id}, {symbol}")
+            return []
         
-        except ccxt.RequestTimeout as e:
-            error_msg = f"거래소 요청 시간 초과: {self.exchange_id}, {symbol if symbol else self.symbol}"
-            log_api_call(f"/positions/{symbol if symbol else self.symbol}", "GET", error=e)
-            self.logger.error(f"{error_msg}: {str(e)}")
-            raise APIError(error_msg, original_exception=e)
+        # 필요한 추가 계산 수행
+        processed_positions = []
+        for position in positions:
+            # 업데이트할 포지션 복사본 생성 (원본 변경 방지)
+            processed_position = position.copy()
+            
+            # 필수 필드 검사
+            required_fields = ['entryPrice', 'markPrice', 'side']
+            if not all(field in position for field in required_fields):
+                self.logger.warning(f"필요한 필드가 누락된 포지션 정보: {position}")
+                continue
+            
+            # 유효한 포지션인지 확인
+            if position.get('entryPrice', 0) == 0:
+                continue
+                    
+            try:
+                # 수치 변환
+                entry_price = float(position['entryPrice'])
+                mark_price = float(position['markPrice'])
+                
+                # 포지션 크기 추출 (거래소별 필드 명 다를 수 있음)
+                if 'size' in position:
+                    size = float(position['size'])
+                elif 'contracts' in position:
+                    size = float(position['contracts'])
+                elif 'positionAmt' in position:  # 바이낸스 스타일
+                    size = float(position['positionAmt'])
+                else:
+                    size = 0
+                    self.logger.warning(f"포지션 크기 정보 없음: {position}")
+                        
+                side = position['side']
+                leverage = float(position.get('leverage', self.leverage))
+                
+                # PNL 계산
+                if side == 'long':
+                    pnl_percent = ((mark_price - entry_price) / entry_price) * 100 * leverage
+                else:  # short
+                    pnl_percent = ((entry_price - mark_price) / entry_price) * 100 * leverage
+                
+                # 추가 정보 저장
+                processed_position['pnl_percent'] = round(pnl_percent, 2)  # 소수점 2자리까지
+                processed_position['position_value'] = round(size * mark_price, 2)
+                processed_position['liquidation_price'] = position.get('liquidationPrice', 0)
+                processed_position['updated_at'] = time.time() * 1000  # 밀리세컨드 타임스태프
+                processed_position['exchange'] = self.exchange_id
+                
+                # 경고 상태 표시 (청산율 또는 손실율 상황)
+                if pnl_percent <= -50:  # 50% 이상 손실
+                    processed_position['warning_level'] = 'high'
+                elif pnl_percent <= -30:  # 30% 이상 손실
+                    processed_position['warning_level'] = 'medium'
+                elif pnl_percent <= -10:  # 10% 이상 손실
+                    processed_position['warning_level'] = 'low'
+                elif pnl_percent >= 50:  # 50% 이상 수익
+                    processed_position['warning_level'] = 'take_profit'
+                else:
+                    processed_position['warning_level'] = 'normal'
+                        
+                processed_positions.append(processed_position)
+            except (ValueError, TypeError, KeyError) as e:
+                self.logger.error(f"포지션 데이터 처리 중 오류: {e} - 데이터: {position}")
         
-        except Exception as e:
-            error_msg = f"포지션 정보 조회 중 오류 발생: {self.exchange_id}, {symbol if symbol else self.symbol}"
-            log_api_call(f"/positions/{symbol if symbol else self.symbol}", "GET", error=e)
-            self.logger.error(f"{error_msg}: {str(e)}\n{traceback.format_exc()}")
-            raise APIError(f"포지션 정보 조회 오류: {str(e)}", original_exception=e)
-    
+        # 성공적인 응답 로깅
+        position_summary = [{
+            "symbol": p.get('symbol', ''),
+            "side": p.get('side', ''),
+            "size": p.get('size', 0) if 'size' in p else (p.get('contracts', 0) if 'contracts' in p else 0),
+            "pnl_percent": p.get('pnl_percent', 0),
+            "warning_level": p.get('warning_level', 'normal')
+        } for p in processed_positions[:3]]  # 처음 3개만 로깅
+        
+        log_api_call(f"/positions/{symbol}", "GET", response_data={
+            "count": len(processed_positions),
+            "positions": position_summary
+        })
+        
+        self.logger.info(f"포지션 정보 조회 성공: {symbol}, {len(processed_positions)}개 포지션 발견")
+        return processed_positions
+            
     @api_error_handler
     def create_market_buy_order(self, symbol=None, amount=None):
         """시장가 매수 주문
@@ -1073,7 +1028,7 @@ class ExchangeAPI:
             if self.market_type == 'futures':
                 # 선물 거래 관련 매개변수 설정
                 params = {
-                    'reduceOnly': False,  # 포지션 청산용 주문인지
+                    'reduceOnly': False,  # 포지션 청산용 주문인지 여부
                     'timeInForce': 'GTC',  # Good Till Cancel
                 }
                 

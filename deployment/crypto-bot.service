@@ -1,0 +1,17 @@
+[Unit]
+Description=Cryptocurrency Trading Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/crypto_trading_bot_src
+ExecStart=/usr/bin/python3 /home/ubuntu/crypto_trading_bot_src/web_app/bot_api_server.py
+Environment="USE_TESTNET=false"
+Environment="BINANCE_API_KEY=your_real_api_key"
+Environment="BINANCE_API_SECRET=your_real_api_secret"
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
