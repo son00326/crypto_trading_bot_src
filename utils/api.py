@@ -609,7 +609,7 @@ def get_positions(api_key: str, api_secret: str, symbol: Optional[str] = None) -
                     'liquidation_price': float(position.get('liquidationPrice', 0)),
                     'unrealized_pnl': float(position.get('unrealizedPnl', 0)),
                     'margin_mode': position.get('marginMode', 'cross'),
-                    'leverage': int(position.get('leverage', 1)),
+                    'leverage': int(position.get('leverage')) if position.get('leverage') is not None else 1,
                     'raw_data': position
                 }
                 active_positions.append(standardized_position)

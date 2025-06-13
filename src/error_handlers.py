@@ -927,17 +927,27 @@ def api_error_handler(func=None, retry_count=3, base_delay=2, max_delay=30):
         base_delay (float): 기본 지연 시간(초)
         max_delay (float): 최대 지연 시간(초)
     """
-    return error_handler(
-        func=func,
-        retry_count=retry_count,
-        base_delay=base_delay,
-        max_delay=max_delay,
-        handler_type="api",
-        log_level="warning",
-        retry_on_status_codes=[400, 401, 403, 404, 408, 429, 500, 502, 503, 504, 520, 521, 522, 524],
-        adaptive_backoff=True,
-        collect_context=True
-    )
+    if func is None:
+        # 파라미터가 제공된 경우의 부분 적용
+        return lambda f: api_error_handler(f, retry_count, base_delay, max_delay)
+    
+    # 함수가 직접 제공된 경우
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        # 모든 인자를 원래 함수에 전달하는 내부 wrapper
+        decorated_func = error_handler(
+            retry_count=retry_count,
+            base_delay=base_delay,
+            max_delay=max_delay,
+            handler_type="api",
+            log_level="warning",
+            retry_on_status_codes=[400, 401, 403, 404, 408, 429, 500, 502, 503, 504, 520, 521, 522, 524],
+            adaptive_backoff=True,
+            collect_context=True
+        )(func)
+        return decorated_func(*args, **kwargs)
+    
+    return wrapper
 
 def network_error_handler(func=None, retry_count=5, base_delay=2, max_delay=60):
     """

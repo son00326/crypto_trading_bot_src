@@ -40,21 +40,25 @@ def measure_api_performance(func):
         callable: 성능 측정 기능이 추가된 래퍼 함수
     """
     @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(*args, **kwargs):
+        # 첫 번째 인자를 self로 가정 (클래스 메서드인 경우)
+        self = args[0] if args else None
         method_name = func.__name__
         # 시작 시간 기록
         start_time = time.time()
         try:
-            # 원본 함수 실행
-            result = func(self, *args, **kwargs)
+            # 원본 함수 실행 - 원래 인자 그대로 전달
+            result = func(*args, **kwargs)
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
-            self.logger.debug(f"{method_name} 완료 (소요시간: {elapsed:.4f}초)")
+            if hasattr(self, 'logger'):
+                self.logger.debug(f"{method_name} 완료 (소요시간: {elapsed:.4f}초)")
             return result
         except Exception as e:
             # 예외 발생 시에도 소요 시간 기록
             elapsed = time.time() - start_time
-            self.logger.error(f"{method_name} 실패 (소요시간: {elapsed:.4f}초): {str(e)}")
+            if hasattr(self, 'logger'):
+                self.logger.error(f"{method_name} 실패 (소요시간: {elapsed:.4f}초): {str(e)}")
             raise
     return wrapper
 
@@ -64,7 +68,7 @@ def log_api_request(endpoint_format=None, include_response=True):
     API 요청 및 응답을 자동으로 로깅하는 데코레이터
     
     Args:
-        endpoint_format (str): 엔드포인트 형식 (메서드 파라미터로 포맷팅됨)
+        endpoint_format (str): 엔드포인트 형식 (메서드 파라미터로 포매팅됨)
         include_response (bool): 응답 데이터 로깅 여부
     
     Returns:
@@ -72,34 +76,57 @@ def log_api_request(endpoint_format=None, include_response=True):
     """
     def decorator(func):
         @functools.wraps(func)
-        def wrapper(self, *args, **kwargs):
+        def wrapper(*args, **kwargs):
+            # 첫 번째 인자는 self임을 가정 (API 메서드는 일반적으로 클래스 메서드)
+            self = args[0] if args else None
+            
             # 요청 엔드포인트 구성
             if endpoint_format:
-                # 파라미터 값으로 엔드포인트 포맷팅
-                # self를 제외한 첫 번째 인자는 보통 symbol
-                symbol = kwargs.get('symbol') or (args[0] if args else None) or self.symbol
-                symbol = self.format_symbol(symbol) if hasattr(self, 'format_symbol') else symbol
-                endpoint = endpoint_format.format(symbol=symbol)
+                # 파라미터 값으로 엔드포인트 포매팅
+                # symbol 파라미터 추출 - kwargs에서 먼저 찾고 없으면 args[1](첫 번째 인자는 self)
+                symbol = None
+                if 'symbol' in kwargs:
+                    symbol = kwargs['symbol']
+                elif len(args) > 1:
+                    symbol = args[1]
+                elif hasattr(self, 'symbol'):
+                    symbol = self.symbol
+                    
+                # symbol 형식화
+                if symbol and hasattr(self, 'format_symbol'):
+                    symbol = self.format_symbol(symbol)
+                    
+                try:
+                    # 엔드포인트 포매팅 - 표현식에 필요한 모든 변수가 있는지 확인
+                    endpoint = endpoint_format.format(symbol=symbol)
+                except (KeyError, IndexError, ValueError):
+                    # 포매팅 오류시 기본 엔드포인트 사용
+                    endpoint = f"/{func.__name__}"
             else:
                 # 기본 엔드포인트는 메서드 이름 사용
                 endpoint = f"/{func.__name__}"
                 
-            # 요청 데이터 구성
+            # 요청 데이터 구성 - 모든 kwargs와 일부 필터링된 args
             request_data = {k: v for k, v in kwargs.items() if v is not None}
-            if args:
-                for i, arg in enumerate(args):
-                    request_data[f"arg{i}"] = arg
+            # args에서 먼저 self 제외
+            filtered_args = args[1:] if args else []
+            if filtered_args:
+                for i, arg in enumerate(filtered_args):
+                    # 대용량 타입은 표시하지 않음
+                    if isinstance(arg, (str, int, float, bool)) or arg is None:
+                        request_data[f"arg{i}"] = arg
                     
             # API 호출 전 로깅
             http_method = "GET" if func.__name__.startswith("get") else "POST"
-            log_api_call(endpoint, http_method, request_data=request_data)
+            if hasattr(self, 'logger'):
+                log_api_call(endpoint, http_method, request_data=request_data)
             
             try:
-                # 함수 실행
-                result = func(self, *args, **kwargs)
+                # 함수 실행 - 모든 인자 그대로 전달
+                result = func(*args, **kwargs)
                 
                 # 응답 로깅 (필요한 경우)
-                if include_response:
+                if include_response and hasattr(self, 'logger'):
                     # 대용량 데이터인 경우 요약 정보만 로깅
                     if isinstance(result, pd.DataFrame):
                         log_data = {
@@ -126,7 +153,8 @@ def log_api_request(endpoint_format=None, include_response=True):
                 
             except Exception as e:
                 # 오류 로깅
-                log_api_call(endpoint, http_method, error=e)
+                if hasattr(self, 'logger'):
+                    log_api_call(endpoint, http_method, error=e)
                 raise
                 
         return wrapper
@@ -403,6 +431,13 @@ class ExchangeAPI:
                         self.logger.error(f"복구 후 시세 정보 재시도 실패: {retry_error}")
             
             return None
+    
+    def fetch_ticker(self, symbol=None):
+        """호환성을 위한 get_ticker 메서드의 별칭
+        
+        일부 코드에서 fetch_ticker를 직접 호출하고 있어 호환성을 위해 추가
+        """
+        return self.get_ticker(symbol)
     
     @api_error_handler
     @measure_api_performance
