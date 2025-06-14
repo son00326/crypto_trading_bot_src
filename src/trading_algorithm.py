@@ -680,20 +680,28 @@ class TradingAlgorithm:
         Returns:
             threading.Thread: 거래 스레드 객체
         """
-        self.logger.info(f"거래 스레드 시작 (간격: {interval}초)")
+        self.logger.info(f"거래 스레드 시작 요청 (간격: {interval}초)")
+        self.logger.info(f"거래 활성화 상태: {self.trading_active}")
         
         # 거래 스레드 상태 설정
         self.trading_active = True
         self.trading_interval = interval
         
+        self.logger.info(f"거래 활성화 상태 변경됨: {self.trading_active}")
+        
         # 거래 루프를 실행할 스레드 생성
         def trading_loop():
-            self.logger.info("거래 루프 시작")
+            self.logger.info("=== 거래 루프 시작 ===")
+            self.logger.info(f"거래 심볼: {self.symbol}")
+            self.logger.info(f"타임프레임: {self.timeframe}")
+            self.logger.info(f"전략: {self.strategy.name if hasattr(self.strategy, 'name') else 'Unknown'}")
             consecutive_errors = 0
             max_consecutive_errors = 5  # 연속 오류 최대 허용 횟수
             
             while self.trading_active:
                 try:
+                    self.logger.info(f"[거래 사이클 시작] trading_active={self.trading_active}")
+                    
                     # 거래 사이클 실행
                     self.execute_trading_cycle()
                     
@@ -751,15 +759,19 @@ class TradingAlgorithm:
         3. 리스크 평가 및 관리
         4. 신호가 있다면 주문 실행
         """
-        self.logger.info(f"거래 사이클 실행 시작 - 심볼: {self.symbol}")
+        self.logger.info(f"=== 거래 사이클 실행 시작 ===")
+        self.logger.info(f"심볼: {self.symbol}, 전략: {self.strategy.__class__.__name__}")
+        self.logger.info(f"테스트 모드: {self.test_mode}, 거래 활성화: {self.trading_active}")
         cycle_start_time = datetime.now()
         
         try:
             # 1. 현재 포트폴리오 상태 확인
+            self.logger.info("1단계: 포트폴리오 상태 확인 중...")
             portfolio_status = self.portfolio_manager.get_portfolio_status()
-            self.logger.debug(f"포트폴리오 상태: {portfolio_status}")
+            self.logger.info(f"포트폴리오 상태: 잔액={portfolio_status.get('quote_balance', 0):.4f}, 포지션 수={len(portfolio_status.get('open_positions', []))}")
             
             # 2. 시장 데이터 가져오기 (OHLCV 데이터)
+            self.logger.info("2단계: 시장 데이터 수집 중...")
             market_data = self.data_collector.fetch_recent_data(
                 limit=self.strategy.required_data_points
             )
@@ -768,14 +780,19 @@ class TradingAlgorithm:
                 self.logger.warning(f"충분한 시장 데이터를 가져올 수 없습니다. 가져온 데이터: {len(market_data) if market_data is not None else 0}/{self.strategy.required_data_points}")
                 return
             
+            self.logger.info(f"시장 데이터 수집 완료: {len(market_data)}개 캔들")
+            
             # 3. 현재 가격 가져오기
+            self.logger.info("3단계: 현재 가격 조회 중...")
             current_price = self.get_current_price(self.symbol)
             if current_price is None:
                 self.logger.warning("현재 가격을 가져올 수 없습니다. 거래 사이클을 건너뜁니다.")
                 return
             
+            self.logger.info(f"현재 가격: {current_price}")
+            
             # 4. 전략에 데이터 전달하여 거래 신호 생성
-            self.logger.info(f"신호 생성 중 - 전략: {self.strategy.__class__.__name__}, 현재 가격: {current_price}")
+            self.logger.info(f"4단계: 거래 신호 생성 중... (전략: {self.strategy.__class__.__name__})")
             signal = self.strategy.generate_signal(
                 market_data=market_data, 
                 current_price=current_price,
@@ -784,12 +801,17 @@ class TradingAlgorithm:
             
             # 5. 신호 로깅
             if signal:
-                self.logger.info(f"거래 신호 발생: {signal.direction}, 심볼: {self.symbol}, 가격: {current_price}, 신뢰도: {signal.confidence:.2f}")
+                self.logger.info(f"★ 거래 신호 발생! ★")
+                self.logger.info(f"  - 방향: {signal.direction}")
+                self.logger.info(f"  - 신뢰도: {signal.confidence:.2f}")
+                self.logger.info(f"  - 강도: {signal.strength}")
+                self.logger.info(f"  - 전략: {signal.strategy}")
             else:
-                self.logger.debug(f"거래 신호 없음 - 현재 가격: {current_price}")
+                self.logger.info("거래 신호 없음 (HOLD)")
                 return
             
             # 6. 리스크 평가 및 관리
+            self.logger.info("5단계: 리스크 평가 중...")
             risk_assessment = self.risk_manager.assess_risk(
                 signal=signal,
                 portfolio_status=portfolio_status,
@@ -800,10 +822,14 @@ class TradingAlgorithm:
                 self.logger.warning(f"리스크 평가 결과 거래 금지: {risk_assessment['reason']}")
                 return
             
+            self.logger.info(f"리스크 평가 통과: 포지션 크기={risk_assessment['position_size']}")
+            
             # 7. 신호에 따른 주문 실행
             position_size = risk_assessment['position_size']
             if signal.direction == 'buy':
-                self.logger.info(f"매수 주문 실행 - 금액: {position_size}, 가격: {current_price}")
+                self.logger.info(f"6단계: 매수 주문 실행 중...")
+                self.logger.info(f"  - 금액: {position_size}")
+                self.logger.info(f"  - 가격: {current_price}")
                 order_result = self.order_executor.execute_buy(
                     symbol=self.symbol,
                     amount=position_size,
@@ -811,7 +837,9 @@ class TradingAlgorithm:
                     signal=signal
                 )
             elif signal.direction == 'sell':
-                self.logger.info(f"매도 주문 실행 - 금액: {position_size}, 가격: {current_price}")
+                self.logger.info(f"6단계: 매도 주문 실행 중...")
+                self.logger.info(f"  - 금액: {position_size}")
+                self.logger.info(f"  - 가격: {current_price}")
                 order_result = self.order_executor.execute_sell(
                     symbol=self.symbol,
                     amount=position_size,
@@ -824,7 +852,10 @@ class TradingAlgorithm:
             
             # 8. 주문 결과 처리
             if order_result and order_result.get('success'):
-                self.logger.info(f"주문 성공: {signal.direction}, 주문 ID: {order_result.get('order_id')}, 금액: {position_size}")
+                self.logger.info(f"✅ 주문 성공!")
+                self.logger.info(f"  - 방향: {signal.direction}")
+                self.logger.info(f"  - 주문 ID: {order_result.get('order_id')}")
+                self.logger.info(f"  - 금액: {position_size}")
                 
                 # 거래 정보 저장 (매수 시)
                 if signal.direction == 'buy':

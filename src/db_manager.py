@@ -104,7 +104,8 @@ class DatabaseManager:
                 closed_at TIMESTAMP,
                 pnl REAL,
                 status TEXT NOT NULL,
-                additional_info TEXT
+                additional_info TEXT,
+                raw_data TEXT
             )
             ''')
             
@@ -139,6 +140,14 @@ class DatabaseManager:
                             pass
             except Exception as e:
                 logger.warning(f"positions 테이블 마이그레이션 중 경고: {e}")
+            
+            # raw_data 컬럼 추가
+            cursor.execute("PRAGMA table_info(positions)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'raw_data' not in columns:
+                cursor.execute('ALTER TABLE positions ADD COLUMN raw_data TEXT')
+                conn.commit()
+                logger.info("positions 테이블에 raw_data 컬럼 추가됨")
             
             # 거래 내역 테이블
             cursor.execute('''
@@ -492,103 +501,6 @@ class DatabaseManager:
             conn.rollback()
             return False
             
-    def save_position(self, position_data):
-        """
-        포지션 정보 저장
-        
-        Args:
-            position_data (dict): 포지션 정보
-        
-        Returns:
-            int: 새로 생성된 포지션 ID
-        """
-        try:
-            # 스레드 안전 연결 가져오기
-            conn, cursor = self._get_connection()
-            
-            position_id = position_data.get('id') or position_data.get('position_id')
-            
-            # 이미 존재하는 포지션인지 확인
-            if position_id:
-                cursor.execute("SELECT id FROM positions WHERE id = ?", (position_id,))
-                exists = cursor.fetchone()
-                
-                if exists:
-                    # 기존 포지션 업데이트
-                    set_clause = ", ".join([f"{k} = ?" for k in position_data.keys() if k != 'id'])
-                    values = [position_data[k] for k in position_data.keys() if k != 'id']
-                    values.append(position_id)
-                    
-                    query = f"UPDATE positions SET {set_clause} WHERE id = ?"
-                    cursor.execute(query, values)
-                else:
-                    # 새 포지션 삽입
-                    placeholders = ', '.join(['?'] * len(position_data))
-                    columns = ', '.join(position_data.keys())
-                    values = list(position_data.values())
-                    
-                    query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
-                    cursor.execute(query, values)
-            else:
-                # ID가 없는 새 포지션 삽입
-                placeholders = ', '.join(['?'] * len(position_data))
-                columns = ', '.join(position_data.keys())
-                values = list(position_data.values())
-                
-                query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
-                cursor.execute(query, values)
-            
-            conn.commit()
-            logger.info(f"포지션 저장 완료 - {position_data.get('symbol')}")
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"포지션 저장 오류: {e}")
-            conn.rollback()
-            return False
-    
-    def load_bot_state(self):
-        """
-        저장된 봇 상태 불러오기
-        
-        Returns:
-            dict: 봇 상태 정보 (없으면 None)
-        """
-        try:
-            # 스레드 안전 연결 가져오기
-            conn, cursor = self._get_connection()
-            
-            cursor.execute("SELECT * FROM bot_state ORDER BY updated_at DESC LIMIT 1")
-            row = cursor.fetchone()
-            
-            if row:
-                state = dict(row)
-                
-                # JSON 형식의 필드 역직렬화
-                if 'parameters' in state and state['parameters']:
-                    state['parameters'] = json.loads(state['parameters'])
-                
-                if 'additional_info' in state and state['additional_info']:
-                    state['additional_info'] = json.loads(state['additional_info'])
-                    
-                    # additional_info에서 positions와 current_trade_info 복원
-                    if isinstance(state['additional_info'], dict):
-                        if 'positions' in state['additional_info']:
-                            state['positions'] = state['additional_info'].pop('positions')
-                            logger.info(f"포지션 정보 복원: {len(state['positions'])}개")
-                        
-                        if 'current_trade_info' in state['additional_info']:
-                            state['current_trade_info'] = state['additional_info'].pop('current_trade_info')
-                            logger.info(f"거래 정보 복원: {state['current_trade_info']}")
-                
-                logger.info("봇 상태 불러오기 완료")
-                return state
-            else:
-                logger.warning("저장된 봇 상태가 없습니다")
-                return None
-        except sqlite3.Error as e:
-            logger.error(f"봇 상태 불러오기 오류: {e}")
-            return None
-    
     def save_position(self, position_data):
         """
         포지션 정보 저장
@@ -1342,3 +1254,78 @@ class DatabaseManager:
             if not query.strip().upper().startswith(('SELECT', 'PRAGMA')):
                 self.conn.rollback()
             return []
+
+    def load_bot_state(self):
+        """
+        가장 최근의 봇 상태 불러오기
+        
+        Returns:
+            dict: 봇 상태 정보
+        """
+        try:
+            conn, cursor = self._get_connection()
+            cursor.execute("""
+                SELECT * FROM bot_state 
+                ORDER BY updated_at DESC 
+                LIMIT 1
+            """)
+            
+            row = cursor.fetchone()
+            if not row:
+                return None
+                
+            # Row를 딕셔너리로 변환
+            columns = [description[0] for description in cursor.description]
+            state = dict(zip(columns, row))
+            
+            # JSON 필드 파싱
+            if state.get('additional_info'):
+                try:
+                    state['additional_info'] = json.loads(state['additional_info'])
+                except json.JSONDecodeError:
+                    pass
+                    
+            logger.info("봇 상태 불러오기 완료")
+            return state
+            
+        except sqlite3.Error as e:
+            logger.error(f"봇 상태 불러오기 오류: {e}")
+            return None
+            
+    def save_positions(self, positions):
+        """
+        포지션 정보 저장
+        
+        Args:
+            positions (list): 포지션 정보 목록
+        
+        Returns:
+            bool: 저장 성공 여부
+        """
+        try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
+            # 기존 포지션 삭제
+            cursor.execute("DELETE FROM positions WHERE 1=1")
+            
+            # 새 포지션 저장
+            for position in positions:
+                # JSON으로 직렬화해야 하는 필드 처리
+                if 'additional_info' in position and isinstance(position['additional_info'], dict):
+                    position['additional_info'] = json.dumps(position['additional_info'])
+                
+                placeholders = ', '.join(['?'] * len(position))
+                columns = ', '.join(position.keys())
+                values = list(position.values())
+                
+                query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
+                cursor.execute(query, values)
+            
+            conn.commit()
+            logger.info("포지션 저장 완료")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"포지션 저장 오류: {e}")
+            conn.rollback()
+            return False
