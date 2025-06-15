@@ -60,7 +60,7 @@ class TradingAlgorithm:
     
     def __init__(self, exchange_id=DEFAULT_EXCHANGE, symbol=DEFAULT_SYMBOL, timeframe=DEFAULT_TIMEFRAME, 
                  strategy=None, initial_balance=None, test_mode=True, restore_state=True,
-                 max_init_retries=3, retry_delay=2, strategy_params=None):
+                 max_init_retries=3, retry_delay=2, strategy_params=None, market_type='spot', leverage=1):
         """
         거래 알고리즘 초기화
         
@@ -75,22 +75,27 @@ class TradingAlgorithm:
             max_init_retries (int): API 초기화 최대 재시도 횟수
             retry_delay (int): 재시도 간 지연 시간(초)
             strategy_params (dict): 전략별 세부 파라미터
+            market_type (str): 시장 타입 ('spot' 또는 'futures')
+            leverage (int): 레버리지 배수 (선물거래에서만 사용)
         """
         # 로거 초기화
         self.logger = get_logger('trading_algorithm')
         
+        # 기본 속성 설정
         self.exchange_id = exchange_id
         self.symbol = symbol
         self.timeframe = timeframe
         self.test_mode = test_mode
         self.strategy_params = strategy_params or {}
+        self.market_type = market_type  # market_type 속성 추가
+        self.leverage = leverage  # leverage 속성 추가
         
         # 데이터베이스 관리자 초기화
         self.db = DatabaseManager()
         
         # 거래소 API 및 데이터 관련 객체 초기화 (재시도 로직 포함)
         self.exchange_api = self._initialize_exchange_api_with_retry(
-            exchange_id, symbol, timeframe, max_retries=max_init_retries, delay=retry_delay
+            exchange_id, symbol, timeframe, market_type=self.market_type, leverage=self.leverage, max_retries=max_init_retries, delay=retry_delay
         )
         
         # API 초기화 성공 후 나머지 구성요소 초기화
@@ -275,7 +280,7 @@ class TradingAlgorithm:
         
         logger.info(f"{exchange_id} 거래소의 {symbol} 거래 알고리즘이 초기화되었습니다.")
         
-    def _initialize_exchange_api_with_retry(self, exchange_id, symbol, timeframe, max_retries=3, delay=2):
+    def _initialize_exchange_api_with_retry(self, exchange_id, symbol, timeframe, market_type='spot', leverage=1, max_retries=3, delay=2):
         """
         거래소 API를 초기화하고 연결을 검증합니다. 실패 시 재시도합니다.
         
@@ -283,6 +288,8 @@ class TradingAlgorithm:
             exchange_id (str): 거래소 ID
             symbol (str): 거래 심볼
             timeframe (str): 타임프레임
+            market_type (str): 시장 타입 ('spot' 또는 'futures')
+            leverage (int): 레버리지 배수 (선물거래에서만 사용)
             max_retries (int): 최대 재시도 횟수
             delay (int): 재시도 간 지연 시간(초)
             
@@ -298,7 +305,13 @@ class TradingAlgorithm:
         while retry_count <= max_retries:
             try:
                 # 거래소 API 초기화
-                exchange_api = ExchangeAPI(exchange_id=exchange_id, symbol=symbol, timeframe=timeframe)
+                exchange_api = ExchangeAPI(
+                    exchange_id=exchange_id, 
+                    symbol=symbol, 
+                    timeframe=timeframe,
+                    market_type=market_type,
+                    leverage=leverage
+                )
                 
                 # API 키 유효성 검증 (간단한 API 호출로 확인)
                 try:
@@ -318,7 +331,7 @@ class TradingAlgorithm:
             except Exception as e:
                 last_exception = e
                 retry_count += 1
-                self.logger.warning(f"거래소 API 초기화 실패 ({retry_count}/{max_retries}): {str(e)}")
+                self.logger.warning(f"거래소 API 초기화 실패 ({retry_count}/{max_retries}): {e}")
                 
                 if retry_count <= max_retries:
                     self.logger.info(f"{delay}초 후 재시도 합니다...")
@@ -910,28 +923,157 @@ class TradingAlgorithm:
             except Exception as event_error:
                 self.logger.error(f"오류 이벤트 발행 중 추가 오류: {event_error}")
 
-# 테스트 코드
-if __name__ == "__main__":
-    # 거래 알고리즘 초기화 (테스트 모드)
-    algorithm = TradingAlgorithm(
-        exchange_id='binance',
-        symbol='BTC/USDT',
-        timeframe='1h',
-        initial_balance=10000,  # 10,000 USDT
-        test_mode=True
-    )
-    
-    # 최근 데이터 가져오기
-    df = algorithm.data_collector.fetch_recent_data(limit=100)
-    
-    if df is not None and not df.empty:
-        # 단일 거래 사이클 테스트
-        algorithm.execute_trading_cycle()
+    def get_current_price(self, symbol=None):
+        """
+        지정된 심볼의 현재 가격을 가져옵니다.
         
-        # 포트폴리오 요약 정보 출력
-        summary = algorithm.get_portfolio_summary()
-        print("\n포트폴리오 요약 정보:")
-        for key, value in summary.items():
-            print(f"  {key}: {value}")
-    else:
-        print("테스트할 데이터가 없습니다.")
+        Args:
+            symbol (str): 가격을 조회할 심볼 (None일 경우 기본 심볼 사용)
+            
+        Returns:
+            float: 현재 가격, 실패 시 None
+        """
+        try:
+            if symbol is None:
+                symbol = self.symbol
+            
+            # exchange_api를 통해 현재 가격 조회
+            ticker = self.exchange_api.exchange.fetch_ticker(symbol)
+            current_price = ticker.get('last', ticker.get('close'))
+            
+            if current_price is None:
+                self.logger.error(f"현재 가격을 가져올 수 없습니다: {symbol}")
+                return None
+                
+            return float(current_price)
+            
+        except Exception as e:
+            self.logger.error(f"현재 가격 조회 중 오류 발생: {e}")
+            return None
+    
+    def get_open_positions(self, symbol=None):
+        """
+        현재 오픈된 포지션 목록을 가져옵니다.
+        
+        Args:
+            symbol (str): 포지션을 조회할 심볼 (None일 경우 모든 포지션)
+            
+        Returns:
+            list: 포지션 목록
+        """
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            # exchange_api를 통해 포지션 조회
+            positions = self.exchange_api.get_positions(symbol)
+            
+            # 열린 포지션만 필터링
+            open_positions = []
+            for pos in positions:
+                if pos.get('contracts', 0) != 0 or pos.get('size', 0) != 0:
+                    open_positions.append(pos)
+                    
+            return open_positions
+            
+        except Exception as e:
+            self.logger.error(f"포지션 조회 중 오류 발생: {e}")
+            return []
+    
+    def close_position(self, symbol=None, position_id=None, size=None):
+        """
+        특정 포지션을 청산합니다.
+        
+        Args:
+            symbol (str): 청산할 포지션의 심볼
+            position_id (str): 청산할 포지션 ID (선택사항)
+            size (float): 청산할 수량 (None일 경우 전체 청산)
+            
+        Returns:
+            dict: 주문 결과
+        """
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            # 현재 포지션 조회
+            positions = self.get_open_positions(symbol)
+            if not positions:
+                self.logger.warning(f"청산할 포지션이 없습니다: {symbol}")
+                return {'success': False, 'error': 'No open positions'}
+                
+            # 첫 번째 포지션 선택 (position_id가 지정되지 않은 경우)
+            position = positions[0]
+            if position_id:
+                # position_id가 지정된 경우 해당 포지션 찾기
+                for pos in positions:
+                    if pos.get('id') == position_id:
+                        position = pos
+                        break
+                        
+            # 포지션 사이드 확인
+            side = position.get('side', '').lower()
+            position_size = abs(position.get('contracts', 0) or position.get('size', 0))
+            
+            if position_size == 0:
+                self.logger.warning(f"포지션 크기가 0입니다: {symbol}")
+                return {'success': False, 'error': 'Position size is 0'}
+                
+            # 청산할 수량 결정
+            close_size = size if size else position_size
+            close_size = min(close_size, position_size)  # 포지션 크기를 초과하지 않도록
+            
+            # 반대 방향 주문으로 포지션 청산
+            if side == 'long':
+                # 롱 포지션 청산 = 매도
+                order_result = self.order_executor.execute_sell(
+                    symbol=symbol,
+                    amount=close_size,
+                    price=None,  # 시장가 주문
+                    signal=None
+                )
+            elif side == 'short':
+                # 숏 포지션 청산 = 매수
+                order_result = self.order_executor.execute_buy(
+                    symbol=symbol,
+                    amount=close_size,
+                    price=None,  # 시장가 주문
+                    signal=None
+                )
+            else:
+                self.logger.error(f"알 수 없는 포지션 사이드: {side}")
+                return {'success': False, 'error': f'Unknown position side: {side}'}
+                
+            return order_result
+            
+        except Exception as e:
+            self.logger.error(f"포지션 청산 중 오류 발생: {e}")
+            return {'success': False, 'error': str(e)}
+    
+    # 테스트 코드
+    if __name__ == "__main__":
+        # 거래 알고리즘 초기화 (테스트 모드)
+        algorithm = TradingAlgorithm(
+            exchange_id='binance',
+            symbol='BTC/USDT',
+            timeframe='1h',
+            initial_balance=10000,  # 10,000 USDT
+            test_mode=True,
+            market_type='spot',
+            leverage=1
+        )
+        
+        # 최근 데이터 가져오기
+        df = algorithm.data_collector.fetch_recent_data(limit=100)
+        
+        if df is not None and not df.empty:
+            # 단일 거래 사이클 테스트
+            algorithm.execute_trading_cycle()
+            
+            # 포트폴리오 요약 정보 출력
+            summary = algorithm.get_portfolio_summary()
+            print("\n포트폴리오 요약 정보:")
+            for key, value in summary.items():
+                print(f"  {key}: {value}")
+        else:
+            print("테스트할 데이터가 없습니다.")

@@ -447,6 +447,30 @@ class ExchangeAPI:
     
     @api_error_handler
     @measure_api_performance
+    @log_api_request(endpoint_format="/market/{symbol}")
+    def get_market_info(self, symbol=None):
+        """거래 페어의 시장 정보 조회"""
+        try:
+            symbol = self.format_symbol(symbol)
+            self.logger.info(f"시장 정보 조회: {symbol}")
+            
+            # markets 정보가 없으면 먼저 로드
+            if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
+                self.exchange.load_markets()
+            
+            # 특정 심볼의 시장 정보 반환
+            if symbol in self.exchange.markets:
+                return self.exchange.markets[symbol]
+            else:
+                self.logger.warning(f"시장 정보를 찾을 수 없음: {symbol}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"시장 정보 조회 실패: {str(e)}")
+            return None
+    
+    @api_error_handler
+    @measure_api_performance
     @log_api_request(endpoint_format="/ohlcv/{symbol}")
     def get_ohlcv(self, symbol=None, timeframe=None, limit=100):
         """OHLCV 데이터 조회 (봉 데이터)"""
@@ -503,136 +527,6 @@ class ExchangeAPI:
             except Exception as fallback_e:
                 self.logger.error(f"폴백 방식으로도 OHLCV 데이터 가져오기 실패: {str(fallback_e)}")
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    
-    @api_error_handler
-    @measure_api_performance
-    @log_api_request(endpoint_format="/balance")
-    def get_balance(self, balance_type=None):
-        """계정 잔고 조회
-        
-        Args:
-            balance_type (str, optional): 잔고 유형 ('spot', 'future', 'all'). 기본값은 인스턴스의 market_type 값
-        
-        Returns:
-            dict: 잔고 정보. balance_type이 'all'인 경우 spot과 future 모두 포함
-            
-        Raises:
-            ValueError: 잘못된 balance_type 지정 발생 시
-            APIError: API 호출 오류
-            AuthenticationError: 인증 오류 발생 시
-            RateLimitExceeded: 요청 제한 초과 시
-        """
-        # 유효한 balance_type 값 확인
-        valid_types = ['spot', 'future', 'futures', 'all', None]
-        if balance_type not in valid_types:
-            error_msg = f"잘못된 balance_type: {balance_type}, 유효한 값: {valid_types}"
-            self.logger.error(error_msg)
-            raise ValueError(error_msg)
-            
-        # futures를 future로 통일
-        if balance_type == 'futures':
-            balance_type = 'future'
-            
-        # 기본 잔고 유형 설정
-        if balance_type is None:
-            balance_type = self.market_type
-            self.logger.debug(f"기본 잔고 유형 사용: {balance_type}")
-        
-        # 모든 잔고 가져오기
-        if balance_type == 'all':
-            # 현물 잔고 조회
-            spot_balance = None
-            future_balance = None
-            
-            try:
-                spot_balance = self.exchange.fetch_balance()
-                self.logger.debug(f"현물 잔고 조회 성공: {self.exchange_id}")
-            except Exception as e:
-                self.logger.warning(f"현물 잔고 조회 실패: {str(e)}")
-            
-            try:
-                # 선물 잔고 파라미터
-                params = {'type': 'future'} if self.exchange_id == 'binance' else {}
-                future_balance = self.exchange.fetch_balance(params=params)
-                self.logger.debug(f"선물 잔고 조회 성공: {self.exchange_id}")
-            except Exception as e:
-                self.logger.warning(f"선물 잔고 조회 실패: {str(e)}")
-            
-            # 결과 병합
-            result = {
-                'spot': {
-                    'total': spot_balance.get('total', {}) if spot_balance else {},
-                    'free': spot_balance.get('free', {}) if spot_balance else {},
-                    'used': spot_balance.get('used', {}) if spot_balance else {}
-                },
-                'future': {
-                    'total': future_balance.get('total', {}) if future_balance else {},
-                    'free': future_balance.get('free', {}) if future_balance else {},
-                    'used': future_balance.get('used', {}) if future_balance else {}
-                }
-            }
-            
-            return result
-        
-        # 선물 잔고만 가져오기
-        elif balance_type == 'future':
-            params = {'type': 'future'} if self.exchange_id == 'binance' else {}
-            balance = self.exchange.fetch_balance(params=params)
-            self.logger.info(f"선물 잔고 조회 성공: {self.exchange_id}")
-            return balance
-        
-        # 현물 잔고만 가져오기 (기본값)
-        else:  # 기본값 또는 'spot'
-            balance = self.exchange.fetch_balance()
-            self.logger.info(f"현물 잔고 조회 성공: {self.exchange_id}")
-            return balance
-            
-    @api_error_handler
-    @measure_api_performance
-    @log_api_request(endpoint_format="/positions/{symbol}")
-    def get_positions(self, symbol: Optional[str] = None) -> List[Dict]:
-        """현재 포지션 정보 조회"""
-        try:
-            # 로그 추가
-            self.logger.info(f"get_positions 호출: symbol={symbol}, market_type={self.market_type}, exchange_id={self.exchange_id}")
-            
-            # 현물 거래는 포지션이 없음
-            if self.market_type != 'futures':
-                return []
-            
-            # 바이낸스 선물의 경우 특별 처리
-            if self.exchange_id == 'binance' and self.market_type == 'futures':
-                try:
-                    # 바이낸스 선물은 심볼 파라미터 없이 모든 포지션을 조회
-                    self.logger.info("바이낸스 선물 포지션 조회 - 전체 포지션 요청")
-                    
-                    # ccxt 객체의 URL 상태 확인
-                    if hasattr(self.exchange, 'urls') and 'api' in self.exchange.urls:
-                        self.logger.info(f"현재 API URLs: {json.dumps(self.exchange.urls['api'], indent=2)}")
-                    
-                    # fetch_positions_risk를 직접 호출 (빈 배열 전달)
-                    positions = self.exchange.fetch_positions_risk([])  # 빈 배열로 모든 포지션 조회
-                    
-                    # 특정 심볼로 필터링
-                    if symbol and positions:
-                        formatted_symbol = self.format_symbol(symbol)
-                        positions = [pos for pos in positions if pos.get('symbol') == formatted_symbol]
-                        self.logger.info(f"전체 {len(positions)}개 포지션 중 {formatted_symbol}: {len(positions)}개")
-                    
-                    return positions
-                except Exception as e:
-                    self.logger.error(f"바이낸스 선물 포지션 조회 실패: {str(e)}")
-                    self.logger.error(traceback.format_exc())
-                    return []
-            else:
-                # 다른 거래소는 기본 방식 사용
-                positions = self.exchange.fetch_positions([symbol] if symbol else None)
-                
-            return positions
-            
-        except Exception as e:
-            self.logger.error(f"포지션 조회 오류: {str(e)}")
-            return []
     
     @api_error_handler
     def create_market_buy_order(self, symbol=None, amount=None):
@@ -807,8 +701,6 @@ class ExchangeAPI:
                     'timeInForce': 'GTC',  # Good Till Cancel
                 }
                 
-                # 선물에서의 매도는 숙편 포지션 설정
-                # 매도 = 쇼트 포지션 설정 (매수는 롱 포지션)
                 self.logger.info(f"선물 시장가 매도 주문 시도 (쇼트 포지션): {symbol}, {amount}, 레버리지: {self.leverage}배")
             else:
                 self.logger.info(f"현물 시장가 매도 주문 시도: {symbol}, {amount}")
@@ -1607,6 +1499,213 @@ class ExchangeAPI:
             log_api_call(endpoint, "GET", error=e)
             self.logger.error(f"{error_msg}: {str(e)}\n{traceback.format_exc()}")
             raise APIError(error_msg, original_exception=e)
+
+    @api_error_handler
+    @measure_api_performance
+    @log_api_request(endpoint_format="/balance")
+    def get_balance(self, balance_type=None):
+        """계정 잔고 조회
+        
+        Args:
+            balance_type (str, optional): 잔고 유형 ('spot', 'future', 'all'). 기본값은 인스턴스의 market_type 값
+        
+        Returns:
+            dict: 잔고 정보. balance_type이 'all'인 경우 spot과 future 모두 포함
+            
+        Raises:
+            ValueError: 잘못된 balance_type 지정 발생 시
+            APIError: API 호출 오류
+            AuthenticationError: 인증 오류 발생 시
+            RateLimitExceeded: 요청 제한 초과 시
+        """
+        # 유효한 balance_type 값 확인
+        valid_types = ['spot', 'future', 'futures', 'all', None]
+        if balance_type not in valid_types:
+            error_msg = f"잘못된 balance_type: {balance_type}, 유효한 값: {valid_types}"
+            self.logger.error(error_msg)
+            raise ValueError(error_msg)
+            
+        # futures를 future로 통일
+        if balance_type == 'futures':
+            balance_type = 'future'
+            
+        # 기본 잔고 유형 설정
+        if balance_type is None:
+            balance_type = self.market_type
+            self.logger.debug(f"기본 잔고 유형 사용: {balance_type}")
+        
+        # 모든 잔고 가져오기
+        if balance_type == 'all':
+            # 현물 잔고 조회
+            spot_balance = None
+            future_balance = None
+            
+            try:
+                spot_balance = self.exchange.fetch_balance()
+                self.logger.debug(f"현물 잔고 조회 성공: {self.exchange_id}")
+            except Exception as e:
+                self.logger.warning(f"현물 잔고 조회 실패: {str(e)}")
+            
+            try:
+                # 선물 잔고 파라미터
+                params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+                future_balance = self.exchange.fetch_balance(params=params)
+                self.logger.debug(f"선물 잔고 조회 성공: {self.exchange_id}")
+            except Exception as e:
+                self.logger.warning(f"선물 잔고 조회 실패: {str(e)}")
+            
+            # 결과 병합
+            result = {
+                'spot': {
+                    'total': spot_balance.get('total', {}) if spot_balance else {},
+                    'free': spot_balance.get('free', {}) if spot_balance else {},
+                    'used': spot_balance.get('used', {}) if spot_balance else {}
+                },
+                'future': {
+                    'total': future_balance.get('total', {}) if future_balance else {},
+                    'free': future_balance.get('free', {}) if future_balance else {},
+                    'used': future_balance.get('used', {}) if future_balance else {}
+                }
+            }
+            
+            return result
+        
+        # 선물 잔고만 가져오기
+        elif balance_type == 'future':
+            params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+            balance = self.exchange.fetch_balance(params=params)
+            self.logger.info(f"선물 잔고 조회 성공: {self.exchange_id}")
+            return balance
+        
+        # 현물 잔고만 가져오기 (기본값)
+        else:  # 기본값 또는 'spot'
+            balance = self.exchange.fetch_balance()
+            self.logger.info(f"현물 잔고 조회 성공: {self.exchange_id}")
+            return balance
+            
+    @api_error_handler
+    @measure_api_performance
+    @log_api_request(endpoint_format="/positions/{symbol}")
+    def get_positions(self, symbol: Optional[str] = None) -> List[Dict]:
+        """현재 포지션 정보 조회"""
+        try:
+            # 로그 추가
+            self.logger.info(f"get_positions 호출: symbol={symbol}, market_type={self.market_type}, exchange_id={self.exchange_id}")
+            
+            # 현물 거래는 포지션이 없음
+            if self.market_type != 'futures':
+                return []
+            
+            # 바이낸스 선물의 경우 특별 처리
+            if self.exchange_id == 'binance' and self.market_type == 'futures':
+                try:
+                    # 바이낸스 선물은 심볼 파라미터 없이 모든 포지션을 조회
+                    self.logger.info("바이낸스 선물 포지션 조회 - 전체 포지션 요청")
+                    
+                    # CCXT v3에서는 fetch_positions를 사용
+                    positions = self.exchange.fetch_positions()  # 빈 배열이 아닌 파라미터 없이 호출
+                    
+                    # 특정 심볼로 필터링
+                    if symbol and positions:
+                        formatted_symbol = self.format_symbol(symbol)
+                        positions = [pos for pos in positions if pos.get('symbol') == formatted_symbol]
+                        self.logger.info(f"전체 {len(positions)}개 포지션 중 {formatted_symbol}: {len(positions)}개")
+                    
+                    return positions
+                except Exception as e:
+                    self.logger.error(f"바이낸스 선물 포지션 조회 실패: {str(e)}")
+                    self.logger.error(traceback.format_exc())
+                    return []
+            else:
+                # 다른 거래소는 기본 방식 사용
+                positions = self.exchange.fetch_positions([symbol] if symbol else None)
+                
+            return positions
+            
+        except Exception as e:
+            self.logger.error(f"포지션 조회 오류: {str(e)}")
+            return []
+    
+    @api_error_handler
+    def set_leverage(self, leverage, symbol=None):
+        """
+        지정된 심볼의 레버리지를 설정합니다.
+        
+        Args:
+            leverage (int): 설정할 레버리지 배수
+            symbol (str): 레버리지를 설정할 심볼 (None일 경우 기본 심볼 사용)
+            
+        Returns:
+            bool: 설정 성공 여부
+        """
+        try:
+            if self.market_type != 'futures':
+                self.logger.warning("레버리지 설정은 선물 거래에서만 가능합니다.")
+                return False
+                
+            if symbol is None:
+                symbol = self.symbol
+                
+            formatted_symbol = self.format_symbol(symbol)
+            
+            # 레버리지 설정
+            self.logger.info(f"레버리지 설정 시도: {formatted_symbol}, {leverage}배")
+            
+            if self.exchange_id == 'binance':
+                # 바이낸스의 경우 set_leverage 메서드 사용
+                result = self.exchange.set_leverage(leverage, formatted_symbol)
+                self.leverage = leverage  # 인스턴스 변수 업데이트
+                self.logger.info(f"레버리지 설정 완료: {formatted_symbol}, {leverage}배")
+                return True
+            else:
+                self.logger.warning(f"{self.exchange_id} 거래소는 레버리지 설정을 지원하지 않습니다.")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"레버리지 설정 중 오류 발생: {e}")
+            return False
+    
+    @api_error_handler
+    def set_margin_mode(self, margin_mode='cross', symbol=None):
+        """
+        지정된 심볼의 마진 모드를 설정합니다.
+        
+        Args:
+            margin_mode (str): 설정할 마진 모드 ('cross' 또는 'isolated')
+            symbol (str): 마진 모드를 설정할 심볼 (None일 경우 기본 심볼 사용)
+            
+        Returns:
+            bool: 설정 성공 여부
+        """
+        try:
+            if self.market_type != 'futures':
+                self.logger.warning("마진 모드 설정은 선물 거래에서만 가능합니다.")
+                return False
+                
+            if symbol is None:
+                symbol = self.symbol
+                
+            formatted_symbol = self.format_symbol(symbol)
+            
+            # 마진 모드 설정
+            self.logger.info(f"마진 모드 설정 시도: {formatted_symbol}, {margin_mode}")
+            
+            if self.exchange_id == 'binance':
+                # 바이낸스의 경우 set_margin_mode 메서드 사용
+                result = self.exchange.set_margin_mode(margin_mode, formatted_symbol)
+                self.logger.info(f"마진 모드 설정 완료: {formatted_symbol}, {margin_mode}")
+                return True
+            else:
+                self.logger.warning(f"{self.exchange_id} 거래소는 마진 모드 설정을 지원하지 않습니다.")
+                return False
+                
+        except Exception as e:
+            if "already" in str(e).lower():
+                self.logger.info(f"이미 {margin_mode} 마진 모드로 설정되어 있습니다.")
+                return True
+            else:
+                self.logger.error(f"마진 모드 설정 중 오류 발생: {e}")
+                return False
 
 # 테스트 코드
 if __name__ == "__main__":

@@ -414,6 +414,10 @@ class BotThread(QThread):
     def init_trading_algorithm(self):
         """트레이딩 알고리즘 초기화"""
         try:
+            # 봇에서 market_type과 leverage 가져오기 (없으면 기본값 사용)
+            market_type = getattr(self.bot, 'market_type', 'spot')
+            leverage = getattr(self.bot, 'leverage', 1)
+            
             # 현재 봇의 설정을 사용하여 트레이딩 알고리즘 초기화
             self.algo = TradingAlgorithm(
                 exchange_id=self.bot.exchange_id,
@@ -422,12 +426,17 @@ class BotThread(QThread):
                 strategy=self.bot.strategy,
                 test_mode=self.bot.test_mode,
                 restore_state=True,  # 이전 상태 복원
-                strategy_params=self.strategy_params  # 전략별 세부 파라미터 전달
+                strategy_params=self.strategy_params,  # 전략별 세부 파라미터 전달
+                market_type=market_type,  # 시장 타입 추가
+                leverage=leverage  # 레버리지 추가
             )
             
             # 적용된 전략 파라미터 로깅
             if self.strategy_params:
                 self.update_signal.emit(f"전략 파라미터 적용: {self.strategy_params}")
+            
+            # 시장 타입과 레버리지 정보 로깅
+            self.update_signal.emit(f"시장 타입: {market_type}, 레버리지: {leverage}x")
             
             # 자동 손절매/이익실현 설정
             if self.auto_sl_tp:
@@ -454,37 +463,81 @@ class BotThread(QThread):
         self.restore_trading_state()
         
         try:
+            # TradingAlgorithm 초기화 확인
+            if self.algo is None:
+                self.update_signal.emit("트레이딩 알고리즘이 초기화되지 않았습니다. 재시도 중...")
+                self.init_trading_algorithm()
+                if self.algo is None:
+                    self.update_signal.emit("트레이딩 알고리즘 초기화 실패")
+                    return
+            
+            # TradingAlgorithm의 거래 스레드 시작
+            self.algo.trading_active = True
+            self.algo.start_trading_thread()
+            self.update_signal.emit("트레이딩 알고리즘 거래 스레드 시작됨")
+            
+            # 메인 루프 - 상태 모니터링 및 로그 업데이트
             while self.running:
-                # 봇 실행
-                self.bot.run_once()
-                self.update_signal.emit(f"{self.interval}초 대기 중...")
+                # 상태 업데이트 (간격을 더 짧게 설정하여 반응성 향상)
+                monitoring_interval = min(self.interval, 60)  # 최대 60초마다 상태 체크
+                
+                # 현재 잔액 조회 및 업데이트
+                try:
+                    balance_info = self.algo.exchange_api.get_balance()
+                    if balance_info and 'balance' in balance_info:
+                        total_balance = balance_info['balance']
+                        currency = balance_info.get('currency', 'USDT')
+                        self.update_signal.emit(f"잔액: {total_balance:.2f} {currency}")
+                except Exception as e:
+                    logger.debug(f"잔액 조회 중 오류: {str(e)}")
+                
+                # 포지션 정보 업데이트
+                try:
+                    positions = self.algo.exchange_api.get_positions(self.algo.symbol)
+                    if positions:
+                        for pos in positions:
+                            self.update_signal.emit(
+                                f"포지션: {pos.get('symbol')} {pos.get('side')} "
+                                f"수량: {pos.get('contracts', 0)} 진입가: {pos.get('entry_price', 0)}"
+                            )
+                except Exception as e:
+                    logger.debug(f"포지션 조회 중 오류: {str(e)}")
                 
                 # 로그 업데이트
                 try:
                     with open("trading_bot.log", "r") as f:
                         logs = f.readlines()
                         if logs:
-                            last_logs = logs[-5:]  # 마지막 5줄만 표시
-                            for log in last_logs:
-                                self.update_signal.emit(log.strip())
-                except Exception as e:
-                    self.update_signal.emit(f"로그 읽기 오류: {e}")
+                            # 최근 로그만 표시 (마지막 10줄)
+                            recent_logs = logs[-10:]
+                            for log in recent_logs:
+                                if "거래 신호" in log or "주문 실행" in log or "ERROR" in log:
+                                    self.update_signal.emit(f"[LOG] {log.strip()}")
+                except:
+                    pass
                 
-                # 현재 상태 저장 (각 실행 주기마다)
-                self.save_trading_state()
+                # 거래 활성 상태 확인
+                if not self.algo.trading_active:
+                    self.update_signal.emit("거래 스레드가 중지되었습니다.")
+                    break
                 
-                # 주기적 슬립
-                for i in range(self.interval):
+                # 대기
+                for i in range(monitoring_interval):
                     if not self.running:
                         break
-                    time.sleep(1)
-        
+                    self.sleep(1)
+                
         except Exception as e:
-            self.update_signal.emit(f"오류 발생: {e}")
+            logger.error(f"봇 실행 중 오류 발생: {e}")
+            self.update_signal.emit(f"오류: {str(e)}")
+        
         finally:
-            # 유효한 거래 상태이면 종료 전 저장
-            self.save_trading_state()
-            self.update_signal.emit("봇이 중지되었습니다.")
+            # 거래 스레드 중지
+            if self.algo:
+                self.algo.stop_trading_thread()
+                self.update_signal.emit("거래 스레드 중지됨")
+        
+        self.update_signal.emit("자동 매매 봇이 중지되었습니다.")
     
     def restore_trading_state(self):
         """이전 거래 상태 복원"""

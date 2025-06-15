@@ -14,7 +14,7 @@ class TradeSignal:
     """거래 신호 모델 클래스"""
     
     symbol: str
-    signal_type: str  # 'buy', 'sell', 'hold'
+    direction: str  # 'buy', 'sell', 'hold'
     price: float
     strategy_name: str  # 신호를 생성한 전략 이름
     
@@ -50,7 +50,7 @@ class TradeSignal:
         return {
             'id': self.id,
             'symbol': self.symbol,
-            'signal_type': self.signal_type,
+            'direction': self.direction,
             'price': self.price,
             'timestamp': self.timestamp.isoformat() if isinstance(self.timestamp, datetime) else self.timestamp,
             'strategy_name': self.strategy_name,
@@ -90,7 +90,7 @@ class TradeSignal:
                 data['execution_time'] = None
         
         # 필수 필드 확인
-        required_fields = {'symbol', 'signal_type', 'price', 'strategy_name'}
+        required_fields = {'symbol', 'direction', 'price', 'strategy_name'}
         for field in required_fields:
             if field not in data:
                 raise ValueError(f"필수 필드 누락: {field}")
@@ -136,7 +136,7 @@ class TradeSignal:
         if not self.take_profit or not self.stop_loss:
             return None
             
-        if self.signal_type == 'buy':
+        if self.direction == 'buy':
             reward = self.take_profit - self.price
             risk = self.price - self.stop_loss
         else:  # sell

@@ -72,16 +72,14 @@ def create_binance_client(api_key=None, api_secret=None, is_future=False, use_te
     else:
         # 실제 API URL 설정
         if is_future:
-            # ccxt 3.0.51 호환 선물 URL 설정
+            # 바이낸스 선물은 기본적으로 v1을 사용하고, positionRisk만 v2 사용
             config['urls'] = {
                 'logo': 'https://user-images.githubusercontent.com/1294454/29604020-d5483cdc-87ee-11e7-94c7-d1a8d9169293.jpg',
                 'api': {
                     'public': 'https://fapi.binance.com/fapi/v1',
                     'private': 'https://fapi.binance.com/fapi/v1',
                     'fapiPublic': 'https://fapi.binance.com/fapi/v1',
-                    'fapiPrivate': 'https://fapi.binance.com/fapi/v1',
-                    'fapiPublicV2': 'https://fapi.binance.com/fapi/v2',
-                    'fapiPrivateV2': 'https://fapi.binance.com/fapi/v2'
+                    'fapiPrivate': 'https://fapi.binance.com/fapi/v1'
                 }
             }
     
