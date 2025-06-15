@@ -32,9 +32,11 @@ class EventType(Enum):
     SYSTEM_STARTUP = auto()
     SYSTEM_SHUTDOWN = auto()
     MEMORY_WARNING = auto()
+    SYSTEM_RECOVERY = auto()  # 시스템 복구 이벤트 추가
     API_ERROR = auto()
     NETWORK_ERROR = auto()
     DATABASE_ERROR = auto()
+    TRADING_ERROR = auto()  # 거래 오류 이벤트 추가
     
     # 백업 이벤트
     BACKUP_CREATED = auto()
