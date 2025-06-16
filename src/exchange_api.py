@@ -13,6 +13,7 @@ import traceback
 import functools
 import threading
 import json
+import os
 from typing import Optional, List, Dict
 from src.config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
@@ -48,6 +49,7 @@ def measure_api_performance(func):
         method_name = func.__name__
         # 시작 시간 기록
         start_time = time.time()
+        
         try:
             # 원본 함수 실행 - 원래 인자 그대로 전달
             result = func(*args, **kwargs)
@@ -177,7 +179,7 @@ class ExchangeAPI:
             leverage (int): 레버리지 배수 (선물 거래에만 적용, 1-125)
         """
         self.exchange_id = exchange_id
-        # 시장 유형에 따라 기본 심볼 선택
+        # 시장 유형에 따른 기본 심볼 선택
         if symbol is None:
             if market_type == 'futures':
                 self.symbol = DEFAULT_FUTURES_SYMBOL
@@ -974,6 +976,7 @@ class ExchangeAPI:
                 "price": float(order.get('price', 0)) if order.get('price') else None,
                 "cost": float(order.get('cost', 0)) if order.get('cost') else None,
                 "filled": float(order.get('filled', 0)),
+                "remaining": float(order.get('remaining', 0)) if order.get('remaining') else None,
                 "status": order.get('status'),
                 "fee": order.get('fee'),
             }
@@ -1280,7 +1283,6 @@ class ExchangeAPI:
                     "remaining": float(order.get('remaining', 0)) if order.get('remaining') else None,
                     "status": order.get('status'),  # open, closed, canceled 등
                     "fee": order.get('fee'),
-                    "trades": order.get('trades'),
                     "market_type": self.market_type
                 }
                 standardized_orders.append(standardized_order)
@@ -1600,16 +1602,86 @@ class ExchangeAPI:
             if self.exchange_id == 'binance' and self.market_type == 'futures':
                 try:
                     # 바이낸스 선물은 심볼 파라미터 없이 모든 포지션을 조회
-                    self.logger.info("바이낸스 선물 포지션 조회 - 전체 포지션 요청")
+                    self.logger.info("바이낸스 선물 포지션 조회 - v2 API 사용")
                     
-                    # CCXT v3에서는 fetch_positions를 사용
-                    positions = self.exchange.fetch_positions()  # 빈 배열이 아닌 파라미터 없이 호출
+                    # requests를 사용하여 직접 v2 API 호출
+                    import requests
+                    import hmac
+                    import hashlib
+                    import time
+                    from urllib.parse import urlencode
+                    
+                    api_key = os.getenv('BINANCE_API_KEY')
+                    api_secret = os.getenv('BINANCE_API_SECRET')
+                    
+                    if not api_key or not api_secret:
+                        self.logger.error("바이낸스 API 키가 설정되지 않았습니다")
+                        return []
+                    
+                    # 파라미터 생성
+                    timestamp = int(time.time() * 1000)
+                    params = {
+                        'timestamp': timestamp,
+                        'recvWindow': 10000
+                    }
+                    query_string = urlencode(params)
+                    
+                    # 서명 생성
+                    signature = hmac.new(
+                        api_secret.encode('utf-8'),
+                        query_string.encode('utf-8'),
+                        hashlib.sha256
+                    ).hexdigest()
+                    
+                    # API 호출
+                    url = f"https://fapi.binance.com/fapi/v2/positionRisk?{query_string}&signature={signature}"
+                    headers = {'X-MBX-APIKEY': api_key}
+                    
+                    response = requests.get(url, headers=headers)
+                    
+                    if response.status_code != 200:
+                        self.logger.error(f"v2 API 호출 실패: {response.status_code}")
+                        # v1 폴백은 404를 반환하므로 빈 배열 반환
+                        return []
+                    
+                    # 응답 처리
+                    response_data = response.json()
+                    positions = []
+                    
+                    if isinstance(response_data, list):
+                        for pos_data in response_data:
+                            # 실제 포지션만 필터링 (positionAmt != 0)
+                            position_amt = float(pos_data.get('positionAmt', 0))
+                            if position_amt != 0:
+                                position = {
+                                    'symbol': pos_data.get('symbol', ''),
+                                    'contracts': abs(position_amt),
+                                    'contractSize': 1,  # USDT margined
+                                    'side': 'long' if position_amt > 0 else 'short',
+                                    'notional': float(pos_data.get('notional', 0)),
+                                    'percentage': None,
+                                    'marginMode': pos_data.get('marginType', 'cross').lower(),
+                                    'markPrice': float(pos_data.get('markPrice', 0)),
+                                    'lastPrice': None,
+                                    'entryPrice': float(pos_data.get('entryPrice', 0)),
+                                    'unrealizedPnl': float(pos_data.get('unRealizedProfit', 0)),
+                                    'realizedPnl': None,
+                                    'initialMargin': float(pos_data.get('initialMargin', 0)),
+                                    'initialMarginPercentage': None,
+                                    'maintenanceMargin': float(pos_data.get('maintMargin', 0)),
+                                    'maintenanceMarginPercentage': None,
+                                    'collateral': None,
+                                    'leverage': int(pos_data.get('leverage', 1)),
+                                    'liquidationPrice': float(pos_data.get('liquidationPrice', 0)) if pos_data.get('liquidationPrice') else None,
+                                    'info': pos_data
+                                }
+                                positions.append(position)
                     
                     # 특정 심볼로 필터링
                     if symbol and positions:
-                        formatted_symbol = self.format_symbol(symbol)
+                        formatted_symbol = self.format_symbol(symbol).replace('/', '')  # BTC/USDT -> BTCUSDT
                         positions = [pos for pos in positions if pos.get('symbol') == formatted_symbol]
-                        self.logger.info(f"전체 {len(positions)}개 포지션 중 {formatted_symbol}: {len(positions)}개")
+                        self.logger.info(f"전체 포지션 중 {formatted_symbol}: {len(positions)}개")
                     
                     return positions
                 except Exception as e:

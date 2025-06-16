@@ -172,7 +172,7 @@ class OrderExecutor:
                         'id': f"pos_{int(time.time() * 1000)}",  # 고유 ID 생성
                         'symbol': self.symbol,
                         'side': 'long',
-                        'amount': quantity,
+                        'contracts': quantity,  # 'amount' 대신 'contracts' 사용
                         'entry_price': price,
                         'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
                         'opened_at': order_time.isoformat(),
@@ -240,7 +240,7 @@ class OrderExecutor:
                             'id': f"pos_{order['id']}",  # 주문 ID로 포지션 ID 생성
                             'symbol': self.symbol,
                             'side': 'long',
-                            'amount': quantity,
+                            'contracts': quantity,  # 'amount' 대신 'contracts' 사용
                             'entry_price': price,
                             'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
                             'opened_at': order_time.isoformat(),

@@ -1488,7 +1488,7 @@ class BotAPIServer:
         @self.flask_app.after_request
         def apply_security_headers(response):
             # 콘텐츠 보안 정책 - 웹앱 기능 완벽 작동을 위해 허용 정책 확장
-            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline' https://cdn.jsdelivr.net https://code.jquery.com https://stackpath.bootstrapcdn.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; img-src 'self' data: https: blob:; connect-src 'self' https://* ws://* wss://*; font-src 'self' data: https://cdn.jsdelivr.net; worker-src 'self' blob:; frame-src 'self'"
+            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://code.jquery.com https://stackpath.bootstrapcdn.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com; img-src 'self' data: https: blob:; connect-src 'self' https://* ws://* wss://*; font-src 'self' data: https://cdn.jsdelivr.net; worker-src 'self' blob:; frame-src 'self'"
             # HSTS 설정 (프로덕션에서만 활성화)
             if os.getenv('PRODUCTION', 'false').lower() == 'true':
                 response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"

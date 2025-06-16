@@ -512,9 +512,31 @@ class DatabaseManager:
             int: 새로 생성된 포지션 ID
         """
         try:
+            # 디버깅: 전달된 데이터 확인
+            logger.info(f"포지션 저장 시도 - 전달된 키: {list(position_data.keys())}")
+            logger.info(f"포지션 저장 시도 - 전달된 값 개수: {len(position_data)}")
+            
+            # 'info' 키가 있으면 'additional_info'로 변경
+            if 'info' in position_data:
+                logger.warning("'info' 키가 감지됨. 'additional_info'로 변경합니다.")
+                position_data['additional_info'] = position_data.pop('info')
+            
             # JSON으로 직렬화해야 하는 필드 처리
             if 'additional_info' in position_data and isinstance(position_data['additional_info'], dict):
                 position_data['additional_info'] = json.dumps(position_data['additional_info'])
+            
+            # 테이블 스키마와 맞지 않는 키 제거
+            valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
+                           'entry_price', 'mark_price', 'liquidation_price', 
+                           'unrealized_pnl', 'margin_mode', 'leverage', 
+                           'opened_at', 'closed_at', 'pnl', 'status', 
+                           'additional_info', 'raw_data']
+            
+            invalid_keys = [key for key in position_data.keys() if key not in valid_columns]
+            if invalid_keys:
+                logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
+                for key in invalid_keys:
+                    position_data.pop(key)
             
             # 새 포지션 저장
             placeholders = ', '.join(['?'] * len(position_data))
@@ -522,6 +544,9 @@ class DatabaseManager:
             values = list(position_data.values())
             
             query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
+            logger.debug(f"실행할 쿼리: {query}")
+            logger.debug(f"값 개수: {len(values)}")
+            
             conn, cursor = self._get_connection()
             cursor.execute(query, values)
             conn.commit()
@@ -531,6 +556,9 @@ class DatabaseManager:
             return position_id
         except sqlite3.Error as e:
             logger.error(f"포지션 저장 오류: {e}")
+            logger.error(f"문제의 쿼리: {query if 'query' in locals() else 'N/A'}")
+            logger.error(f"전달된 컬럼: {columns if 'columns' in locals() else 'N/A'}")
+            logger.error(f"전달된 값 개수: {len(values) if 'values' in locals() else 'N/A'}")
             conn, _ = self._get_connection()
             conn.rollback()
             return None
