@@ -1345,6 +1345,19 @@ class DatabaseManager:
                 if 'additional_info' in position and isinstance(position['additional_info'], dict):
                     position['additional_info'] = json.dumps(position['additional_info'])
                 
+                # 테이블 스키마와 맞지 않는 키 제거
+                valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
+                               'entry_price', 'mark_price', 'liquidation_price', 
+                               'unrealized_pnl', 'margin_mode', 'leverage', 
+                               'opened_at', 'closed_at', 'pnl', 'status', 
+                               'additional_info', 'raw_data', 'contractSize']
+                
+                invalid_keys = [key for key in position.keys() if key not in valid_columns]
+                if invalid_keys:
+                    logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
+                    for key in invalid_keys:
+                        position.pop(key)
+                
                 placeholders = ', '.join(['?'] * len(position))
                 columns = ', '.join(position.keys())
                 values = list(position.values())
