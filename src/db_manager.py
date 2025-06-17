@@ -585,9 +585,6 @@ class DatabaseManager:
                 conn.rollback()
             return False
         finally:
-            if \'conn\' in locals() and conn:
-                conn.close()
-        finally:
             if conn:
                 conn.close()
     
