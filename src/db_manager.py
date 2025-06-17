@@ -514,18 +514,26 @@ class DatabaseManager:
             int: 새로 생성된 포지션 ID
         """
         try:
-            # 디버깅: 전달된 데이터 확인
-            logger.info(f"포지션 저장 시도 - 전달된 키: {list(position_data.keys())}")
-            logger.info(f"포지션 저장 시도 - 전달된 값 개수: {len(position_data)}")
+            # camelCase -> snake_case 필드명 변환 매핑
+            field_mapping = {
+                'entryPrice': 'entry_price',
+                'markPrice': 'mark_price',
+                'liquidationPrice': 'liquidation_price',
+                'unrealizedPnl': 'unrealized_pnl',
+                'marginMode': 'margin_mode',
+                'contractSize': 'contractSize',  # 이미 적절한 형식
+            }
             
-            # 'info' 키가 있으면 'additional_info'로 변경
-            if 'info' in position_data:
-                logger.warning("'info' 키가 감지됨. 'additional_info'로 변경합니다.")
-                position_data['additional_info'] = position_data.pop('info')
+            # 필드명 변환
+            converted_position = {}
+            for key, value in position_data.items():
+                # 매핑이 있으면 변환, 없으면 그대로 사용
+                new_key = field_mapping.get(key, key)
+                converted_position[new_key] = value
             
             # JSON으로 직렬화해야 하는 필드 처리
-            if 'additional_info' in position_data and isinstance(position_data['additional_info'], dict):
-                position_data['additional_info'] = json.dumps(position_data['additional_info'])
+            if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
+                converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
             
             # 테이블 스키마와 맞지 않는 키 제거
             valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
@@ -534,16 +542,16 @@ class DatabaseManager:
                            'opened_at', 'closed_at', 'pnl', 'status', 
                            'additional_info', 'raw_data', 'contractSize']
             
-            invalid_keys = [key for key in position_data.keys() if key not in valid_columns]
+            invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
             if invalid_keys:
                 logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                 for key in invalid_keys:
-                    position_data.pop(key)
+                    converted_position.pop(key)
             
             # 새 포지션 저장
-            placeholders = ', '.join(['?'] * len(position_data))
-            columns = ', '.join(position_data.keys())
-            values = list(position_data.values())
+            placeholders = ', '.join(['?'] * len(converted_position))
+            columns = ', '.join(converted_position.keys())
+            values = list(converted_position.values())
             
             query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
             logger.debug(f"실행할 쿼리: {query}")
@@ -1339,11 +1347,28 @@ class DatabaseManager:
             # 기존 포지션 삭제
             cursor.execute("DELETE FROM positions WHERE 1=1")
             
+            # camelCase -> snake_case 필드명 변환 매핑
+            field_mapping = {
+                'entryPrice': 'entry_price',
+                'markPrice': 'mark_price',
+                'liquidationPrice': 'liquidation_price',
+                'unrealizedPnl': 'unrealized_pnl',
+                'marginMode': 'margin_mode',
+                'contractSize': 'contractSize',  # 이미 적절한 형식
+            }
+            
             # 새 포지션 저장
             for position in positions:
+                # 필드명 변환
+                converted_position = {}
+                for key, value in position.items():
+                    # 매핑이 있으면 변환, 없으면 그대로 사용
+                    new_key = field_mapping.get(key, key)
+                    converted_position[new_key] = value
+                
                 # JSON으로 직렬화해야 하는 필드 처리
-                if 'additional_info' in position and isinstance(position['additional_info'], dict):
-                    position['additional_info'] = json.dumps(position['additional_info'])
+                if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
+                    converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
                 
                 # 테이블 스키마와 맞지 않는 키 제거
                 valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
@@ -1352,15 +1377,15 @@ class DatabaseManager:
                                'opened_at', 'closed_at', 'pnl', 'status', 
                                'additional_info', 'raw_data', 'contractSize']
                 
-                invalid_keys = [key for key in position.keys() if key not in valid_columns]
+                invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
                 if invalid_keys:
                     logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                     for key in invalid_keys:
-                        position.pop(key)
+                        converted_position.pop(key)
                 
-                placeholders = ', '.join(['?'] * len(position))
-                columns = ', '.join(position.keys())
-                values = list(position.values())
+                placeholders = ', '.join(['?'] * len(converted_position))
+                columns = ', '.join(converted_position.keys())
+                values = list(converted_position.values())
                 
                 query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
                 cursor.execute(query, values)
