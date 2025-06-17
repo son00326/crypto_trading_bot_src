@@ -505,15 +505,18 @@ class DatabaseManager:
             
     def save_position(self, position_data):
         """
-        포지션 정보 저장
+        단일 포지션 저장
         
         Args:
-            position_data (dict): 포지션 정보
+            position_data (dict): 포지션 데이터
         
         Returns:
-            int: 새로 생성된 포지션 ID
+            bool: 저장 성공 여부
         """
         try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
             # camelCase -> snake_case 필드명 변환 매핑
             field_mapping = {
                 'entryPrice': 'entry_price',
@@ -531,6 +534,10 @@ class DatabaseManager:
                 new_key = field_mapping.get(key, key)
                 converted_position[new_key] = value
             
+            # opened_at 필드가 없으면 현재 시간 추가
+            if 'opened_at' not in converted_position:
+                converted_position['opened_at'] = datetime.now().isoformat()
+            
             # JSON으로 직렬화해야 하는 필드 처리
             if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
                 converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
@@ -546,32 +553,115 @@ class DatabaseManager:
             if invalid_keys:
                 logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                 for key in invalid_keys:
-                    converted_position.pop(key)
+                    del converted_position[key]
+            
+            # 포지션 존재 여부 확인
+            query = "SELECT id FROM positions WHERE symbol = ? AND side = ? AND status = 'open'"
+            cursor.execute(query, (converted_position.get('symbol'), converted_position.get('side')))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # 기존 포지션 업데이트
+                update_fields = [f"{k} = ?" for k in converted_position.keys() if k != 'id']
+                query = f"UPDATE positions SET {', '.join(update_fields)} WHERE id = ?"
+                values = [converted_position[k] for k in converted_position.keys() if k != 'id'] + [existing[0]]
+                cursor.execute(query, values)
+            else:
+                # 새 포지션 삽입
+                fields = list(converted_position.keys())
+                placeholders = ['?' for _ in fields]
+                query = f"INSERT INTO positions ({', '.join(fields)}) VALUES ({', '.join(placeholders)})"
+                values = [converted_position[k] for k in fields]
+                cursor.execute(query, values)
+            
+            conn.commit()
+            return True
+            
+        except Exception as e:
+            logger.error(f"포지션 저장 오류: {e}")
+            if conn:
+                conn.rollback()
+            return False
+        finally:
+            if conn:
+                conn.close()
+    
+    def save_positions(self, positions):
+        """
+        여러 포지션을 한번에 저장
+        
+        Args:
+            positions (list): 포지션 데이터 리스트
+        
+        Returns:
+            bool: 저장 성공 여부
+        """
+        try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
+            # 기존 포지션 삭제
+            cursor.execute("DELETE FROM positions WHERE 1=1")
+            
+            # camelCase -> snake_case 필드명 변환 매핑
+            field_mapping = {
+                'entryPrice': 'entry_price',
+                'markPrice': 'mark_price',
+                'liquidationPrice': 'liquidation_price',
+                'unrealizedPnl': 'unrealized_pnl',
+                'marginMode': 'margin_mode',
+                'contractSize': 'contractSize',  # 이미 적절한 형식
+            }
             
             # 새 포지션 저장
-            placeholders = ', '.join(['?'] * len(converted_position))
-            columns = ', '.join(converted_position.keys())
-            values = list(converted_position.values())
+            for position in positions:
+                # 필드명 변환
+                converted_position = {}
+                for key, value in position.items():
+                    # 매핑이 있으면 변환, 없으면 그대로 사용
+                    new_key = field_mapping.get(key, key)
+                    converted_position[new_key] = value
+                
+                # opened_at 필드가 없으면 현재 시간 추가
+                if 'opened_at' not in converted_position:
+                    converted_position['opened_at'] = datetime.now().isoformat()
+                
+                # JSON으로 직렬화해야 하는 필드 처리
+                if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
+                    converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
+                
+                # 테이블 스키마와 맞지 않는 키 제거
+                valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
+                               'entry_price', 'mark_price', 'liquidation_price', 
+                               'unrealized_pnl', 'margin_mode', 'leverage', 
+                               'opened_at', 'closed_at', 'pnl', 'status', 
+                               'additional_info', 'raw_data', 'contractSize']
+                
+                invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
+                if invalid_keys:
+                    logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
+                    for key in invalid_keys:
+                        del converted_position[key]
+                
+                # 새 포지션 삽입
+                fields = list(converted_position.keys())
+                placeholders = ['?' for _ in fields]
+                query = f"INSERT INTO positions ({', '.join(fields)}) VALUES ({', '.join(placeholders)})"
+                values = [converted_position[k] for k in fields]
+                cursor.execute(query, values)
             
-            query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
-            logger.debug(f"실행할 쿼리: {query}")
-            logger.debug(f"값 개수: {len(values)}")
-            
-            conn, cursor = self._get_connection()
-            cursor.execute(query, values)
             conn.commit()
+            logger.info(f"{len(positions)}개의 포지션을 저장했습니다.")
+            return True
             
-            position_id = cursor.lastrowid
-            logger.info(f"포지션 저장 완료 (ID: {position_id})")
-            return position_id
-        except sqlite3.Error as e:
+        except Exception as e:
             logger.error(f"포지션 저장 오류: {e}")
-            logger.error(f"문제의 쿼리: {query if 'query' in locals() else 'N/A'}")
-            logger.error(f"전달된 컬럼: {columns if 'columns' in locals() else 'N/A'}")
-            logger.error(f"전달된 값 개수: {len(values) if 'values' in locals() else 'N/A'}")
-            conn, _ = self._get_connection()
-            conn.rollback()
-            return None
+            if conn:
+                conn.rollback()
+            return False
+        finally:
+            if conn:
+                conn.close()
     
     def update_position(self, position_id, update_data):
         """
@@ -1332,10 +1422,10 @@ class DatabaseManager:
             
     def save_positions(self, positions):
         """
-        포지션 정보 저장
+        여러 포지션을 한번에 저장
         
         Args:
-            positions (list): 포지션 정보 목록
+            positions (list): 포지션 데이터 리스트
         
         Returns:
             bool: 저장 성공 여부
@@ -1366,6 +1456,10 @@ class DatabaseManager:
                     new_key = field_mapping.get(key, key)
                     converted_position[new_key] = value
                 
+                # opened_at 필드가 없으면 현재 시간 추가
+                if 'opened_at' not in converted_position:
+                    converted_position['opened_at'] = datetime.now().isoformat()
+                
                 # JSON으로 직렬화해야 하는 필드 처리
                 if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
                     converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
@@ -1381,19 +1475,24 @@ class DatabaseManager:
                 if invalid_keys:
                     logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                     for key in invalid_keys:
-                        converted_position.pop(key)
+                        del converted_position[key]
                 
-                placeholders = ', '.join(['?'] * len(converted_position))
-                columns = ', '.join(converted_position.keys())
-                values = list(converted_position.values())
-                
-                query = f"INSERT INTO positions ({columns}) VALUES ({placeholders})"
+                # 새 포지션 삽입
+                fields = list(converted_position.keys())
+                placeholders = ['?' for _ in fields]
+                query = f"INSERT INTO positions ({', '.join(fields)}) VALUES ({', '.join(placeholders)})"
+                values = [converted_position[k] for k in fields]
                 cursor.execute(query, values)
             
             conn.commit()
-            logger.info("포지션 저장 완료")
+            logger.info(f"{len(positions)}개의 포지션을 저장했습니다.")
             return True
-        except sqlite3.Error as e:
+            
+        except Exception as e:
             logger.error(f"포지션 저장 오류: {e}")
-            conn.rollback()
+            if conn:
+                conn.rollback()
             return False
+        finally:
+            if conn:
+                conn.close()
