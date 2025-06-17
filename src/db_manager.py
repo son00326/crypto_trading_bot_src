@@ -35,12 +35,14 @@ class DatabaseManager:
         
         self.db_path = db_path
         
+        # 로거를 먼저 초기화
+        self.logger = logging.getLogger('crypto_bot')
+        
         # 데이터베이스 연결 및 테이블 생성
         # 스레드 안전 연결을 위해 전역 변수 대신 로컬 스레드 스토리지 사용
         conn, cursor = self._get_connection()
         self._create_tables(conn, cursor)
         
-        self.logger = logging.getLogger('crypto_bot')
         self.logger.info(f"데이터베이스 관리자 초기화 완료: {self.db_path}")
     
     def _get_connection(self):
