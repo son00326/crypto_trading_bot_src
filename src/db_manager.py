@@ -540,6 +540,10 @@ class DatabaseManager:
             if 'opened_at' not in converted_position:
                 converted_position['opened_at'] = datetime.now().isoformat()
             
+            # status 필드가 없으면 'open' 추가
+            if 'status' not in converted_position:
+                converted_position['status'] = 'open'
+            
             # JSON으로 직렬화해야 하는 필드 처리
             if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
                 converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
@@ -627,6 +631,10 @@ class DatabaseManager:
                 # opened_at 필드가 없으면 현재 시간 추가
                 if 'opened_at' not in converted_position:
                     converted_position['opened_at'] = datetime.now().isoformat()
+                
+                # status 필드가 없으면 'open' 추가
+                if 'status' not in converted_position:
+                    converted_position['status'] = 'open'
                 
                 # JSON으로 직렬화해야 하는 필드 처리
                 if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
@@ -1461,6 +1469,10 @@ class DatabaseManager:
                 # opened_at 필드가 없으면 현재 시간 추가
                 if 'opened_at' not in converted_position:
                     converted_position['opened_at'] = datetime.now().isoformat()
+                
+                # status 필드가 없으면 'open' 추가
+                if 'status' not in converted_position:
+                    converted_position['status'] = 'open'
                 
                 # JSON으로 직렬화해야 하는 필드 처리
                 if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
