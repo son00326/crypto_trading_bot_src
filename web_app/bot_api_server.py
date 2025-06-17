@@ -483,8 +483,6 @@ class BotAPIServer:
                                 ui_symbol = original_symbol[:-4] + '/' + original_symbol[-4:]
                             else:
                                 ui_symbol = original_symbol
-                        else:
-                            ui_symbol = original_symbol
                     
                     status_copy['ui_symbol'] = ui_symbol
                 
@@ -590,10 +588,12 @@ class BotAPIServer:
                 positions_data = get_positions(api_key, api_secret)
 
                 # 포지션 정보 기록 (DB 저장)
-                if positions_data and isinstance(positions_data, list):
+                if positions_data and isinstance(positions_data, list) and len(positions_data) > 0:
                     self.save_positions(positions_list=positions_data)
                     logger.info(f"포지션 정보 저장 완료: {len(positions_data)}개 포지션")
-                    
+                else:
+                    logger.info("저장할 포지션이 없습니다.")
+                
                 return jsonify({
                     'success': True,
                     'data': positions_data
