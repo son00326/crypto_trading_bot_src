@@ -14,8 +14,6 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-logger = logging.getLogger('crypto_bot')
-
 # 스레드 로컬 스토리지 - 각 스레드마다 고유한 데이터베이스 연결 저장
 _thread_local = threading.local()
 
@@ -42,7 +40,8 @@ class DatabaseManager:
         conn, cursor = self._get_connection()
         self._create_tables(conn, cursor)
         
-        logger.info(f"데이터베이스 관리자 초기화 완료: {self.db_path}")
+        self.logger = logging.getLogger('crypto_bot')
+        self.logger.info(f"데이터베이스 관리자 초기화 완료: {self.db_path}")
     
     def _get_connection(self):
         """
@@ -58,9 +57,9 @@ class DatabaseManager:
                 _thread_local.conn = sqlite3.connect(self.db_path)
                 _thread_local.conn.row_factory = sqlite3.Row  # 결과를 딕셔너리 형태로 반환
                 _thread_local.cursor = _thread_local.conn.cursor()
-                logger.debug(f"스레드 {threading.get_ident()} 에 데이터베이스 연결 생성: {self.db_path}")
+                self.logger.debug(f"스레드 {threading.get_ident()} 에 데이터베이스 연결 생성: {self.db_path}")
             except sqlite3.Error as e:
-                logger.error(f"데이터베이스 연결 오류: {e}")
+                self.logger.error(f"데이터베이스 연결 오류: {e}")
                 raise
         
         return _thread_local.conn, _thread_local.cursor
@@ -117,7 +116,7 @@ class DatabaseManager:
                 columns = [column[1] for column in cursor.fetchall()]
                 
                 if 'amount' in columns and 'contracts' not in columns:
-                    logger.info("positions 테이블 마이그레이션: amount -> contracts")
+                    self.logger.info("positions 테이블 마이그레이션: amount -> contracts")
                     cursor.execute('''
                         ALTER TABLE positions RENAME COLUMN amount TO contracts
                     ''')
@@ -136,12 +135,12 @@ class DatabaseManager:
                     if col_name not in columns:
                         try:
                             cursor.execute(f'ALTER TABLE positions ADD COLUMN {col_name} {col_type}')
-                            logger.info(f"positions 테이블에 {col_name} 컬럼 추가")
+                            self.logger.info(f"positions 테이블에 {col_name} 컬럼 추가")
                         except sqlite3.OperationalError:
                             # 컬럼이 이미 존재하는 경우 무시
                             pass
             except Exception as e:
-                logger.warning(f"positions 테이블 마이그레이션 중 경고: {e}")
+                self.logger.warning(f"positions 테이블 마이그레이션 중 경고: {e}")
             
             # raw_data 컬럼 추가
             cursor.execute("PRAGMA table_info(positions)")
@@ -149,7 +148,7 @@ class DatabaseManager:
             if 'raw_data' not in columns:
                 cursor.execute('ALTER TABLE positions ADD COLUMN raw_data TEXT')
                 conn.commit()
-                logger.info("positions 테이블에 raw_data 컬럼 추가됨")
+                self.logger.info("positions 테이블에 raw_data 컬럼 추가됨")
             
             # 거래 내역 테이블
             cursor.execute('''
@@ -242,9 +241,9 @@ class DatabaseManager:
             ''')
             
             conn.commit()
-            logger.debug("데이터베이스 테이블 생성 완료")
+            self.logger.debug("데이터베이스 테이블 생성 완료")
         except sqlite3.Error as e:
-            logger.error(f"테이블 생성 오류: {e}")
+            self.logger.error(f"테이블 생성 오류: {e}")
             conn.rollback()
             raise
     
@@ -254,7 +253,7 @@ class DatabaseManager:
             _thread_local.conn.close()
             _thread_local.conn = None
             _thread_local.cursor = None
-            logger.debug(f"스레드 {threading.get_ident()} 의 데이터베이스 연결 종료")
+            self.logger.debug(f"스레드 {threading.get_ident()} 의 데이터베이스 연결 종료")
     
     # 사용자 관련 메서드 (로그인 기능용)
     def create_users_table(self):
@@ -288,7 +287,7 @@ class DatabaseManager:
                 }
             return None
         except sqlite3.Error as e:
-            logger.error(f"사용자 조회 오류 (ID): {e}")
+            self.logger.error(f"사용자 조회 오류 (ID): {e}")
             return None
     
     def get_user_by_username(self, username):
@@ -318,7 +317,7 @@ class DatabaseManager:
                 }
             return None
         except sqlite3.Error as e:
-            logger.error(f"사용자 조회 오류 (사용자명): {e}")
+            self.logger.error(f"사용자 조회 오류 (사용자명): {e}")
             return None
     
     def create_user(self, username, password_hash, email=None, is_admin=False):
@@ -341,10 +340,10 @@ class DatabaseManager:
                 (username, password_hash, email, int(is_admin))
             )
             conn.commit()
-            logger.info(f"새 사용자 생성 완료: {username}")
+            self.logger.info(f"새 사용자 생성 완료: {username}")
             return True
         except sqlite3.Error as e:
-            logger.error(f"사용자 생성 오류: {e}")
+            self.logger.error(f"사용자 생성 오류: {e}")
             conn.rollback()
             return False
             
@@ -367,7 +366,7 @@ class DatabaseManager:
             current_user = self.get_user_by_id(user_id)
             
             if not current_user:
-                logger.warning(f"업데이트할 사용자를 찾을 수 없음: ID {user_id}")
+                self.logger.warning(f"업데이트할 사용자를 찾을 수 없음: ID {user_id}")
                 return False
             
             # 업데이트할 필드 구성
@@ -391,7 +390,7 @@ class DatabaseManager:
                 values.append(int(is_admin))
             
             if not updates:
-                logger.warning("업데이트할 필드가 없습니다.")
+                self.logger.warning("업데이트할 필드가 없습니다.")
                 return False
             
             # 업데이트 쿼리 실행
@@ -400,10 +399,10 @@ class DatabaseManager:
             
             cursor.execute(query, values)
             conn.commit()
-            logger.info(f"사용자 정보 업데이트 완료: ID {user_id}")
+            self.logger.info(f"사용자 정보 업데이트 완료: ID {user_id}")
             return True
         except sqlite3.Error as e:
-            logger.error(f"사용자 업데이트 오류: {e}")
+            self.logger.error(f"사용자 업데이트 오류: {e}")
             conn.rollback()
             return False
             
@@ -423,13 +422,13 @@ class DatabaseManager:
             
             if cursor.rowcount > 0:
                 conn.commit()
-                logger.info(f"사용자 삭제 완료: ID {user_id}")
+                self.logger.info(f"사용자 삭제 완료: ID {user_id}")
                 return True
             else:
-                logger.warning(f"삭제할 사용자를 찾을 수 없음: ID {user_id}")
+                self.logger.warning(f"삭제할 사용자를 찾을 수 없음: ID {user_id}")
                 return False
         except sqlite3.Error as e:
-            logger.error(f"사용자 삭제 오류: {e}")
+            self.logger.error(f"사용자 삭제 오류: {e}")
             conn.rollback()
             return False
     
@@ -496,10 +495,10 @@ class DatabaseManager:
             cursor.execute(query, values)
             conn.commit()
             
-            logger.info("봇 상태 저장 완료")
+            self.logger.info("봇 상태 저장 완료")
             return True
         except sqlite3.Error as e:
-            logger.error(f"봇 상태 저장 오류: {e}")
+            self.logger.error(f"봇 상태 저장 오류: {e}")
             conn.rollback()
             return False
             
@@ -551,7 +550,7 @@ class DatabaseManager:
             
             invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
             if invalid_keys:
-                logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
+                self.logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                 for key in invalid_keys:
                     del converted_position[key]
             
@@ -578,7 +577,7 @@ class DatabaseManager:
             return True
             
         except Exception as e:
-            logger.error(f"포지션 저장 오류: {e}")
+            self.logger.error(f"포지션 저장 오류: {e}")
             if conn:
                 conn.rollback()
             return False
@@ -639,7 +638,7 @@ class DatabaseManager:
                 
                 invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
                 if invalid_keys:
-                    logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
+                    self.logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                     for key in invalid_keys:
                         del converted_position[key]
                 
@@ -651,11 +650,11 @@ class DatabaseManager:
                 cursor.execute(query, values)
             
             conn.commit()
-            logger.info(f"{len(positions)}개의 포지션을 저장했습니다.")
+            self.logger.info(f"{len(positions)}개의 포지션을 저장했습니다.")
             return True
             
         except Exception as e:
-            logger.error(f"포지션 저장 오류: {e}")
+            self.logger.error(f"포지션 저장 오류: {e}")
             if conn:
                 conn.rollback()
             return False
@@ -693,14 +692,14 @@ class DatabaseManager:
             
             affected_rows = cursor.rowcount
             if affected_rows > 0:
-                logger.info(f"포지션 업데이트 완료 (ID: {position_id})")
+                self.logger.info(f"포지션 업데이트 완료 (ID: {position_id})")
                 return True
             else:
-                logger.warning(f"포지션 업데이트 실패 - 해당 ID 찾을 수 없음: {position_id}")
+                self.logger.warning(f"포지션 업데이트 실패 - 해당 ID 찾을 수 없음: {position_id}")
                 return False
                 
         except sqlite3.Error as e:
-            logger.error(f"포지션 업데이트 오류: {e}")
+            self.logger.error(f"포지션 업데이트 오류: {e}")
             conn, _ = self._get_connection()
             conn.rollback()
             return False
@@ -739,7 +738,7 @@ class DatabaseManager:
                         position['additional_info'] = json.loads(position['additional_info'])
                     except json.JSONDecodeError:
                         position['additional_info'] = {}
-                        logger.warning(f"포지션 ID {position.get('id')}의 additional_info JSON 파싱 오류")
+                        self.logger.warning(f"포지션 ID {position.get('id')}의 additional_info JSON 파싱 오류")
 
                 # 필수 필드 기본값 설정
                 position.setdefault('type', position.get('side', 'unknown'))
@@ -752,7 +751,7 @@ class DatabaseManager:
             return positions
             
         except sqlite3.Error as e:
-            logger.error(f"열린 포지션 조회 오류: {e}")
+            self.logger.error(f"열린 포지션 조회 오류: {e}")
             return []
     
     def save_trade(self, trade_data):
@@ -783,11 +782,11 @@ class DatabaseManager:
             conn.commit()
 
             trade_id = cursor.lastrowid
-            logger.info(f"거래 내역 저장 완료 (ID: {trade_id})")
+            self.logger.info(f"거래 내역 저장 완료 (ID: {trade_id})")
             return trade_id
             
         except sqlite3.Error as e:
-            logger.error(f"거래 내역 저장 오류: {e}")
+            self.logger.error(f"거래 내역 저장 오류: {e}")
             if conn:
                 conn.rollback()
             return None
@@ -831,14 +830,14 @@ class DatabaseManager:
                         trade['additional_info'] = json.loads(trade['additional_info'])
                     except json.JSONDecodeError:
                         trade['additional_info'] = {}
-                        logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
+                        self.logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
 
                 trades.append(trade)
 
             return trades
             
         except sqlite3.Error as e:
-            logger.error(f"거래 내역 조회 오류: {e}")
+            self.logger.error(f"거래 내역 조회 오류: {e}")
             return []
     
     def load_trades(self, limit=20):
@@ -876,7 +875,7 @@ class DatabaseManager:
                         trade['additional_info'] = json.loads(trade['additional_info'])
                     except json.JSONDecodeError:
                         trade['additional_info'] = {}
-                        logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
+                        self.logger.warning(f"거래 ID {trade.get('id')}의 additional_info JSON 파싱 오류")
                 else:
                     trade['additional_info'] = {}
                 
@@ -894,7 +893,7 @@ class DatabaseManager:
             
             return trades
         except sqlite3.Error as e:
-            logger.error(f"거래 내역 로드 오류: {e}")
+            self.logger.error(f"거래 내역 로드 오류: {e}")
             return []
     
     def load_positions(self):
@@ -942,7 +941,7 @@ class DatabaseManager:
             
             return positions
         except sqlite3.Error as e:
-            logger.error(f"포지션 로드 오류: {e}")
+            self.logger.error(f"포지션 로드 오류: {e}")
             return []
     
     def load_performance_stats(self):
@@ -1006,7 +1005,7 @@ class DatabaseManager:
                 'loss_trades': loss_count
             }
         except sqlite3.Error as e:
-            logger.error(f"성과 통계 로드 오류: {e}")
+            self.logger.error(f"성과 통계 로드 오류: {e}")
             return {
                 'total_profit': '0.00',
                 'win_rate': '0%',
@@ -1044,10 +1043,10 @@ class DatabaseManager:
             self.cursor.execute(query, (key, json_value, updated_at))
             self.conn.commit()
             
-            logger.debug(f"설정 저장 완료: {key}")
+            self.logger.debug(f"설정 저장 완료: {key}")
             return True
         except sqlite3.Error as e:
-            logger.error(f"설정 저장 오류: {e}")
+            self.logger.error(f"설정 저장 오류: {e}")
             self.conn.rollback()
             return False
     
@@ -1072,7 +1071,7 @@ class DatabaseManager:
             else:
                 return default
         except sqlite3.Error as e:
-            logger.error(f"설정 불러오기 오류: {e}")
+            self.logger.error(f"설정 불러오기 오류: {e}")
             return default
     
     def update_price_data(self, price_data):
@@ -1118,7 +1117,7 @@ class DatabaseManager:
             conn.commit()
             return True
         except Exception as e:
-            logger.error(f"가격 데이터 업데이트 오류: {str(e)}")
+            self.logger.error(f"가격 데이터 업데이트 오류: {str(e)}")
             conn.rollback()
             return False
     
@@ -1157,7 +1156,7 @@ class DatabaseManager:
             conn.commit()
             return True
         except Exception as e:
-            logger.error(f"주문 데이터 저장 오류: {str(e)}")
+            self.logger.error(f"주문 데이터 저장 오류: {str(e)}")
             conn.rollback()
             return False
     
@@ -1215,7 +1214,7 @@ class DatabaseManager:
             conn.commit()
             return True
         except Exception as e:
-            logger.error(f"계좌 잔액 저장 오류: {str(e)}")
+            self.logger.error(f"계좌 잔액 저장 오류: {str(e)}")
             conn.rollback()
             return False
     
@@ -1245,10 +1244,10 @@ class DatabaseManager:
             )
             self.conn.commit()
             
-            logger.debug(f"잔액 기록 저장 완료: {currency} {amount}")
+            self.logger.debug(f"잔액 기록 저장 완료: {currency} {amount}")
             return True
         except sqlite3.Error as e:
-            logger.error(f"잔액 기록 저장 오류: {e}")
+            self.logger.error(f"잔액 기록 저장 오류: {e}")
             self.conn.rollback()
             return False
     
@@ -1306,7 +1305,7 @@ class DatabaseManager:
             return balances
             
         except sqlite3.Error as e:
-            logger.error(f"잔고 정보 조회 오류: {e}")
+            self.logger.error(f"잔고 정보 조회 오류: {e}")
             return {}
     
     def get_latest_balance(self, currency=None):
@@ -1352,7 +1351,7 @@ class DatabaseManager:
             
             return balance
         except sqlite3.Error as e:
-            logger.error(f"최신 잔액 조회 오류: {e}")
+            self.logger.error(f"최신 잔액 조회 오류: {e}")
             return {}
     
     def execute_query(self, query, params=None):
@@ -1378,7 +1377,7 @@ class DatabaseManager:
                 self.conn.commit()
                 return []
         except sqlite3.Error as e:
-            logger.error(f"쿼리 실행 오류: {e}")
+            self.logger.error(f"쿼리 실행 오류: {e}")
             if not query.strip().upper().startswith(('SELECT', 'PRAGMA')):
                 self.conn.rollback()
             return []
@@ -1413,11 +1412,11 @@ class DatabaseManager:
                 except json.JSONDecodeError:
                     pass
                     
-            logger.info("봇 상태 불러오기 완료")
+            self.logger.info("봇 상태 불러오기 완료")
             return state
             
         except sqlite3.Error as e:
-            logger.error(f"봇 상태 불러오기 오류: {e}")
+            self.logger.error(f"봇 상태 불러오기 오류: {e}")
             return None
             
     def save_positions(self, positions):
@@ -1473,7 +1472,7 @@ class DatabaseManager:
                 
                 invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
                 if invalid_keys:
-                    logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
+                    self.logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                     for key in invalid_keys:
                         del converted_position[key]
                 
@@ -1485,11 +1484,11 @@ class DatabaseManager:
                 cursor.execute(query, values)
             
             conn.commit()
-            logger.info(f"{len(positions)}개의 포지션을 저장했습니다.")
+            self.logger.info(f"{len(positions)}개의 포지션을 저장했습니다.")
             return True
             
         except Exception as e:
-            logger.error(f"포지션 저장 오류: {e}")
+            self.logger.error(f"포지션 저장 오류: {e}")
             if conn:
                 conn.rollback()
             return False
