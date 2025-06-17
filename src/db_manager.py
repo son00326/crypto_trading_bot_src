@@ -13,9 +13,9 @@ import pandas as pd
 import threading
 from datetime import datetime
 from pathlib import Path
+from src.db_connection_manager import get_db_connection
+from contextlib import contextmanager
 
-# 스레드 로컬 스토리지 - 각 스레드마다 고유한 데이터베이스 연결 저장
-_thread_local = threading.local()
 
 class DatabaseManager:
     """데이터베이스 관리 클래스"""
@@ -40,31 +40,32 @@ class DatabaseManager:
         
         # 데이터베이스 연결 및 테이블 생성
         # 스레드 안전 연결을 위해 전역 변수 대신 로컬 스레드 스토리지 사용
-        conn, cursor = self._get_connection()
-        self._create_tables(conn, cursor)
+        with get_db_connection(self.db_path) as (conn, cursor):
+            self._create_tables(conn, cursor)
+            conn.commit()
         
         self.logger.info(f"데이터베이스 관리자 초기화 완료: {self.db_path}")
     
     def _get_connection(self):
         """
-        현재 스레드에 대한 데이터베이스 연결 가져오기
+        데이터베이스 연결 가져오기 (레거시 호환성을 위해 유지)
         
         Returns:
-            tuple: (connection, cursor) 형태로 데이터베이스 연결 및 커서 반환
+            tuple: (connection, cursor) - 주의: 이 연결은 수동으로 닫아야 함
         """
-        # 현재 스레드에 연결이 없으면 새로 생성
-        if not hasattr(_thread_local, 'conn') or _thread_local.conn is None:
-            try:
-                # 데이터베이스 연결 생성
-                _thread_local.conn = sqlite3.connect(self.db_path)
-                _thread_local.conn.row_factory = sqlite3.Row  # 결과를 딕셔너리 형태로 반환
-                _thread_local.cursor = _thread_local.conn.cursor()
-                self.logger.debug(f"스레드 {threading.get_ident()} 에 데이터베이스 연결 생성: {self.db_path}")
-            except sqlite3.Error as e:
-                self.logger.error(f"데이터베이스 연결 오류: {e}")
-                raise
+        # check_same_thread=False로 멀티스레드 지원
+        conn = sqlite3.connect(
+            self.db_path, 
+            check_same_thread=False,
+            timeout=30.0
+        )
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
         
-        return _thread_local.conn, _thread_local.cursor
+        # WAL 모드 활성화
+        cursor.execute("PRAGMA journal_mode=WAL")
+        
+        return conn, cursor
     
     def _create_tables(self, conn, cursor):
         """필요한 테이블 생성"""
@@ -583,6 +584,9 @@ class DatabaseManager:
             if conn:
                 conn.rollback()
             return False
+        finally:
+            if \'conn\' in locals() and conn:
+                conn.close()
         finally:
             if conn:
                 conn.close()
