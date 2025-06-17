@@ -105,7 +105,8 @@ class DatabaseManager:
                 pnl REAL,
                 status TEXT NOT NULL,
                 additional_info TEXT,
-                raw_data TEXT
+                raw_data TEXT,
+                contractSize REAL DEFAULT 1.0
             )
             ''')
             
@@ -127,7 +128,8 @@ class DatabaseManager:
                     ('mark_price', 'REAL'),
                     ('liquidation_price', 'REAL'),
                     ('unrealized_pnl', 'REAL'),
-                    ('margin_mode', "TEXT DEFAULT 'cross'")
+                    ('margin_mode', "TEXT DEFAULT 'cross'"),
+                    ('contractSize', 'REAL DEFAULT 1.0')
                 ]
                 
                 for col_name, col_type in new_columns:
@@ -530,7 +532,7 @@ class DatabaseManager:
                            'entry_price', 'mark_price', 'liquidation_price', 
                            'unrealized_pnl', 'margin_mode', 'leverage', 
                            'opened_at', 'closed_at', 'pnl', 'status', 
-                           'additional_info', 'raw_data']
+                           'additional_info', 'raw_data', 'contractSize']
             
             invalid_keys = [key for key in position_data.keys() if key not in valid_columns]
             if invalid_keys:

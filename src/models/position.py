@@ -34,6 +34,7 @@ class Position:
     trailing_stop: bool = False
     trailing_stop_distance: Optional[float] = None
     trailing_stop_price: Optional[float] = None
+    contract_size: float = 1.0  # 계약 크기 추가
     
     # 추가 정보 및 부분 청산 내역
     partial_exits: List[Dict[str, Any]] = field(default_factory=list)
@@ -61,6 +62,7 @@ class Position:
             'trailing_stop': self.trailing_stop,
             'trailing_stop_distance': self.trailing_stop_distance,
             'trailing_stop_price': self.trailing_stop_price,
+            'contract_size': self.contract_size,  # contract_size 추가
             'partial_exits': self.partial_exits,
             'additional_info': self.additional_info
         }
