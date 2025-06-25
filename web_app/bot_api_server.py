@@ -6,7 +6,7 @@ Binance API를 통한 암호화폐 트레이딩 봇 구현
 Author: Yong Son
 """
 
-# 프로젝트 루트 디렉토리를 시스템 경로에 추가하여 어디서든 동일한 임포트 구조 사용 가능
+# 프로젝트 루트 디렉토리를 시스템 경로에 추가하여 어디서든 동일한 임포트 구조 사용
 import os
 import sys
 import threading
@@ -277,8 +277,23 @@ class BotAPIServer:
             symbol = saved_state.get('symbol')
             timeframe = saved_state.get('timeframe')
             
-            # 실제 봇 시작 API 호출
-            result = self.bot_gui.start_bot_api(strategy=strategy, symbol=symbol, timeframe=timeframe)
+            # 저장된 전략 파라미터 가져오기
+            strategy_params = saved_state.get('parameters', {})
+            if isinstance(strategy_params, str):
+                # JSON 문자열인 경우 파싱
+                import json
+                try:
+                    strategy_params = json.loads(strategy_params)
+                except:
+                    strategy_params = {}
+            
+            # 실제 봇 시작 API 호출 - 전략 파라미터 포함
+            result = self.bot_gui.start_bot_api(
+                strategy=strategy,
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy_params=strategy_params  # 전략 파라미터 전달
+            )
             
             # 저장된 포지션 정보와 거래 정보 복원
             if result.get('success') and self.bot_gui.algo:
@@ -763,17 +778,6 @@ class BotAPIServer:
                 # 전략 파라미터 추출
                 strategy_params = data.get('strategy_params', {})
                 
-                # 위험 관리 설정 추출 - 웹 인터페이스에서 전송하는 형식에 맞춤
-                risk_management = data.get('risk_management', {})
-                if risk_management:
-                    # 위험 관리 설정을 전략 파라미터에 병합
-                    strategy_params.update({
-                        'stop_loss_pct': risk_management.get('stop_loss_pct', 0.03),  # 기본 3%
-                        'take_profit_pct': risk_management.get('take_profit_pct', 0.06),  # 기본 6%
-                        'max_position_size': risk_management.get('max_position_size', 0.2)  # 기본 20%
-                    })
-                    logger.info(f"위험 관리 설정 적용: {risk_management}")
-                
                 # 마켓 타입 설정 저장
                 if hasattr(self.bot_gui, 'exchange_id') and self.exchange_api:
                     # 기존 exchange_api 인스턴스 업데이트
@@ -835,6 +839,7 @@ class BotAPIServer:
                             symbol=symbol,
                             timeframe=timeframe,
                             strategy=strategy,
+                            parameters=strategy_params,  # 전략 파라미터 추가
                             market_type=market_type,
                             leverage=leverage,
                             test_mode=test_mode,
