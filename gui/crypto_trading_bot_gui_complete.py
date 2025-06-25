@@ -473,8 +473,8 @@ class BotThread(QThread):
             
             # TradingAlgorithm의 거래 스레드 시작
             self.algo.trading_active = True
-            self.algo.start_trading_thread()
-            self.update_signal.emit("트레이딩 알고리즘 거래 스레드 시작됨")
+            self.algo.start_trading_thread(interval=self.interval)
+            self.update_signal.emit(f"트레이딩 알고리즘 거래 스레드 시작됨 (간격: {self.interval}초)")
             
             # 메인 루프 - 상태 모니터링 및 로그 업데이트
             while self.running:

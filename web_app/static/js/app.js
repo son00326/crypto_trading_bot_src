@@ -160,12 +160,12 @@ function startBot() {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.status === 'success') {
-            alert(data.message);
+        if (data.success) {
+            alert(data.message || '봇이 성공적으로 시작되었습니다.');
             // 상태 즉시 업데이트
             updateBotStatus();
         } else {
-            alert('오류: ' + data.message);
+            alert('오류: ' + (data.message || data.error || '알 수 없는 오류'));
         }
     })
     .catch(error => {
@@ -181,12 +181,12 @@ function stopBot() {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.status === 'success') {
-            alert(data.message);
+        if (data.success) {
+            alert(data.message || '봇이 성공적으로 중지되었습니다.');
             // 상태 즉시 업데이트
             updateBotStatus();
         } else {
-            alert('오류: ' + data.message);
+            alert('오류: ' + (data.message || data.error || '알 수 없는 오류'));
         }
     })
     .catch(error => {

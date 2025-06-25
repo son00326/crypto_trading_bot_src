@@ -1779,6 +1779,130 @@ class ExchangeAPI:
                 self.logger.error(f"마진 모드 설정 중 오류 발생: {e}")
                 return False
 
+    @api_error_handler
+    def verify_api_permissions(self):
+        """
+        API 키의 권한을 확인합니다.
+        
+        Returns:
+            dict: API 권한 정보
+                - can_read (bool): 읽기 권한
+                - can_trade (bool): 거래 권한
+                - can_withdraw (bool): 출금 권한
+                - ip_restricted (bool): IP 제한 여부
+                - permissions (list): 상세 권한 목록
+                - message (str): 권한 상태 메시지
+        """
+        try:
+            self.logger.info(f"[API 권한 확인] {self.exchange_id} API 키 권한 확인 시작")
+            
+            result = {
+                'can_read': False,
+                'can_trade': False,
+                'can_withdraw': False,
+                'ip_restricted': False,
+                'permissions': [],
+                'message': ''
+            }
+            
+            # API 키가 설정되지 않은 경우
+            if not self.exchange.apiKey or not self.exchange.secret:
+                result['message'] = 'API 키가 설정되지 않았습니다'
+                self.logger.warning("[API 권한 확인] API 키가 설정되지 않음")
+                return result
+            
+            if self.exchange_id == 'binance':
+                try:
+                    # 바이낸스 API 권한 확인
+                    account_info = self.exchange.fapiPrivateGetAccount() if self.market_type == 'futures' else self.exchange.privateGetAccount()
+                    
+                    # 계정 정보를 성공적으로 가져왔다면 읽기 권한은 있음
+                    result['can_read'] = True
+                    
+                    # 바이낸스는 별도의 API 권한 확인 엔드포인트가 있음
+                    api_restrictions = self.exchange.sapiGetAccountApiRestrictions()
+                    
+                    if 'ipRestrict' in api_restrictions:
+                        result['ip_restricted'] = api_restrictions['ipRestrict']
+                    
+                    if 'enableReading' in api_restrictions:
+                        result['can_read'] = api_restrictions['enableReading']
+                    
+                    if 'enableSpotAndMarginTrading' in api_restrictions:
+                        result['can_trade'] = api_restrictions['enableSpotAndMarginTrading']
+                    
+                    if 'enableFutures' in api_restrictions and self.market_type == 'futures':
+                        result['can_trade'] = api_restrictions['enableFutures']
+                    
+                    if 'enableWithdrawals' in api_restrictions:
+                        result['can_withdraw'] = api_restrictions['enableWithdrawals']
+                    
+                    # 권한 목록 구성
+                    if result['can_read']:
+                        result['permissions'].append('읽기')
+                    if result['can_trade']:
+                        result['permissions'].append('거래')
+                    if result['can_withdraw']:
+                        result['permissions'].append('출금')
+                    
+                    # 거래 권한 확인
+                    if not result['can_trade']:
+                        result['message'] = '⚠️ 거래 권한이 없습니다. API 키에 거래 권한을 부여해주세요.'
+                        self.logger.warning("[API 권한 확인] 거래 권한 없음")
+                    else:
+                        result['message'] = '✅ API 키가 정상적으로 설정되었으며 거래 권한이 있습니다.'
+                        self.logger.info("[API 권한 확인] 모든 필요 권한 확인됨")
+                    
+                except Exception as e:
+                    # 권한 확인 중 오류가 발생해도 기본적인 API 작동 테스트 수행
+                    try:
+                        # 잔고 조회를 통해 기본 권한 확인
+                        balance = self.get_balance()
+                        if balance:
+                            result['can_read'] = True
+                            result['can_trade'] = True  # 잔고 조회가 되면 일반적으로 거래도 가능
+                            result['permissions'] = ['읽기', '거래']
+                            result['message'] = '✅ API 연결 확인됨 (상세 권한 확인 불가)'
+                            self.logger.info("[API 권한 확인] 잔고 조회를 통해 기본 권한 확인됨")
+                    except:
+                        result['message'] = f'❌ API 권한 확인 실패: {str(e)}'
+                        self.logger.error(f"[API 권한 확인] 오류: {e}")
+                        
+            elif self.exchange_id == 'upbit':
+                try:
+                    # 업비트는 계정 정보 조회로 권한 확인
+                    accounts = self.exchange.privateGetAccounts()
+                    if accounts:
+                        result['can_read'] = True
+                        result['can_trade'] = True  # 계정 조회가 되면 거래 가능
+                        result['permissions'] = ['읽기', '거래']
+                        result['message'] = '✅ Upbit API 키가 정상적으로 설정되었습니다.'
+                        self.logger.info("[API 권한 확인] Upbit API 권한 확인됨")
+                except Exception as e:
+                    result['message'] = f'❌ Upbit API 권한 확인 실패: {str(e)}'
+                    self.logger.error(f"[API 권한 확인] Upbit 오류: {e}")
+                    
+            else:
+                result['message'] = f'{self.exchange_id} 거래소는 권한 확인을 지원하지 않습니다.'
+                self.logger.warning(f"[API 권한 확인] {self.exchange_id}는 권한 확인 미지원")
+            
+            # 로그 기록
+            self.logger.info(f"[API 권한 확인] 결과: {result['message']}")
+            self.logger.info(f"[API 권한 확인] 권한 목록: {', '.join(result['permissions']) if result['permissions'] else '없음'}")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"[API 권한 확인] 예외 발생: {e}")
+            return {
+                'can_read': False,
+                'can_trade': False,
+                'can_withdraw': False,
+                'ip_restricted': False,
+                'permissions': [],
+                'message': f'❌ API 권한 확인 중 오류 발생: {str(e)}'
+            }
+
 # 테스트 코드
 if __name__ == "__main__":
     # API 키가 설정되어 있지 않으면 테스트 모드로 실행

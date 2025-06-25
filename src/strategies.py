@@ -112,15 +112,22 @@ class Strategy:
             TradeSignal: 거래 신호 객체 또는 None
         """
         try:
+            logger.info(f"[{self.name}] 신호 생성 시작 - 현재가: {current_price}")
+            logger.debug(f"[{self.name}] 시장 데이터 크기: {len(market_data) if market_data is not None else 0}")
+            
             # OHLCV 데이터에 신호 추가
             df_with_signals = self.generate_signals(market_data)
+            logger.debug(f"[{self.name}] generate_signals 완료, 결과 데이터 크기: {len(df_with_signals)}")
             
             # 마지막 신호 가져오기
             last_signal = df_with_signals['signal'].iloc[-1] if len(df_with_signals) > 0 else 0
             last_position = df_with_signals['position'].iloc[-1] if 'position' in df_with_signals.columns and len(df_with_signals) > 0 else 0
             
+            logger.info(f"[{self.name}] 마지막 신호: {last_signal}, 마지막 포지션: {last_position}")
+            
             # 신호가 없으면 None 반환
             if last_position == 0:
+                logger.info(f"[{self.name}] 포지션이 0이므로 거래 신호 없음 (HOLD)")
                 return None
                 
             # 포지션 변화가 있으면 신호 생성
@@ -129,6 +136,8 @@ class Strategy:
             if direction:
                 from src.models import TradeSignal
                 confidence = abs(last_signal) if -1 <= last_signal <= 1 else 0.5
+                
+                logger.info(f"[{self.name}] 거래 신호 생성: {direction}, 신뢰도: {confidence:.2f}")
                 
                 return TradeSignal(
                     direction=direction,
@@ -139,10 +148,12 @@ class Strategy:
                     strategy_name=self.name,
                 )
             
+            logger.info(f"[{self.name}] 방향이 없으므로 거래 신호 없음")
             return None
             
         except Exception as e:
-            logger.error(f"신호 생성 중 오류 발생: {e}")
+            logger.error(f"[{self.name}] 신호 생성 중 오류 발생: {e}")
+            logger.exception(f"[{self.name}] 상세 오류:")
             return None
     
 class MovingAverageCrossover(Strategy):

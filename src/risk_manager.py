@@ -858,6 +858,121 @@ class RiskManager:
             logger.error(f"위험 한도 확인 중 오류 발생: {e}")
             return False, []
     
+    def assess_risk(self, signal, portfolio_status, current_price):
+        """
+        거래 신호에 대한 리스크 평가
+        
+        Args:
+            signal: 거래 신호 객체
+            portfolio_status (dict): 포트폴리오 상태
+            current_price (float): 현재 가격
+        
+        Returns:
+            dict: 리스크 평가 결과
+                - should_execute (bool): 거래 실행 여부
+                - reason (str): 거래 차단 이유 (차단된 경우)
+                - position_size (float): 추천 포지션 크기
+                - take_profit (float): 이익 실현 가격
+                - stop_loss (float): 손절매 가격
+        """
+        try:
+            logger.info(f"[리스크 평가] 시작 - 신호: {signal.direction}, 신뢰도: {signal.confidence:.2f}")
+            
+            # 기본 결과 구조
+            result = {
+                'should_execute': True,
+                'reason': '',
+                'position_size': 0,
+                'take_profit': 0,
+                'stop_loss': 0
+            }
+            
+            # 1. 계좌 잔액 확인
+            balance = portfolio_status.get('quote_balance', 0)
+            if balance <= 0:
+                logger.warning(f"[리스크 평가] 거래 차단: 잔액 부족 (잔액: {balance})")
+                result['should_execute'] = False
+                result['reason'] = '잔액 부족'
+                return result
+            
+            # 2. 리스크 한도 확인
+            risk_exceeded, warnings = self.check_risk_limits(portfolio_status, current_price)
+            if risk_exceeded:
+                logger.warning(f"[리스크 평가] 거래 차단: 리스크 한도 초과 - {', '.join(warnings)}")
+                result['should_execute'] = False
+                result['reason'] = f'리스크 한도 초과: {", ".join(warnings)}'
+                return result
+            
+            # 3. 신호 신뢰도 확인
+            min_confidence = self.risk_config.get('min_signal_confidence', 0.5)
+            if signal.confidence < min_confidence:
+                logger.warning(f"[리스크 평가] 거래 차단: 신호 신뢰도 부족 ({signal.confidence:.2f} < {min_confidence})")
+                result['should_execute'] = False
+                result['reason'] = f'신호 신뢰도 부족: {signal.confidence:.2f} < {min_confidence}'
+                return result
+            
+            # 4. 포지션 크기 계산
+            position_size = self.calculate_position_size(balance, current_price)
+            if position_size <= 0:
+                logger.warning(f"[리스크 평가] 거래 차단: 유효하지 않은 포지션 크기 ({position_size})")
+                result['should_execute'] = False
+                result['reason'] = '유효하지 않은 포지션 크기'
+                return result
+            
+            # 5. 손절매/이익실현 가격 계산
+            side = signal.direction
+            stop_loss = self.calculate_stop_loss_price(current_price, side)
+            take_profit = self.calculate_take_profit_price(current_price, side)
+            
+            # 6. 리스크/리워드 비율 확인
+            risk_reward_ratio = self.calculate_risk_reward_ratio(current_price, stop_loss, take_profit)
+            min_risk_reward = self.risk_config.get('min_risk_reward_ratio', 1.5)
+            
+            if risk_reward_ratio < min_risk_reward:
+                logger.warning(f"[리스크 평가] 거래 차단: 리스크/리워드 비율 부족 ({risk_reward_ratio:.2f} < {min_risk_reward})")
+                result['should_execute'] = False
+                result['reason'] = f'리스크/리워드 비율 부족: {risk_reward_ratio:.2f} < {min_risk_reward}'
+                return result
+            
+            # 7. 동일 방향 포지션 확인
+            open_positions = [p for p in portfolio_status.get('positions', []) if p.get('status') == 'open']
+            same_direction_positions = [p for p in open_positions if p.get('side') == side]
+            
+            max_same_direction = self.risk_config.get('max_same_direction_positions', 2)
+            if len(same_direction_positions) >= max_same_direction:
+                logger.warning(f"[리스크 평가] 거래 차단: 동일 방향 포지션 초과 ({len(same_direction_positions)} >= {max_same_direction})")
+                result['should_execute'] = False
+                result['reason'] = f'동일 방향 포지션 초과: {len(same_direction_positions)} >= {max_same_direction}'
+                return result
+            
+            # 8. 마진 안전성 확인 (선물 거래인 경우)
+            if self.margin_safety_enabled:
+                margin_check = self.check_margin_safety(portfolio_status, open_positions)
+                if margin_check['action'] != 'safe':
+                    logger.warning(f"[리스크 평가] 거래 차단: 마진 안전성 문제 - {margin_check['message']}")
+                    result['should_execute'] = False
+                    result['reason'] = f"마진 안전성 문제: {margin_check['message']}"
+                    return result
+            
+            # 모든 체크 통과
+            result['position_size'] = position_size
+            result['take_profit'] = take_profit
+            result['stop_loss'] = stop_loss
+            
+            logger.info(f"[리스크 평가] 통과 - 포지션 크기: {position_size:.8f}, SL: {stop_loss:.2f}, TP: {take_profit:.2f}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[리스크 평가] 오류 발생: {e}")
+            logger.exception("[리스크 평가] 상세 오류:")
+            return {
+                'should_execute': False,
+                'reason': f'리스크 평가 오류: {str(e)}',
+                'position_size': 0,
+                'take_profit': 0,
+                'stop_loss': 0
+            }
+    
     def send_alert(self, subject, message, alert_type='all'):
         """
         알림 전송 - NotificationService 사용

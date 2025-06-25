@@ -323,6 +323,17 @@ class TradingAlgorithm:
                     if not exchange_api.exchange.checkRequiredCredentials():
                         self.logger.warning("API 키가 설정되지 않았거나 불완전합니다. 일부 기능이 제한될 수 있습니다.")
                     
+                    # API 권한 상세 확인
+                    permissions = exchange_api.verify_api_permissions()
+                    self.logger.info(f"API 권한 확인 결과: {permissions['message']}")
+                    
+                    if not permissions['can_trade']:
+                        self.logger.error("거래 권한이 없습니다! API 키 설정을 확인해주세요.")
+                        if self.test_mode:
+                            self.logger.info("테스트 모드이므로 계속 진행합니다.")
+                        else:
+                            raise APIError("API 키에 거래 권한이 없습니다. 바이낸스에서 API 권한을 확인해주세요.")
+                    
                     return exchange_api
                 except Exception as validation_error:
                     self.logger.error(f"API 키 유효성 검증 실패: {validation_error}")
@@ -708,6 +719,8 @@ class TradingAlgorithm:
             self.logger.info(f"거래 심볼: {self.symbol}")
             self.logger.info(f"타임프레임: {self.timeframe}")
             self.logger.info(f"전략: {self.strategy.name if hasattr(self.strategy, 'name') else 'Unknown'}")
+            self.logger.info(f"거래 간격: {interval}초")
+            self.logger.info(f"테스트 모드: {self.test_mode}")
             consecutive_errors = 0
             max_consecutive_errors = 5  # 연속 오류 최대 허용 횟수
             
@@ -794,6 +807,28 @@ class TradingAlgorithm:
                 return
             
             self.logger.info(f"시장 데이터 수집 완료: {len(market_data)}개 캔들")
+            
+            # 시장 데이터 상세 로깅
+            if market_data is not None and len(market_data) > 0:
+                latest_candle = market_data.iloc[-1]
+                self.logger.info(f"최신 캔들 정보:")
+                self.logger.info(f"  - 시간: {latest_candle.name}")
+                self.logger.info(f"  - 시가: {latest_candle['open']:.2f}")
+                self.logger.info(f"  - 고가: {latest_candle['high']:.2f}")
+                self.logger.info(f"  - 저가: {latest_candle['low']:.2f}")
+                self.logger.info(f"  - 종가: {latest_candle['close']:.2f}")
+                self.logger.info(f"  - 거래량: {latest_candle['volume']:.2f}")
+                
+                # 가격 변동성 계산
+                price_change = latest_candle['close'] - latest_candle['open']
+                price_change_pct = (price_change / latest_candle['open']) * 100
+                self.logger.info(f"  - 가격 변동: {price_change:.2f} ({price_change_pct:+.2f}%)")
+                
+                # 최근 5개 캔들의 추세
+                if len(market_data) >= 5:
+                    recent_closes = market_data['close'].tail(5)
+                    trend = "상승" if recent_closes.iloc[-1] > recent_closes.iloc[0] else "하락"
+                    self.logger.info(f"  - 최근 5개 캔들 추세: {trend}")
             
             # 3. 현재 가격 가져오기
             self.logger.info("3단계: 현재 가격 조회 중...")
