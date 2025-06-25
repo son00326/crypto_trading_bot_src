@@ -729,16 +729,15 @@ class BotAPIServer:
                             'error': f'{field}는 필수 항목입니다'
                         }), 400
                 
-                # GUI API를 통해 봇 시작
-                strategy = data.get('strategy')
-                symbol = data.get('symbol')
-                timeframe = data.get('timeframe')
-                market_type = data.get('market_type', 'spot')
-                leverage = data.get('leverage', 1)
-                test_mode = data.get('test_mode', False)
+                # 위험 관리 설정 추출 - 웹 인터페이스에서 전송하는 형식에 맞춤
+                risk_management = data.get('risk_management', {})
+                strategy_params = data.get('strategy_params', {})
+                strategy_params.update(risk_management)
                 
                 # 마켓 타입에 따라 심볼 형식 변환
+                symbol = data.get('symbol')
                 if symbol:
+                    market_type = data.get('market_type', 'spot')
                     if market_type == 'futures':
                         # 선물: 슬래시 제거 (BTC/USDT → BTCUSDT)
                         if '/' in symbol:
@@ -754,8 +753,26 @@ class BotAPIServer:
                                     logger.info(f"현물 거래용 심볼 형식으로 변환: {data.get('symbol')} → {symbol}")
                                     break
                 
+                # GUI API를 통해 봇 시작
+                strategy = data.get('strategy')
+                timeframe = data.get('timeframe')
+                market_type = data.get('market_type', 'spot')
+                leverage = data.get('leverage', 1)
+                test_mode = data.get('test_mode', False)
+                
                 # 전략 파라미터 추출
                 strategy_params = data.get('strategy_params', {})
+                
+                # 위험 관리 설정 추출 - 웹 인터페이스에서 전송하는 형식에 맞춤
+                risk_management = data.get('risk_management', {})
+                if risk_management:
+                    # 위험 관리 설정을 전략 파라미터에 병합
+                    strategy_params.update({
+                        'stop_loss_pct': risk_management.get('stop_loss_pct', 0.03),  # 기본 3%
+                        'take_profit_pct': risk_management.get('take_profit_pct', 0.06),  # 기본 6%
+                        'max_position_size': risk_management.get('max_position_size', 0.2)  # 기본 20%
+                    })
+                    logger.info(f"위험 관리 설정 적용: {risk_management}")
                 
                 # 마켓 타입 설정 저장
                 if hasattr(self.bot_gui, 'exchange_id') and self.exchange_api:
@@ -1378,7 +1395,7 @@ class BotAPIServer:
                         # 현재 전략 상태 저장 (진입가, 목표가, 손절가 등)
                         if hasattr(self.bot_gui.algo, 'current_trade_info'):
                             saved_state['current_trade_info'] = self.bot_gui.algo.current_trade_info
-                            logger.info(f"현재 거래 정보 저장: {saved_state['current_trade_info']}")
+                            logger.info("거래 정보 복원 완료")
                     except Exception as e:
                         logger.error(f"포지션 정보 저장 중 오류: {e}")
                 

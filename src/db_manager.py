@@ -1422,6 +1422,13 @@ class DatabaseManager:
                     state['additional_info'] = json.loads(state['additional_info'])
                 except json.JSONDecodeError:
                     pass
+            
+            # parameters 필드도 JSON 파싱
+            if state.get('parameters'):
+                try:
+                    state['parameters'] = json.loads(state['parameters'])
+                except json.JSONDecodeError:
+                    pass
                     
             self.logger.info("봇 상태 불러오기 완료")
             return state

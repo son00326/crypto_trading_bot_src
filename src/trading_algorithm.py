@@ -246,6 +246,19 @@ class TradingAlgorithm:
         # 위험 관리 설정
         self.risk_management = RISK_MANAGEMENT.copy()
         
+        # strategy_params에서 위험 관리 설정 업데이트
+        if self.strategy_params:
+            if 'stop_loss_pct' in self.strategy_params:
+                self.risk_management['stop_loss_percent'] = self.strategy_params['stop_loss_pct']
+            if 'take_profit_pct' in self.strategy_params:
+                self.risk_management['take_profit_percent'] = self.strategy_params['take_profit_pct']
+            if 'max_position_size' in self.strategy_params:
+                self.risk_management['max_position_size'] = self.strategy_params['max_position_size']
+            
+            logger.info(f"위험 관리 설정 업데이트: stop_loss={self.risk_management['stop_loss_percent']}, "
+                       f"take_profit={self.risk_management['take_profit_percent']}, "
+                       f"max_position_size={self.risk_management['max_position_size']}")
+        
         # 위험 관리자 초기화
         self.risk_manager = RiskManager(exchange_id=exchange_id, symbol=symbol, risk_config=self.risk_management)
         
@@ -277,6 +290,14 @@ class TradingAlgorithm:
         # 이전 상태 복원
         if restore_state:
             self._restore_state()
+        
+        # 초기 포트폴리오 상태 업데이트 (거래소에서 잔액 가져오기)
+        if not self.test_mode:
+            try:
+                self.portfolio_manager.update_portfolio()
+                logger.info("초기 포트폴리오 상태 업데이트 완료")
+            except Exception as e:
+                logger.error(f"초기 포트폴리오 업데이트 실패: {e}")
         
         logger.info(f"{exchange_id} 거래소의 {symbol} 거래 알고리즘이 초기화되었습니다.")
         
@@ -342,10 +363,9 @@ class TradingAlgorithm:
             except Exception as e:
                 last_exception = e
                 retry_count += 1
-                self.logger.warning(f"거래소 API 초기화 실패 ({retry_count}/{max_retries}): {e}")
                 
                 if retry_count <= max_retries:
-                    self.logger.info(f"{delay}초 후 재시도 합니다...")
+                    self.logger.warning(f"거래소 API 초기화 실패 ({retry_count}/{max_retries}): {e}")
                     time.sleep(delay)
                     # 지수 백오프: 다음 재시도는 더 오래 기다림
                     delay = min(delay * 2, 30)  # 최대 30초까지 증가
@@ -761,7 +781,7 @@ class TradingAlgorithm:
                                 'action': 'pause_trading'
                             })
                         except Exception as event_error:
-                            self.logger.error(f"이벤트 발행 중 오류 발생: {event_error}")
+                            self.logger.error(f"오류 이벤트 발행 중 추가 오류: {event_error}")
                         
                         # 복구 대기 시간
                         recovery_wait = min(300, 30 * consecutive_errors)  # 최대 5분까지 대기

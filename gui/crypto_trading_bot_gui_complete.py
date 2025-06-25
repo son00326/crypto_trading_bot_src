@@ -600,6 +600,7 @@ class BotThread(QThread):
                     'is_running': self.running,
                     'test_mode': self.bot.test_mode,
                     'updated_at': datetime.now().isoformat(),
+                    'parameters': self.strategy_params,  # 전략 파라미터(리스크 설정 포함) 저장
                     'additional_info': {
                         'interval': self.interval
                     }

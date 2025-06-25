@@ -54,6 +54,7 @@ RISK_MANAGEMENT = {
     'stop_loss_pct': 0.02,      # 손절매 비율 (2%)
     'take_profit_pct': 0.05,    # 이익실현 비율 (5%)
     'max_daily_trades': 5,      # 일일 최대 거래 횟수
+    'risk_per_trade': 0.01,     # 거래당 위험 비율 (1%)
 }
 
 # 백테스트 설정
