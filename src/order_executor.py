@@ -36,6 +36,7 @@ class OrderExecutor:
         self.symbol = symbol
         self.test_mode = test_mode
         self.min_order_qty = self._get_min_order_qty()
+        self.logger = logger  # 로거 참조
         
         # 기본 심볼 구성 요소 분리
         self.base_currency = symbol.split('/')[0]  # BTC, ETH 등
@@ -49,7 +50,7 @@ class OrderExecutor:
                 return market_info['limits']['amount']['min']
             return 0.001  # 기본값
         except Exception as e:
-            logger.error(f"최소 주문 수량 가져오기 실패: {e}")
+            self.logger.error(f"최소 주문 수량 가져오기 실패: {e}")
             return 0.001  # 오류 발생 시 기본값 사용
     
     @api_error_handler(retry_count=2, max_delay=5)
@@ -70,10 +71,10 @@ class OrderExecutor:
             if ticker and 'last' in ticker:
                 return float(ticker['last'])
             else:
-                logger.warning(f"{target_symbol}의 현재 가격 정보를 찾을 수 없습니다.")
+                self.logger.warning(f"{target_symbol}의 현재 가격 정보를 찾을 수 없습니다.")
                 return 0
         except Exception as e:
-            logger.error(f"현재 가격 조회 중 오류: {e}")
+            self.logger.error(f"현재 가격 조회 중 오류: {e}")
             return 0
     
     def _simulate_order(self, order_time, side, price, quantity, percentage=1.0):
@@ -130,13 +131,25 @@ class OrderExecutor:
         try:
             order_time = datetime.now()
             
+            self.logger.info("=" * 60)
+            self.logger.info("매수 주문 실행 시작")
+            self.logger.info(f"  - 심볼: {self.symbol}")
+            self.logger.info(f"  - 가격: {price}")
+            self.logger.info(f"  - 수량: {quantity}")
+            self.logger.info(f"  - 예상 금액: {price * quantity:.2f} {self.quote_currency}")
+            self.logger.info(f"  - 모드: {'테스트' if self.test_mode else '실거래'}")
+            self.logger.info(f"  - 포지션 종료: {close_position}")
+            if additional_info:
+                self.logger.info(f"  - 추가 정보: {additional_info}")
+            self.logger.info("=" * 60)
+            
             # 포지션 종료인지 여부 검사 (숏 포지션 청산)
             if close_position:
                 # 포지션 ID가 지정된 경우 해당 포지션을 찾아서 종료 처리
                 if position_id and portfolio['positions']:
                     for idx, pos in enumerate(portfolio['positions']):
                         if pos.get('id') == position_id or pos.get('position_id') == position_id:
-                            logger.info(f"숏 포지션 청산: ID={position_id}, 가격={price}, 수량={quantity}")
+                            self.logger.info(f"숏 포지션 청산: ID={position_id}, 가격={price}, 수량={quantity}")
                             # 포지션 상태 업데이트
                             portfolio['positions'][idx]['status'] = 'closed'
                             portfolio['positions'][idx]['closed_at'] = order_time.isoformat()
@@ -150,6 +163,8 @@ class OrderExecutor:
                             break
                             
             if self.test_mode:
+                self.logger.info(f"[테스트 모드] 실제 주문을 실행하지 않고 시뮬레이션합니다.")
+                self.logger.info(f"[테스트 모드] 매수 주문 시뮬레이션: 가격={price}, 수량={quantity}")
                 # 테스트 모드에서는 주문을 시뮬레이션
                 order = self._simulate_order(order_time, 'buy', price, quantity)
                 
@@ -186,7 +201,7 @@ class OrderExecutor:
                     # 데이터베이스에 포지션 저장
                     self.db.save_position(position)
                     
-                    logger.info(f"새로운 롱 포지션 생성: 가격={price}, 수량={quantity}")
+                    self.logger.info(f"[테스트 모드] 새로운 롱 포지션 생성: 가격={price}, 수량={quantity}")
                 
                 # 거래 내역 추가
                 trade_record = {
@@ -207,7 +222,7 @@ class OrderExecutor:
                 # 데이터베이스에 거래 내역 저장
                 self.db.save_trade(trade_record)
                 
-                logger.info(f"[테스트] 매수 주문 실행: 가격={price}, 수량={quantity}, 비용={price * quantity}")
+                self.logger.info(f"[테스트] 매수 주문 실행: 가격={price}, 수량={quantity}, 비용={price * quantity}")
                 return order
                 
             else:
@@ -221,7 +236,7 @@ class OrderExecutor:
                         amount=quantity
                     )
                     
-                    logger.info(f"매수 주문 성공: {order['id']}, 가격: {price}, 수량: {quantity}")
+                    self.logger.info(f"매수 주문 성공: {order['id']}, 가격: {price}, 수량: {quantity}")
                     
                     # 숏 포지션 청산이 아닌 경우 포지션 생성
                     if not close_position:
@@ -254,7 +269,7 @@ class OrderExecutor:
                         # 데이터베이스에 포지션 저장
                         self.db.save_position(position)
                         
-                        logger.info(f"새로운 롱 포지션 생성: 가격={price}, 수량={quantity}")
+                        self.logger.info(f"새로운 롱 포지션 생성: 가격={price}, 수량={quantity}")
                     
                     # 거래 내역 추가
                     trade_record = {
@@ -278,11 +293,11 @@ class OrderExecutor:
                     return order
                     
                 except Exception as e:
-                    logger.error(f"매수 주문 실행 중 오류 발생: {e}")
+                    self.logger.error(f"매수 주문 실행 중 오류 발생: {e}")
                     return None
                 
         except Exception as e:
-            logger.error(f"매수 주문 처리 중 오류 발생: {e}")
+            self.logger.error(f"매수 주문 처리 중 오류 발생: {e}")
             return None
     
     @trade_error_handler(retry_count=2, max_delay=10)
@@ -315,28 +330,111 @@ class OrderExecutor:
             # 최소 주문 수량 확인
             min_order_qty = self.min_order_qty
             if actual_quantity < min_order_qty:
-                logger.warning(f"계산된 매도 수량({actual_quantity})이 최소 주문 수량({min_order_qty})보다 작아 주문을 중단합니다.")
+                self.logger.warning(f"계산된 매도 수량({actual_quantity})이 최소 주문 수량({min_order_qty})보다 작아 주문을 중단합니다.")
                 return None
         
             # 포지션 잔여량 검증
             remaining = quantity - actual_quantity
             if 0 < remaining < min_order_qty:
-                logger.warning(f"잔여량이 최소 주문 수량보다 작음. 전량 청산으로 변경: {remaining} < {min_order_qty}")
+                self.logger.warning(f"잔여량이 최소 주문 수량보다 작음. 전량 청산으로 변경: {remaining} < {min_order_qty}")
                 actual_quantity = quantity
                 percentage = 1.0
                 is_partial = False
                 
+            if actual_quantity <= 0:
+                self.logger.warning("청산할 수량이 0 이하입니다.")
+                return None
+                
+            # 현재 가격 확인
+            current_price = price if price > 0 else self.get_current_price(self.symbol)
+            
+            if current_price <= 0:
+                self.logger.error("유효하지 않은 현재 가격")
+                return None
+                
+            self.logger.info("=" * 60)
+            self.logger.info("매도 주문 실행 시작")
+            self.logger.info(f"  - 심볼: {self.symbol}")
+            self.logger.info(f"  - 가격: {current_price}")
+            self.logger.info(f"  - 수량: {actual_quantity}")
+            self.logger.info(f"  - 예상 금액: {current_price * actual_quantity:.2f} {self.quote_currency}")
+            self.logger.info(f"  - 모드: {'테스트' if self.test_mode else '실거래'}")
+            self.logger.info(f"  - 청산 비율: {percentage * 100:.1f}%")
+            self.logger.info(f"  - 부분 청산: {'예' if is_partial else '아니오'}")
+            if position_id:
+                self.logger.info(f"  - 포지션 ID: {position_id}")
+            if additional_exit_info:
+                self.logger.info(f"  - 추가 정보: {additional_exit_info}")
+            self.logger.info("=" * 60)
+            
+            # 포지션 찾기 및 업데이트
+            position_found = False
+            if position_id and portfolio.get('positions'):
+                for idx, pos in enumerate(portfolio['positions']):
+                    if pos.get('id') == position_id or pos.get('position_id') == position_id:
+                        position_found = True
+                        
+                        if is_partial:
+                            # 부분 청산의 경우 수량 업데이트
+                            self.logger.info(f"부분 청산: ID={position_id}, 비율={percentage * 100:.1f}%")
+                            portfolio['positions'][idx]['contracts'] = remaining
+                            
+                            # 데이터베이스에 포지션 업데이트
+                            self.db.update_position(position_id, {
+                                'contracts': remaining,
+                                'last_updated': order_time.isoformat()
+                            })
+                        else:
+                            # 전체 청산의 경우 포지션 종료
+                            self.logger.info(f"전체 청산: ID={position_id}")
+                            portfolio['positions'][idx]['status'] = 'closed'
+                            portfolio['positions'][idx]['closed_at'] = order_time.isoformat()
+                            portfolio['positions'][idx]['close_price'] = current_price
+                            
+                            # 데이터베이스에 포지션 업데이트
+                            self.db.update_position(position_id, {
+                                'status': 'closed',
+                                'closed_at': order_time.isoformat(),
+                                'close_price': current_price
+                            })
+                        break
+            
+            if position_id and not position_found:
+                self.logger.warning(f"포지션 ID {position_id}를 찾을 수 없습니다.")
+            
             if self.test_mode:
+                self.logger.info(f"[테스트 모드] 실제 주문을 실행하지 않고 시뮬레이션합니다.")
+                self.logger.info(f"[테스트 모드] 매도 주문 시뮬레이션: 가격={current_price}, 수량={actual_quantity}")
                 # 테스트 모드에서는 주문을 시뮬레이션
-                order = self._simulate_order(order_time, 'sell', price, actual_quantity, percentage)
+                order = self._simulate_order(order_time, 'sell', current_price, actual_quantity, percentage)
                 
-                # 포트폴리오 업데이트는 호출자가 담당
+                # 테스트 모드에서도 거래 내역 저장
+                trade_record = {
+                    'symbol': self.symbol,
+                    'side': 'sell',
+                    'order_type': 'market',
+                    'amount': actual_quantity,
+                    'price': current_price,
+                    'cost': current_price * actual_quantity,
+                    'fee': current_price * actual_quantity * 0.001,  # 0.1% 수수료
+                    'timestamp': order_time.isoformat(),
+                    'additional_info': {
+                        'order_id': order['id'],
+                        'test_mode': True,
+                        'percentage': percentage,
+                        'is_partial': is_partial
+                    }
+                }
                 
-                # 실제 주문 실행 완료 상태를 리턴
+                # additional_exit_info가 있으면 추가
+                if additional_exit_info:
+                    trade_record['additional_info'].update(additional_exit_info)
+                
+                # 데이터베이스에 거래 내역 저장
+                self.db.save_trade(trade_record)
+                
                 return order
-                
             else:
-                # 실제 거래소 주문 실행
                 try:
                     # 거래소 API를 통한 실제 매도 주문
                     order = self.exchange_api.create_order(
@@ -346,14 +444,41 @@ class OrderExecutor:
                         amount=actual_quantity
                     )
                     
-                    logger.info(f"매도 주문 성공: {order['id']}, 가격: {price}, 수량: {actual_quantity}")
+                    self.logger.info(f"매도 주문 성공: {order['id']}, 가격: {current_price}, 수량: {actual_quantity}")
+                    
+                    # 거래 내역 추가
+                    trade_record = {
+                        'symbol': self.symbol,
+                        'side': 'sell',
+                        'order_type': 'market',
+                        'amount': actual_quantity,
+                        'price': current_price,
+                        'cost': current_price * actual_quantity,
+                        'fee': order.get('fee', {}).get('cost', current_price * actual_quantity * 0.001),
+                        'timestamp': order_time.isoformat(),
+                        'additional_info': {
+                            'order_id': order['id'],
+                            'test_mode': False,
+                            'percentage': percentage,
+                            'is_partial': is_partial
+                        }
+                    }
+                    
+                    # additional_exit_info가 있으면 추가
+                    if additional_exit_info:
+                        trade_record['additional_info'].update(additional_exit_info)
+                    
+                    # 데이터베이스에 거래 내역 저장
+                    self.db.save_trade(trade_record)
+                    
                     return order
+                    
                 except Exception as e:
-                    logger.error(f"매도 주문 실행 중 추가 오류 발생: {e}")
+                    self.logger.error(f"매도 주문 실행 중 오류 발생: {e}")
                     return None
-            
+                
         except Exception as e:
-            logger.error(f"매도 주문 처리 중 오류 발생: {e}")
+            self.logger.error(f"매도 주문 처리 중 오류 발생: {e}")
             return None
     
     @trade_error_handler(retry_count=3, max_delay=15)
@@ -382,7 +507,7 @@ class OrderExecutor:
                         break
             
             if not target_position:
-                logger.warning(f"포지션 {position_id}를 찾을 수 없거나 이미 종료됨")
+                self.logger.warning(f"포지션 {position_id}를 찾을 수 없거나 이미 종료됨")
                 return None
             
             # 심볼, 포지션 방향, 수량 정보 설정
@@ -398,18 +523,18 @@ class OrderExecutor:
                 partial = True
             
             if amount <= 0:
-                logger.warning("청산할 수량이 0 이하입니다.")
+                self.logger.warning("청산할 수량이 0 이하입니다.")
                 return None
                 
             # 현재 가격 확인
             current_price = self.exchange_api.get_current_price(symbol)
             
             if current_price <= 0:
-                logger.error("유효하지 않은 현재 가격")
+                self.logger.error("유효하지 않은 현재 가격")
                 return None
                 
             # 청산 실행
-            logger.info(f"포지션 {position_id} 청산 시도: {symbol}, {side}, 수량={amount}, 이유={reason}")
+            self.logger.info(f"포지션 {position_id} 청산 시도: {symbol}, {side}, 수량={amount}, 이유={reason}")
             
             # 추가 종료 정보
             additional_exit_info = {
@@ -442,5 +567,5 @@ class OrderExecutor:
                 )
                 
         except Exception as e:
-            logger.error(f"포지션 청산 중 오류 발생: {e}")
+            self.logger.error(f"포지션 청산 중 오류 발생: {e}")
             return None
