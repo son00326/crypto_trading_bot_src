@@ -1,0 +1,11 @@
+# 주요 라이브러리 버전 고정
+pandas==2.1.0
+numpy==1.24.3
+ccxt==3.0.51
+python-dotenv==0.21.0
+flask==2.3.2
+flask-cors==5.0.1
+flask-login==0.6.2
+werkzeug==2.3.6
+matplotlib==3.7.2
+PyQt5==5.15.9
