@@ -170,41 +170,38 @@ class TradingAlgorithm:
                 strategy_name = strategy
                 # 전략 이름에 따라 해당 파라미터를 적용한 전략 객체 생성
                 if strategy_name == 'MovingAverageCrossover':
-                    params = self.strategy_params.get('MovingAverageCrossover', {})
+                    # 웹에서 전달된 파라미터는 바로 strategy_params 아래에 있음
                     strategy = MovingAverageCrossover(
-                        short_period=params.get('short_period', 9),
-                        long_period=params.get('long_period', 26),
-                        ma_type=params.get('ma_type', 'ema')
+                        short_period=self.strategy_params.get('short_period', 9),
+                        long_period=self.strategy_params.get('long_period', 26),
+                        ma_type=self.strategy_params.get('ma_type', 'sma')
                     )
                     
                 elif strategy_name == 'RSIStrategy':
-                    params = self.strategy_params.get('RSIStrategy', {})
                     strategy = RSIStrategy(
-                        period=params.get('period', 14),
-                        overbought=params.get('overbought', 70),
-                        oversold=params.get('oversold', 30)
+                        period=self.strategy_params.get('period', 14),
+                        overbought=self.strategy_params.get('overbought', 70),
+                        oversold=self.strategy_params.get('oversold', 30)
                     )
                     
                 elif strategy_name == 'MACDStrategy':
-                    params = self.strategy_params.get('MACDStrategy', {})
                     strategy = MACDStrategy(
-                        fast_period=params.get('fast_period', 12),
-                        slow_period=params.get('slow_period', 26),
-                        signal_period=params.get('signal_period', 9)
+                        fast_period=self.strategy_params.get('fast_period', 12),
+                        slow_period=self.strategy_params.get('slow_period', 26),
+                        signal_period=self.strategy_params.get('signal_period', 9)
                     )
                     
                 elif strategy_name == 'BollingerBandsStrategy':
-                    params = self.strategy_params.get('BollingerBandsStrategy', {})
                     strategy = BollingerBandsStrategy(
-                        period=params.get('period', 20),
-                        std_dev=params.get('std_dev', 2.0)
+                        period=self.strategy_params.get('period', 20),
+                        std_dev=self.strategy_params.get('std_dev', 2.0)
                     )
                     
                 elif strategy_name == 'BollingerBandFuturesStrategy':
-                    params = self.strategy_params.get('BollingerBandFuturesStrategy', {})
+                    # 웹에서 전달된 파라미터는 strategy_params 바로 아래에 있음
                     strategy = BollingerBandFuturesStrategy(
-                        period=params.get('period', 20),
-                        bb_mult=params.get('bb_mult', 2.0)
+                        bb_period=self.strategy_params.get('period', 20),
+                        bb_std=self.strategy_params.get('std_dev', 2.0)  # bb_std로 수정
                     )
                     
                 elif strategy_name == 'CombinedStrategy':
@@ -1080,7 +1077,7 @@ class TradingAlgorithm:
                 symbol = self.symbol
             
             # exchange_api를 통해 현재 가격 조회
-            ticker = self.exchange_api.exchange.fetch_ticker(symbol)
+            ticker = self.exchange_api.get_ticker(symbol)
             current_price = ticker.get('last', ticker.get('close'))
             
             if current_price is None:

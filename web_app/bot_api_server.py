@@ -846,7 +846,7 @@ class BotAPIServer:
                             symbol=symbol,
                             timeframe=timeframe,
                             strategy=strategy,
-                            parameters=strategy_params,  # 전략 파라미터 추가
+                            strategy_params=strategy_params,  # strategy_params로 변경
                             market_type=market_type,
                             leverage=leverage,
                             test_mode=test_mode,
@@ -1453,6 +1453,7 @@ class BotAPIServer:
             'test_mode': kwargs.get('test_mode', getattr(self.bot_gui, 'test_mode', True)),
             'auto_sl_tp': kwargs.get('auto_sl_tp', False),
             'partial_tp': kwargs.get('partial_tp', False),
+            'strategy_params': kwargs.get('strategy_params', {}),
             'updated_at': datetime.now().isoformat()
         }
         
