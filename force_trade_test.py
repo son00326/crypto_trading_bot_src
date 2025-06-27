@@ -22,29 +22,27 @@ from src.logging_config import get_logger
 
 logger = get_logger('force_trade_test')
 
-def create_test_signal(direction='buy', confidence=0.8, source='manual_test'):
+def create_test_signal(direction='buy', confidence=0.8):
     """
     테스트용 거래 신호 생성
     
     Args:
         direction (str): 'buy' 또는 'sell'
         confidence (float): 신호 신뢰도 (0.0 ~ 1.0)
-        source (str): 신호 생성 소스
     
     Returns:
         TradeSignal: 생성된 거래 신호
     """
     signal = TradeSignal(
+        symbol='BTC/USDT',
         direction=direction,
+        price=0.0,  # 실제 가격은 나중에 설정
+        strategy_name='ForceTradeTest',
         confidence=confidence,
-        source=source,
-        timestamp=datetime.now().isoformat(),
-        metadata={
-            'test': True,
-            'reason': 'Manual test signal',
-            'force_generated': True
-        }
+        strength=0.7 if confidence >= 0.7 else 0.5,
+        timestamp=datetime.now()
     )
+    # 기타 필드들은 dataclass 기본값으로 설정됨
     return signal
 
 def test_buy_signal(trading_algo, confidence=0.8):

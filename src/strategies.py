@@ -144,6 +144,7 @@ class Strategy:
                     symbol=market_data['symbol'].iloc[0] if 'symbol' in market_data.columns else None,
                     price=current_price,
                     confidence=confidence,
+                    strength=confidence,  # strength를 confidence와 동일하게 설정
                     timestamp=datetime.now(),
                     strategy_name=self.name,
                 )
@@ -336,10 +337,14 @@ class MovingAverageCrossover(Strategy):
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
+            # position 컬럼 추가 (signal과 동일하게 설정)
+            df['position'] = signals
+            
             return df
         except Exception as e:
             logger.error(f"이동평균 교차 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
+            df['position'] = 0
             return df
 
 class RSIStrategy(Strategy):
@@ -437,10 +442,14 @@ class RSIStrategy(Strategy):
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
+            # position 컬럼 추가 (signal과 동일하게 설정)
+            df['position'] = signals
+            
             return df
         except Exception as e:
             logger.error(f"RSI 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
+            df['position'] = 0
             return df
 
 class MACDStrategy(Strategy):
@@ -561,10 +570,14 @@ class MACDStrategy(Strategy):
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
+            # position 컬럼 추가 (signal과 동일하게 설정)
+            df['position'] = signals
+            
             return df
         except Exception as e:
             logger.error(f"MACD 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
+            df['position'] = 0
             return df
 
 class BollingerBandsStrategy(Strategy):
@@ -674,10 +687,14 @@ class BollingerBandsStrategy(Strategy):
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
+            # position 컬럼 추가 (signal과 동일하게 설정)
+            df['position'] = signals
+            
             return df
         except Exception as e:
             logger.error(f"볼린저 밴드 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
+            df['position'] = 0
             return df
 
 class StochasticStrategy(Strategy):
@@ -855,6 +872,9 @@ class CombinedStrategy(Strategy):
         # 결과를 데이터프레임에 할당
         df['signal'] = signals
         
+        # position 컬럼 추가 (signal과 동일하게 설정)
+        df['position'] = df['signal']
+        
         return df
 
 class BreakoutStrategy(Strategy):
@@ -904,6 +924,9 @@ class BreakoutStrategy(Strategy):
         
         # 결과를 데이터프레임에 할당
         df['signal'] = signals
+        
+        # position 컬럼 추가 (signal과 동일하게 설정)
+        df['position'] = signals
         
         return df
 
@@ -965,6 +988,9 @@ class VolatilityBreakoutStrategy(Strategy):
         # 결과를 데이터프레임에 할당
         df['signal'] = final_signals
         
+        # position 컬럼 추가 (signal과 동일하게 설정)
+        df['position'] = final_signals
+        
         return df
 
 class BollingerBandFuturesStrategy(Strategy):
@@ -1025,10 +1051,15 @@ class BollingerBandFuturesStrategy(Strategy):
             data.loc[short_cond1 | short_cond2 | short_cond3, 'signal'] = -1
             # 연속 신호 제거
             data['signal'] = data['signal'].mask(data['signal'] == data['signal'].shift(1), 0)
+            
+            # position 컬럼 추가 (signal과 동일하게 설정)
+            data['position'] = data['signal']
+            
             return data
         except Exception as e:
             logger.error(f"BollingerBandFutures 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
+            df['position'] = 0
             return df
 
     def calculate_positions(self, df):

@@ -124,6 +124,7 @@
                                     <option value="RSIStrategy">RSI 전략</option>
                                     <option value="MACDStrategy">MACD 전략</option>
                                     <option value="BollingerBandsStrategy">볼린저 밴드 전략</option>
+                                    <option value="BollingerBandFuturesStrategy">볼린저 밴드 선물 전략</option>
                                     <option value="CombinedStrategy">복합 전략 (Combined)</option>
                                 </select>
                             </div>
@@ -194,6 +195,19 @@
                                         <div class="mb-2">
                                             <label for="bb-std-dev" class="form-label">표준편차 배수</label>
                                             <input type="number" class="form-control" id="bb-std-dev" value="2.0" min="0.5" max="4.0" step="0.1">
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 볼린저 밴드 선물 전략 파라미터 -->
+                                    <div id="bb-futures-params" class="strategy-params">
+                                        <h6>볼린저 밴드 선물 전략 설정</h6>
+                                        <div class="mb-3">
+                                            <label for="bb-futures-period" class="form-label">기간</label>
+                                            <input type="number" class="form-control" id="bb-futures-period" value="20" min="5" max="100">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="bb-futures-mult" class="form-label">표준편차 배수</label>
+                                            <input type="number" class="form-control" id="bb-futures-mult" value="2.0" min="1.0" max="4.0" step="0.1">
                                         </div>
                                     </div>
                                     

@@ -2123,10 +2123,18 @@ class CryptoTradingBotGUI(QMainWindow):
                 if index >= 0:
                     self.symbol_combo.setCurrentIndex(index)
             
+            # 헤드리스 모드에서도 심볼과 타임프레임 설정
+            if symbol:
+                self.symbol = symbol
+            if timeframe:
+                self.timeframe = timeframe
+            
             # 전략 설정
             if strategy:
                 # 헤드리스 모드에서도 전략 이름 저장
                 self.current_strategy = strategy
+                self.strategy = strategy  # strategy 속성에도 저장
+                logger.info(f"전략 설정: {strategy}")
                 
                 # 전략 파라미터 저장
                 if strategy_params:

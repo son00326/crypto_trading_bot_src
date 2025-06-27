@@ -36,7 +36,7 @@ from src.order_executor import OrderExecutor
 from src.models import Position, Order, Trade, TradeSignal
 from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy, 
-    BollingerBandsStrategy, CombinedStrategy
+    BollingerBandsStrategy, BollingerBandFuturesStrategy, CombinedStrategy
 )
 from src.memory_monitor import get_memory_monitor
 from src.logging_config import get_logger
@@ -80,6 +80,17 @@ class TradingAlgorithm:
         """
         # 로거 초기화
         self.logger = get_logger('trading_algorithm')
+        
+        # 초기화 로그
+        logger.info(f"TradingAlgorithm 초기화 시작:")
+        logger.info(f"- exchange_id: {exchange_id}")
+        logger.info(f"- symbol: {symbol}")
+        logger.info(f"- timeframe: {timeframe}")
+        logger.info(f"- strategy: {strategy}")
+        logger.info(f"- test_mode: {test_mode}")
+        logger.info(f"- market_type: {market_type}")
+        logger.info(f"- leverage: {leverage}")
+        logger.info(f"- strategy_params: {strategy_params}")
         
         # 기본 속성 설정
         self.exchange_id = exchange_id
@@ -189,8 +200,16 @@ class TradingAlgorithm:
                         std_dev=params.get('std_dev', 2.0)
                     )
                     
+                elif strategy_name == 'BollingerBandFuturesStrategy':
+                    params = self.strategy_params.get('BollingerBandFuturesStrategy', {})
+                    strategy = BollingerBandFuturesStrategy(
+                        period=params.get('period', 20),
+                        bb_mult=params.get('bb_mult', 2.0)
+                    )
+                    
                 elif strategy_name == 'CombinedStrategy':
                     # 복합 전략은 기본적으로 MovingAverageCrossover와 RSI를 포함
+                    # 전략 파라미터가 있으면 적용
                     strategies = []
                     
                     # MA 전략 추가
@@ -806,7 +825,8 @@ class TradingAlgorithm:
         4. 신호가 있다면 주문 실행
         """
         self.logger.info(f"=== 거래 사이클 실행 시작 ===")
-        self.logger.info(f"심볼: {self.symbol}, 전략: {self.strategy.__class__.__name__}")
+        self.logger.info(f"심볼: {self.symbol}")
+        self.logger.info(f"전략: {self.strategy.__class__.__name__}")
         self.logger.info(f"테스트 모드: {self.test_mode}, 거래 활성화: {self.trading_active}")
         cycle_start_time = datetime.now()
         

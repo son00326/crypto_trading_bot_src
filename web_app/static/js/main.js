@@ -294,6 +294,9 @@ function startBot() {
         } else if (strategy === 'BollingerBandsStrategy') {
             strategyParams.period = parseInt(document.getElementById('bb-period')?.value || 20);
             strategyParams.std_dev = parseFloat(document.getElementById('bb-std-dev')?.value || 2.0);
+        } else if (strategy === 'BollingerBandFuturesStrategy') {
+            strategyParams.period = parseInt(document.getElementById('bb-futures-period')?.value || 20);
+            strategyParams.std_dev = parseFloat(document.getElementById('bb-futures-std-dev')?.value || 2.0);
         } else if (strategy === 'MACDStrategy') {
             strategyParams.fast_period = parseInt(document.getElementById('macd-fast-period')?.value || 12);
             strategyParams.slow_period = parseInt(document.getElementById('macd-slow-period')?.value || 26);
@@ -598,6 +601,7 @@ document.addEventListener('DOMContentLoaded', function() {
             'RSIStrategy': 'rsi-params',
             'MACDStrategy': 'macd-params',
             'BollingerBandsStrategy': 'bb-params',
+            'BollingerBandFuturesStrategy': 'bb-futures-params',
             'CombinedStrategy': 'combined-params'
         };
         

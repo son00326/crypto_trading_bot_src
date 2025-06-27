@@ -247,6 +247,7 @@ class BotAPIServer:
             # 생성된 exchange_api 객체를 GUI 인스턴스에도 전달
             if hasattr(self.bot_gui, '__dict__'):
                 self.bot_gui.exchange_api = self.exchange_api
+                self.bot_gui.exchange_id = exchange_id  # exchange_id도 설정
                 logger.info("GUI 인스턴스에 거래소 API 객체 전달 완료")
         except Exception as e:
             logger.error(f"거래소 API 초기화 오류: {str(e)}")
@@ -785,6 +786,12 @@ class BotAPIServer:
                     if market_type == 'futures':
                         self.exchange_api.leverage = leverage
                     logger.info(f"시장 타입을 {market_type}로 설정했습니다. 레버리지: {leverage}")
+                
+                # bot_gui 객체에도 market_type과 leverage 설정
+                if hasattr(self.bot_gui, 'exchange_id'):
+                    self.bot_gui.market_type = market_type
+                    self.bot_gui.leverage = leverage
+                    logger.info(f"bot_gui에 시장 타입 {market_type}, 레버리지 {leverage} 설정 완료")
                 
                 # 테스트 모드 설정
                 if hasattr(self.bot_gui, 'test_mode'):
