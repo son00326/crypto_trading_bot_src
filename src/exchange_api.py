@@ -1629,7 +1629,31 @@ class ExchangeAPI:
             if self.exchange_id == 'binance' and self.market_type == 'futures':
                 try:
                     # 바이낸스 선물은 심볼 파라미터 없이 모든 포지션을 조회
-                    self.logger.info("바이낸스 선물 포지션 조회 - v2 API 사용")
+                    self.logger.info("바이낸스 선물 포지션 조회 - CCXT fetch_positions() 사용")
+                    
+                    # CCXT를 사용하여 모든 포지션 조회 (심볼 파라미터 없이)
+                    positions = self.exchange.fetch_positions()
+                    
+                    # 특정 심볼로 필터링
+                    if symbol and positions:
+                        # 심볼 형식 통일 (BTC/USDT 또는 BTCUSDT 모두 처리)
+                        formatted_symbol = self.format_symbol(symbol)
+                        alt_symbol = formatted_symbol.replace('/', '')  # BTC/USDT -> BTCUSDT
+                        
+                        filtered_positions = []
+                        for pos in positions:
+                            pos_symbol = pos.get('symbol', '')
+                            if pos_symbol == formatted_symbol or pos_symbol == alt_symbol:
+                                filtered_positions.append(pos)
+                        
+                        self.logger.info(f"전체 포지션 중 {symbol}: {len(filtered_positions)}개")
+                        return filtered_positions
+                    
+                    return positions
+                    
+                except Exception as e:
+                    # CCXT 방식 실패 시 직접 API 호출 시도
+                    self.logger.warning(f"CCXT fetch_positions 실패, v2 API 직접 호출 시도: {e}")
                     
                     # requests를 사용하여 직접 v2 API 호출
                     import requests
@@ -1748,10 +1772,11 @@ class ExchangeAPI:
                         self.logger.info(f"전체 포지션 중 {formatted_symbol}: {len(positions)}개")
                     
                     return positions
+
                 except Exception as e:
-                    self.logger.error(f"바이낸스 선물 포지션 조회 실패: {str(e)}")
-                    self.logger.error(traceback.format_exc())
+                    self.logger.error(f"포지션 조회 오류: {str(e)}")
                     return []
+            
             else:
                 # 다른 거래소는 기본 방식 사용
                 positions = self.exchange.fetch_positions([symbol] if symbol else None)
@@ -1761,227 +1786,3 @@ class ExchangeAPI:
         except Exception as e:
             self.logger.error(f"포지션 조회 오류: {str(e)}")
             return []
-    
-    @api_error_handler
-    def set_leverage(self, leverage, symbol=None):
-        """
-        지정된 심볼의 레버리지를 설정합니다.
-        
-        Args:
-            leverage (int): 설정할 레버리지 배수
-            symbol (str): 레버리지를 설정할 심볼 (None일 경우 기본 심볼 사용)
-            
-        Returns:
-            bool: 설정 성공 여부
-        """
-        try:
-            if self.market_type != 'futures':
-                self.logger.warning("레버리지 설정은 선물 거래에서만 가능합니다.")
-                return False
-                
-            if symbol is None:
-                symbol = self.symbol
-                
-            formatted_symbol = self.format_symbol(symbol)
-            
-            # 레버리지 설정
-            self.logger.info(f"레버리지 설정 시도: {formatted_symbol}, {leverage}배")
-            
-            if self.exchange_id == 'binance':
-                # 바이낸스의 경우 set_leverage 메서드 사용
-                result = self.exchange.set_leverage(leverage, formatted_symbol)
-                self.leverage = leverage  # 인스턴스 변수 업데이트
-                self.logger.info(f"레버리지 설정 완료: {formatted_symbol}, {leverage}배")
-                return True
-            else:
-                self.logger.warning(f"{self.exchange_id} 거래소는 레버리지 설정을 지원하지 않습니다.")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"레버리지 설정 중 오류 발생: {e}")
-            return False
-    
-    @api_error_handler
-    def set_margin_mode(self, margin_mode='cross', symbol=None):
-        """
-        지정된 심볼의 마진 모드를 설정합니다.
-        
-        Args:
-            margin_mode (str): 설정할 마진 모드 ('cross' 또는 'isolated')
-            symbol (str): 마진 모드를 설정할 심볼 (None일 경우 기본 심볼 사용)
-            
-        Returns:
-            bool: 설정 성공 여부
-        """
-        try:
-            if self.market_type != 'futures':
-                self.logger.warning("마진 모드 설정은 선물 거래에서만 가능합니다.")
-                return False
-                
-            if symbol is None:
-                symbol = self.symbol
-                
-            formatted_symbol = self.format_symbol(symbol)
-            
-            # 마진 모드 설정
-            self.logger.info(f"마진 모드 설정 시도: {formatted_symbol}, {margin_mode}")
-            
-            if self.exchange_id == 'binance':
-                # 바이낸스의 경우 set_margin_mode 메서드 사용
-                result = self.exchange.set_margin_mode(margin_mode, formatted_symbol)
-                self.logger.info(f"마진 모드 설정 완료: {formatted_symbol}, {margin_mode}")
-                return True
-            else:
-                self.logger.warning(f"{self.exchange_id} 거래소는 마진 모드 설정을 지원하지 않습니다.")
-                return False
-                
-        except Exception as e:
-            if "already" in str(e).lower():
-                self.logger.info(f"이미 {margin_mode} 마진 모드로 설정되어 있습니다.")
-                return True
-            else:
-                self.logger.error(f"마진 모드 설정 중 오류 발생: {e}")
-                return False
-
-    @api_error_handler
-    def verify_api_permissions(self):
-        """
-        API 키의 권한을 확인합니다.
-        
-        Returns:
-            dict: API 권한 정보
-                - can_read (bool): 읽기 권한
-                - can_trade (bool): 거래 권한
-                - can_withdraw (bool): 출금 권한
-                - ip_restricted (bool): IP 제한 여부
-                - permissions (list): 상세 권한 목록
-                - message (str): 권한 상태 메시지
-        """
-        try:
-            self.logger.info(f"[API 권한 확인] {self.exchange_id} API 키 권한 확인 시작")
-            
-            result = {
-                'can_read': False,
-                'can_trade': False,
-                'can_withdraw': False,
-                'ip_restricted': False,
-                'permissions': [],
-                'message': ''
-            }
-            
-            # API 키가 설정되지 않은 경우
-            if not self.exchange.apiKey or not self.exchange.secret:
-                result['message'] = 'API 키가 설정되지 않았습니다'
-                self.logger.warning("[API 권한 확인] API 키가 설정되지 않음")
-                return result
-            
-            if self.exchange_id == 'binance':
-                try:
-                    # 바이낸스 API 권한 확인
-                    account_info = self.exchange.fapiPrivateGetAccount() if self.market_type == 'futures' else self.exchange.privateGetAccount()
-                    
-                    # 계정 정보를 성공적으로 가져왔다면 읽기 권한은 있음
-                    result['can_read'] = True
-                    
-                    # 바이낸스는 별도의 API 권한 확인 엔드포인트가 있음
-                    api_restrictions = self.exchange.sapiGetAccountApiRestrictions()
-                    
-                    if 'ipRestrict' in api_restrictions:
-                        result['ip_restricted'] = api_restrictions['ipRestrict']
-                    
-                    if 'enableReading' in api_restrictions:
-                        result['can_read'] = api_restrictions['enableReading']
-                    
-                    if 'enableSpotAndMarginTrading' in api_restrictions:
-                        result['can_trade'] = api_restrictions['enableSpotAndMarginTrading']
-                    
-                    if 'enableFutures' in api_restrictions and self.market_type == 'futures':
-                        result['can_trade'] = api_restrictions['enableFutures']
-                    
-                    if 'enableWithdrawals' in api_restrictions:
-                        result['can_withdraw'] = api_restrictions['enableWithdrawals']
-                    
-                    # 권한 목록 구성
-                    if result['can_read']:
-                        result['permissions'].append('읽기')
-                    if result['can_trade']:
-                        result['permissions'].append('거래')
-                    if result['can_withdraw']:
-                        result['permissions'].append('출금')
-                    
-                    # 거래 권한 확인
-                    if not result['can_trade']:
-                        result['message'] = '⚠️ 거래 권한이 없습니다. API 키에 거래 권한을 부여해주세요.'
-                        self.logger.warning("[API 권한 확인] 거래 권한 없음")
-                    else:
-                        result['message'] = '✅ API 키가 정상적으로 설정되었으며 거래 권한이 있습니다.'
-                        self.logger.info("[API 권한 확인] 모든 필요 권한 확인됨")
-                    
-                except Exception as e:
-                    # 권한 확인 중 오류가 발생해도 기본적인 API 작동 테스트 수행
-                    try:
-                        # 잔고 조회를 통해 기본 권한 확인
-                        balance = self.get_balance()
-                        if balance:
-                            result['can_read'] = True
-                            result['can_trade'] = True  # 잔고 조회가 되면 일반적으로 거래도 가능
-                            result['permissions'] = ['읽기', '거래']
-                            result['message'] = '✅ API 연결 확인됨 (상세 권한 확인 불가)'
-                            self.logger.info("[API 권한 확인] 잔고 조회를 통해 기본 권한 확인됨")
-                    except:
-                        result['message'] = f'❌ API 권한 확인 실패: {str(e)}'
-                        self.logger.error(f"[API 권한 확인] 오류: {e}")
-                        
-            elif self.exchange_id == 'upbit':
-                try:
-                    # 업비트는 계정 정보 조회로 권한 확인
-                    accounts = self.exchange.privateGetAccounts()
-                    if accounts:
-                        result['can_read'] = True
-                        result['can_trade'] = True  # 계정 조회가 되면 거래 가능
-                        result['permissions'] = ['읽기', '거래']
-                        result['message'] = '✅ Upbit API 키가 정상적으로 설정되었습니다.'
-                        self.logger.info("[API 권한 확인] Upbit API 권한 확인됨")
-                except Exception as e:
-                    result['message'] = f'❌ Upbit API 권한 확인 실패: {str(e)}'
-                    self.logger.error(f"[API 권한 확인] Upbit 오류: {e}")
-                    
-            else:
-                result['message'] = f'{self.exchange_id} 거래소는 권한 확인을 지원하지 않습니다.'
-                self.logger.warning(f"[API 권한 확인] {self.exchange_id}는 권한 확인 미지원")
-            
-            # 로그 기록
-            self.logger.info(f"[API 권한 확인] 결과: {result['message']}")
-            self.logger.info(f"[API 권한 확인] 권한 목록: {', '.join(result['permissions']) if result['permissions'] else '없음'}")
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"[API 권한 확인] 예외 발생: {e}")
-            return {
-                'can_read': False,
-                'can_trade': False,
-                'can_withdraw': False,
-                'ip_restricted': False,
-                'permissions': [],
-                'message': f'❌ API 권한 확인 중 오류 발생: {str(e)}'
-            }
-
-# 테스트 코드
-if __name__ == "__main__":
-    # API 키가 설정되어 있지 않으면 테스트 모드로 실행
-    if not BINANCE_API_KEY:
-        print("API 키가 설정되어 있지 않아 테스트 모드로 실행합니다.")
-        exchange = ExchangeAPI(exchange_id='binance')
-        exchange.exchange.set_sandbox_mode(True)
-    else:
-        exchange = ExchangeAPI(exchange_id='binance')
-    
-    # 시세 정보 조회 테스트
-    ticker = exchange.get_ticker()
-    print(f"현재 {exchange.symbol} 시세: {ticker['last']} {ticker['quote']}")
-    
-    # OHLCV 데이터 조회 테스트
-    ohlcv = exchange.get_ohlcv(limit=5)
-    print("\nOHLCV 데이터 (최근 5개):")
-    print(ohlcv)
