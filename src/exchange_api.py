@@ -498,6 +498,61 @@ class ExchangeAPI:
             self.logger.error(f"시장 정보 조회 실패: {str(e)}")
             return None
     
+    def validate_order_size(self, symbol, amount, price=None):
+        """
+        주문 크기 유효성 검증
+        
+        Args:
+            symbol: 거래 심볼
+            amount: 주문 수량
+            price: 주문 가격 (선택사항)
+            
+        Returns:
+            tuple: (is_valid, error_message)
+        """
+        try:
+            # 시장 정보 조회
+            market_info = self.get_market_info(symbol)
+            if not market_info:
+                return False, "시장 정보를 찾을 수 없습니다"
+            
+            # 최소/최대 수량 체크
+            limits = market_info.get('limits', {})
+            amount_limits = limits.get('amount', {})
+            
+            min_amount = amount_limits.get('min', 0)
+            max_amount = amount_limits.get('max', float('inf'))
+            
+            if amount < min_amount:
+                return False, f"주문 수량이 최소값({min_amount})보다 작습니다"
+            
+            if amount > max_amount:
+                return False, f"주문 수량이 최대값({max_amount})보다 큽니다"
+            
+            # 가격이 제공된 경우 최소 주문 금액 체크
+            if price:
+                cost_limits = limits.get('cost', {})
+                min_cost = cost_limits.get('min', 0)
+                
+                order_cost = amount * price
+                if order_cost < min_cost:
+                    return False, f"주문 금액({order_cost:.2f})이 최소값({min_cost})보다 작습니다"
+            
+            # 정밀도 체크
+            precision = market_info.get('precision', {})
+            amount_precision = precision.get('amount', 8)
+            
+            # 소수점 자릿수 체크
+            decimal_places = str(amount).split('.')
+            if len(decimal_places) > 1 and len(decimal_places[1]) > amount_precision:
+                return False, f"주문 수량의 소수점 자릿수가 {amount_precision}자리를 초과합니다"
+            
+            return True, None
+            
+        except Exception as e:
+            self.logger.error(f"주문 크기 검증 중 오류: {str(e)}")
+            return False, f"검증 중 오류 발생: {str(e)}"
+    
     @api_error_handler
     @measure_api_performance
     @log_api_request(endpoint_format="/ohlcv/{symbol}")
@@ -588,6 +643,11 @@ class ExchangeAPI:
             
             if amount <= 0:
                 raise ValueError(f"주문 수량은 0보다 커야 합니다: {amount}")
+                
+            # 최소 주문 크기 검증
+            is_valid, error_msg = self.validate_order_size(symbol, amount)
+            if not is_valid:
+                raise ValueError(f"주문 크기 검증 실패: {error_msg}")
                 
             # API 호출 로깅
             order_request = {
@@ -705,6 +765,11 @@ class ExchangeAPI:
             
             if amount <= 0:
                 raise ValueError(f"주문 수량은 0보다 커야 합니다: {amount}")
+                
+            # 최소 주문 크기 검증
+            is_valid, error_msg = self.validate_order_size(symbol, amount)
+            if not is_valid:
+                raise ValueError(f"주문 크기 검증 실패: {error_msg}")
                 
             # API 호출 로깅
             order_request = {
