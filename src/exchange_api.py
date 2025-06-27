@@ -414,31 +414,58 @@ class ExchangeAPI:
     @measure_api_performance
     @log_api_request(endpoint_format="/ticker/{symbol}")
     def get_ticker(self, symbol=None):
-        """현재 시세 정보 조회"""
+        """현재 시세 정보 조회 (재시도 로직 포함)"""
         symbol = self.format_symbol(symbol)
         
-        try:
-            # 네트워크 복구 관리자를 통한 연결 확인
-            if self.network_recovery is not None:
-                self.network_recovery.check_connection(self.exchange_id)
+        # 재시도 설정
+        max_retries = 3
+        retry_delay = 2
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # 네트워크 복구 관리자를 통한 연결 확인
+                if self.network_recovery is not None:
+                    self.network_recovery.check_connection(self.exchange_id)
+                    
+                ticker = self.exchange.fetch_ticker(symbol)
+                return ticker
                 
-            ticker = self.exchange.fetch_ticker(symbol)
-            return ticker
-        except Exception as e:
-            self.logger.error(f"시세 정보 조회 오류: {e}")
-            
-            # 네트워크 복구 시도
-            if self.network_recovery is not None:
-                recovery_success = self.network_recovery._attempt_recovery(self.exchange_id)
-                if recovery_success:
-                    # 복구 성공 시 재시도
-                    try:
-                        ticker = self.exchange.fetch_ticker(symbol)
-                        return ticker
-                    except Exception as retry_error:
-                        self.logger.error(f"복구 후 시세 정보 재시도 실패: {retry_error}")
-            
-            return None
+            except Exception as e:
+                last_error = e
+                error_msg = str(e).lower()
+                
+                # 네트워크 복구 관리자에 오류 기록
+                if self.network_recovery is not None:
+                    self.network_recovery.record_error(self.exchange_id, e)
+                
+                # 오류 유형별 처리
+                if '502' in error_msg or 'bad gateway' in error_msg:
+                    self.logger.warning(f"시세 조회 실패 ({attempt+1}/{max_retries}): 바이낸스 서버 오류 - {e}")
+                elif '408' in error_msg or 'timeout' in error_msg:
+                    self.logger.warning(f"시세 조회 실패 ({attempt+1}/{max_retries}): 타임아웃 - {e}")
+                elif '429' in error_msg or 'rate limit' in error_msg:
+                    self.logger.warning(f"시세 조회 실패 ({attempt+1}/{max_retries}): 요청 한도 초과 - {e}")
+                    retry_delay = retry_delay * 2  # 요청 한도 초과 시 대기 시간 증가
+                else:
+                    self.logger.error(f"시세 조회 실패 ({attempt+1}/{max_retries}): {e}")
+                
+                # 마지막 시도가 아니면 대기 후 재시도
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)  # 지수 백오프
+                    self.logger.info(f"{wait_time}초 대기 후 재시도...")
+                    time.sleep(wait_time)
+                    
+                    # 네트워크 복구 시도
+                    if self.network_recovery is not None:
+                        recovery_success = self.network_recovery._attempt_recovery(self.exchange_id)
+                        if recovery_success:
+                            self.logger.info("네트워크 복구 성공, 즉시 재시도")
+                            continue
+        
+        # 모든 시도 실패 시
+        self.logger.error(f"시세 정보 조회 최종 실패: {last_error}")
+        return None
     
     def fetch_ticker(self, symbol=None):
         """호환성을 위한 get_ticker 메서드의 별칭
@@ -1622,7 +1649,7 @@ class ExchangeAPI:
                     timestamp = int(time.time() * 1000)
                     params = {
                         'timestamp': timestamp,
-                        'recvWindow': 10000
+                        'recvWindow': 20000  # 10000에서 20000으로 증가
                     }
                     query_string = urlencode(params)
                     
@@ -1633,14 +1660,51 @@ class ExchangeAPI:
                         hashlib.sha256
                     ).hexdigest()
                     
-                    # API 호출
+                    # API 호출 (재시도 로직 포함)
                     url = f"https://fapi.binance.com/fapi/v2/positionRisk?{query_string}&signature={signature}"
                     headers = {'X-MBX-APIKEY': api_key}
                     
-                    response = requests.get(url, headers=headers)
+                    max_retries = 3
+                    retry_delay = 2
+                    
+                    for attempt in range(max_retries):
+                        try:
+                            response = requests.get(
+                                url, 
+                                headers=headers,
+                                timeout=30  # 타임아웃 설정
+                            )
+                            
+                            if response.status_code == 200:
+                                break
+                            elif response.status_code == 408:  # 타임아웃 오류
+                                self.logger.warning(f"v2 API 타임아웃 ({attempt+1}/{max_retries})")
+                                if attempt < max_retries - 1:
+                                    time.sleep(retry_delay * (2 ** attempt))
+                                    continue
+                            else:
+                                self.logger.error(f"v2 API 호출 실패: {response.status_code}")
+                                if attempt < max_retries - 1:
+                                    time.sleep(retry_delay)
+                                    continue
+                                    
+                        except requests.exceptions.Timeout:
+                            self.logger.error(f"v2 API 요청 타임아웃 ({attempt+1}/{max_retries})")
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay * (2 ** attempt))
+                                continue
+                            else:
+                                return []  # 모든 시도 실패
+                        except Exception as e:
+                            self.logger.error(f"v2 API 호출 중 오류: {e}")
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay)
+                                continue
+                            else:
+                                return []
                     
                     if response.status_code != 200:
-                        self.logger.error(f"v2 API 호출 실패: {response.status_code}")
+                        self.logger.error(f"v2 API 호출 최종 실패: {response.status_code}")
                         # v1 폴백은 404를 반환하므로 빈 배열 반환
                         return []
                     

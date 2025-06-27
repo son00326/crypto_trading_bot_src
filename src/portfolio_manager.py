@@ -86,6 +86,13 @@ class PortfolioManager:
                     self.portfolio['quote_balance'] = float(balance['free'][quote_currency])
                 
                 logger.info(f"포트폴리오 업데이트: {base_currency}={self.portfolio['base_balance']}, {quote_currency}={self.portfolio['quote_balance']}")
+                
+                # 데이터베이스에 잔액 정보 저장
+                try:
+                    self.db.save_balances(balance)
+                    logger.info("데이터베이스에 잔액 정보 저장 완료")
+                except Exception as db_error:
+                    logger.error(f"데이터베이스 잔액 저장 중 오류: {db_error}")
             
             # 포트폴리오 업데이트 이벤트 발행
             self.event_manager.publish(EventType.PORTFOLIO_UPDATED, {

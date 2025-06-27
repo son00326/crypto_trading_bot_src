@@ -42,6 +42,7 @@ class NetworkRecoveryManager:
         self.recovery_attempts = {}
         self.last_successful_connection = {}
         self.alternative_endpoints = {}
+        self.error_history = {}  # 오류 기록 추가
         
         # 백오프 설정
         self.base_backoff_time = 1.0
@@ -82,6 +83,7 @@ class NetworkRecoveryManager:
                 
                 self.recovery_attempts = recovery_data.get('recovery_attempts', {})
                 self.connection_status = recovery_data.get('connection_status', {})
+                self.error_history = recovery_data.get('error_history', {})
                 
                 # 시간 형식 변환
                 for key, value in recovery_data.get('last_successful_connection', {}).items():
@@ -110,6 +112,7 @@ class NetworkRecoveryManager:
                 'last_updated': datetime.now().isoformat(),
                 'recovery_attempts': self.recovery_attempts,
                 'connection_status': self.connection_status,
+                'error_history': self.error_history,
                 'last_successful_connection': last_connections
             }
             
@@ -131,6 +134,7 @@ class NetworkRecoveryManager:
         self.connection_status[service_name] = 'unknown'
         self.recovery_attempts[service_name] = 0
         self.last_successful_connection[service_name] = None
+        self.error_history[service_name] = []  # 오류 기록 초기화
         
         # 대체 엔드포인트 설정
         self.alternative_endpoints[service_name] = {
@@ -431,6 +435,69 @@ class NetworkRecoveryManager:
         if service_name in self.alternative_endpoints:
             return self.alternative_endpoints[service_name]['current']
         return None
+    
+    def _determine_error_type(self, service_name: str) -> str:
+        """
+        오류 유형 결정
+        
+        Args:
+            service_name: 서비스 이름
+            
+        Returns:
+            str: 오류 유형
+        """
+        # 서비스 상태 가져오기
+        service_status = self.connection_status.get(service_name, 'unknown')
+        
+        # 최근 오류 기록 확인
+        if service_name in self.error_history and self.error_history[service_name]:
+            last_error = self.error_history[service_name][-1]
+            
+            # 오류 메시지가 딕셔너리 형태인 경우
+            if isinstance(last_error, dict):
+                error_message = last_error.get('message', '').lower()
+            else:
+                error_message = str(last_error).lower()
+            
+            # 오류 메시지 기반 분류
+            if 'name resolution' in error_message or 'dns' in error_message:
+                return 'dns_failure'
+            elif 'timeout' in error_message or 'timed out' in error_message or '408' in error_message:
+                return 'connection_timeout'
+            elif 'connection reset' in error_message or 'broken pipe' in error_message:
+                return 'connection_reset'
+            elif 'rate limit' in error_message or '429' in error_message:
+                return 'rate_limit'
+            elif '502' in error_message or 'bad gateway' in error_message:
+                return 'api_error'
+            elif 'api' in error_message and ('error' in error_message or 'exception' in error_message):
+                return 'api_error'
+        
+        # 기본값
+        return 'general_network'
+    
+    def record_error(self, service_name: str, error: Exception):
+        """
+        오류 기록
+        
+        Args:
+            service_name: 서비스 이름
+            error: 발생한 오류
+        """
+        if service_name not in self.error_history:
+            self.error_history[service_name] = []
+        
+        error_record = {
+            'timestamp': datetime.now().isoformat(),
+            'message': str(error),
+            'type': type(error).__name__
+        }
+        
+        self.error_history[service_name].append(error_record)
+        
+        # 최대 100개의 오류만 유지
+        if len(self.error_history[service_name]) > 100:
+            self.error_history[service_name] = self.error_history[service_name][-100:]
     
     def _recover_from_dns_failure(self, service_name: str) -> bool:
         """

@@ -108,7 +108,11 @@ class DatabaseManager:
                 status TEXT NOT NULL,
                 additional_info TEXT,
                 raw_data TEXT,
-                contractSize REAL DEFAULT 1.0
+                contractSize REAL DEFAULT 1.0,
+                stop_loss_price REAL,
+                take_profit_price REAL,
+                stop_loss_order_id TEXT,
+                take_profit_order_id TEXT
             )
             ''')
             
@@ -131,7 +135,11 @@ class DatabaseManager:
                     ('liquidation_price', 'REAL'),
                     ('unrealized_pnl', 'REAL'),
                     ('margin_mode', "TEXT DEFAULT 'cross'"),
-                    ('contractSize', 'REAL DEFAULT 1.0')
+                    ('contractSize', 'REAL DEFAULT 1.0'),
+                    ('stop_loss_price', 'REAL'),
+                    ('take_profit_price', 'REAL'),
+                    ('stop_loss_order_id', 'TEXT'),
+                    ('take_profit_order_id', 'TEXT')
                 ]
                 
                 for col_name, col_type in new_columns:
@@ -215,6 +223,26 @@ class DatabaseManager:
                 type TEXT NOT NULL,
                 timestamp TIMESTAMP NOT NULL,
                 additional_info TEXT
+            )
+            ''')
+            
+            # 손절/익절 주문 테이블
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS stop_loss_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                position_id INTEGER NOT NULL,
+                order_id TEXT UNIQUE NOT NULL,
+                symbol TEXT NOT NULL,
+                order_type TEXT NOT NULL,  -- 'stop_loss' or 'take_profit'
+                trigger_price REAL NOT NULL,
+                amount REAL NOT NULL,
+                side TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',  -- 'active', 'triggered', 'cancelled'
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                triggered_at TIMESTAMP,
+                cancelled_at TIMESTAMP,
+                raw_data TEXT,
+                FOREIGN KEY (position_id) REFERENCES positions (id)
             )
             ''')
             
@@ -513,7 +541,7 @@ class DatabaseManager:
             position_data (dict): 포지션 데이터
         
         Returns:
-            bool: 저장 성공 여부
+            int: 포지션 ID
         """
         try:
             # 스레드 안전 연결 가져오기
@@ -548,12 +576,36 @@ class DatabaseManager:
             if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
                 converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
             
+            # raw_data 필드도 JSON으로 직렬화
+            if 'raw_data' in converted_position:
+                if isinstance(converted_position['raw_data'], (dict, list)):
+                    converted_position['raw_data'] = json.dumps(converted_position['raw_data'])
+                elif converted_position['raw_data'] is not None and not isinstance(converted_position['raw_data'], str):
+                    converted_position['raw_data'] = str(converted_position['raw_data'])
+            
+            # 모든 필드의 데이터 타입 검증 및 변환
+            for key, value in list(converted_position.items()):
+                if value is None:
+                    continue  # NULL은 SQLite에서 지원
+                elif isinstance(value, (dict, list)):
+                    # 복잡한 데이터 구조는 JSON으로 직렬화
+                    converted_position[key] = json.dumps(value)
+                elif isinstance(value, bool):
+                    # bool은 정수로 변환 (SQLite는 boolean 타입이 없음)
+                    converted_position[key] = int(value)
+                elif not isinstance(value, (str, int, float)):
+                    # 지원되지 않는 타입은 문자열로 변환
+                    self.logger.warning(f"포지션 저장: {key} 필드의 타입 {type(value)}를 문자열로 변환")
+                    converted_position[key] = str(value)
+            
             # 테이블 스키마와 맞지 않는 키 제거
             valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
                            'entry_price', 'mark_price', 'liquidation_price', 
                            'unrealized_pnl', 'margin_mode', 'leverage', 
                            'opened_at', 'closed_at', 'pnl', 'status', 
-                           'additional_info', 'raw_data', 'contractSize']
+                           'additional_info', 'raw_data', 'contractSize',
+                           'stop_loss_price', 'take_profit_price', 
+                           'stop_loss_order_id', 'take_profit_order_id']
             
             invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
             if invalid_keys:
@@ -572,6 +624,7 @@ class DatabaseManager:
                 query = f"UPDATE positions SET {', '.join(update_fields)} WHERE id = ?"
                 values = [converted_position[k] for k in converted_position.keys() if k != 'id'] + [existing[0]]
                 cursor.execute(query, values)
+                position_id = existing[0]
             else:
                 # 새 포지션 삽입
                 fields = list(converted_position.keys())
@@ -579,15 +632,16 @@ class DatabaseManager:
                 query = f"INSERT INTO positions ({', '.join(fields)}) VALUES ({', '.join(placeholders)})"
                 values = [converted_position[k] for k in fields]
                 cursor.execute(query, values)
-            
+                position_id = cursor.lastrowid
+        
             conn.commit()
-            return True
-            
+            return position_id
+        
         except Exception as e:
             self.logger.error(f"포지션 저장 오류: {e}")
             if conn:
                 conn.rollback()
-            return False
+            return None
         finally:
             if conn:
                 conn.close()
@@ -640,12 +694,36 @@ class DatabaseManager:
                 if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
                     converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
                 
+                # raw_data 필드도 JSON으로 직렬화
+                if 'raw_data' in converted_position:
+                    if isinstance(converted_position['raw_data'], (dict, list)):
+                        converted_position['raw_data'] = json.dumps(converted_position['raw_data'])
+                    elif converted_position['raw_data'] is not None and not isinstance(converted_position['raw_data'], str):
+                        converted_position['raw_data'] = str(converted_position['raw_data'])
+                
+                # 모든 필드의 데이터 타입 검증 및 변환
+                for key, value in list(converted_position.items()):
+                    if value is None:
+                        continue  # NULL은 SQLite에서 지원
+                    elif isinstance(value, (dict, list)):
+                        # 복잡한 데이터 구조는 JSON으로 직렬화
+                        converted_position[key] = json.dumps(value)
+                    elif isinstance(value, bool):
+                        # bool은 정수로 변환 (SQLite는 boolean 타입이 없음)
+                        converted_position[key] = int(value)
+                    elif not isinstance(value, (str, int, float)):
+                        # 지원되지 않는 타입은 문자열로 변환
+                        self.logger.warning(f"포지션 저장: {key} 필드의 타입 {type(value)}를 문자열로 변환")
+                        converted_position[key] = str(value)
+                
                 # 테이블 스키마와 맞지 않는 키 제거
                 valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
                                'entry_price', 'mark_price', 'liquidation_price', 
                                'unrealized_pnl', 'margin_mode', 'leverage', 
                                'opened_at', 'closed_at', 'pnl', 'status', 
-                               'additional_info', 'raw_data', 'contractSize']
+                               'additional_info', 'raw_data', 'contractSize',
+                               'stop_loss_price', 'take_profit_price', 
+                               'stop_loss_order_id', 'take_profit_order_id']
                 
                 invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
                 if invalid_keys:
@@ -1393,6 +1471,150 @@ class DatabaseManager:
                 self.conn.rollback()
             return []
 
+    def save_stop_loss_order(self, position_id, order_info):
+        """
+        손절/익절 주문 정보를 DB에 저장
+        
+        Args:
+            position_id (int): 포지션 ID
+            order_info (dict): 주문 정보
+                - order_id: 주문 ID
+                - symbol: 심볼
+                - order_type: 'stop_loss' 또는 'take_profit'
+                - trigger_price: 트리거 가격
+                - amount: 수량
+                - side: 'buy' 또는 'sell'
+                - raw_data: 원본 주문 데이터 (선택)
+        
+        Returns:
+            int: 저장된 레코드 ID, 실패 시 None
+        """
+        try:
+            conn, cursor = self._get_connection()
+            
+            cursor.execute('''
+            INSERT INTO stop_loss_orders 
+            (position_id, order_id, symbol, order_type, trigger_price, amount, side, raw_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                position_id,
+                order_info['order_id'],
+                order_info['symbol'],
+                order_info['order_type'],
+                order_info['trigger_price'],
+                order_info['amount'],
+                order_info['side'],
+                json.dumps(order_info.get('raw_data', {}))
+            ))
+            
+            conn.commit()
+            
+            # positions 테이블 업데이트
+            if order_info['order_type'] == 'stop_loss':
+                cursor.execute('''
+                UPDATE positions 
+                SET stop_loss_price = ?, stop_loss_order_id = ?
+                WHERE id = ?
+                ''', (order_info['trigger_price'], order_info['order_id'], position_id))
+            else:  # take_profit
+                cursor.execute('''
+                UPDATE positions 
+                SET take_profit_price = ?, take_profit_order_id = ?
+                WHERE id = ?
+                ''', (order_info['trigger_price'], order_info['order_id'], position_id))
+            
+            conn.commit()
+            
+            self.logger.info(f"손절/익절 주문 저장 완료: {order_info['order_type']} - {order_info['order_id']}")
+            return cursor.lastrowid
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"손절/익절 주문 저장 오류: {e}")
+            return None
+    
+    def get_active_stop_loss_orders(self, position_id=None, symbol=None):
+        """
+        활성 손절/익절 주문 조회
+        
+        Args:
+            position_id (int, optional): 포지션 ID
+            symbol (str, optional): 심볼
+        
+        Returns:
+            list: 활성 손절/익절 주문 목록
+        """
+        try:
+            conn, cursor = self._get_connection()
+            
+            query = '''
+            SELECT * FROM stop_loss_orders 
+            WHERE status = 'active'
+            '''
+            params = []
+            
+            if position_id:
+                query += ' AND position_id = ?'
+                params.append(position_id)
+            
+            if symbol:
+                query += ' AND symbol = ?'
+                params.append(symbol)
+            
+            cursor.execute(query, params)
+            return [dict(row) for row in cursor.fetchall()]
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"손절/익절 주문 조회 오류: {e}")
+            return []
+    
+    def update_stop_loss_order_status(self, order_id, status, timestamp=None):
+        """
+        손절/익절 주문 상태 업데이트
+        
+        Args:
+            order_id (str): 주문 ID
+            status (str): 새로운 상태 ('triggered', 'cancelled')
+            timestamp (datetime, optional): 상태 변경 시각
+        
+        Returns:
+            bool: 성공 여부
+        """
+        try:
+            conn, cursor = self._get_connection()
+            
+            if timestamp is None:
+                timestamp = datetime.now()
+            
+            if status == 'triggered':
+                cursor.execute('''
+                UPDATE stop_loss_orders 
+                SET status = ?, triggered_at = ?
+                WHERE order_id = ?
+                ''', (status, timestamp, order_id))
+            elif status == 'cancelled':
+                cursor.execute('''
+                UPDATE stop_loss_orders 
+                SET status = ?, cancelled_at = ?
+                WHERE order_id = ?
+                ''', (status, timestamp, order_id))
+            else:
+                cursor.execute('''
+                UPDATE stop_loss_orders 
+                SET status = ?
+                WHERE order_id = ?
+                ''', (status, order_id))
+            
+            conn.commit()
+            
+            if cursor.rowcount > 0:
+                self.logger.info(f"손절/익절 주문 상태 업데이트: {order_id} -> {status}")
+                return True
+            return False
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"손절/익절 주문 상태 업데이트 오류: {e}")
+            return False
+
     def load_bot_state(self):
         """
         가장 최근의 봇 상태 불러오기
@@ -1485,12 +1707,36 @@ class DatabaseManager:
                 if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
                     converted_position['additional_info'] = json.dumps(converted_position['additional_info'])
                 
+                # raw_data 필드도 JSON으로 직렬화
+                if 'raw_data' in converted_position:
+                    if isinstance(converted_position['raw_data'], (dict, list)):
+                        converted_position['raw_data'] = json.dumps(converted_position['raw_data'])
+                    elif converted_position['raw_data'] is not None and not isinstance(converted_position['raw_data'], str):
+                        converted_position['raw_data'] = str(converted_position['raw_data'])
+                
+                # 모든 필드의 데이터 타입 검증 및 변환
+                for key, value in list(converted_position.items()):
+                    if value is None:
+                        continue  # NULL은 SQLite에서 지원
+                    elif isinstance(value, (dict, list)):
+                        # 복잡한 데이터 구조는 JSON으로 직렬화
+                        converted_position[key] = json.dumps(value)
+                    elif isinstance(value, bool):
+                        # bool은 정수로 변환 (SQLite는 boolean 타입이 없음)
+                        converted_position[key] = int(value)
+                    elif not isinstance(value, (str, int, float)):
+                        # 지원되지 않는 타입은 문자열로 변환
+                        self.logger.warning(f"포지션 저장: {key} 필드의 타입 {type(value)}를 문자열로 변환")
+                        converted_position[key] = str(value)
+                
                 # 테이블 스키마와 맞지 않는 키 제거
                 valid_columns = ['id', 'symbol', 'side', 'contracts', 'notional',
                                'entry_price', 'mark_price', 'liquidation_price', 
                                'unrealized_pnl', 'margin_mode', 'leverage', 
                                'opened_at', 'closed_at', 'pnl', 'status', 
-                               'additional_info', 'raw_data', 'contractSize']
+                               'additional_info', 'raw_data', 'contractSize',
+                               'stop_loss_price', 'take_profit_price', 
+                               'stop_loss_order_id', 'take_profit_order_id']
                 
                 invalid_keys = [key for key in converted_position.keys() if key not in valid_columns]
                 if invalid_keys:

@@ -738,7 +738,7 @@ class TradingAlgorithm:
             self.logger.info("=== 거래 루프 시작 ===")
             self.logger.info(f"거래 심볼: {self.symbol}")
             self.logger.info(f"타임프레임: {self.timeframe}")
-            self.logger.info(f"전략: {self.strategy.name if hasattr(self.strategy, 'name') else 'Unknown'}")
+            self.logger.info(f"전략: {self.strategy.__class__.__name__}")
             self.logger.info(f"거래 간격: {interval}초")
             self.logger.info(f"테스트 모드: {self.test_mode}")
             consecutive_errors = 0
@@ -941,6 +941,73 @@ class TradingAlgorithm:
                         }
                     }
                     self.logger.info(f"거래 정보 저장: {self.current_trade_info}")
+                    
+                    # 선물 거래인 경우 자동으로 손절/익절 주문 설정
+                    if self.market_type.lower() == 'futures':
+                        stop_loss_price = risk_assessment.get('stop_loss')
+                        take_profit_price = risk_assessment.get('take_profit')
+                        
+                        if stop_loss_price or take_profit_price:
+                            self.logger.info("자동 손절/익절 주문 설정 시작...")
+                            try:
+                                from utils.api import set_stop_loss_take_profit
+                                
+                                # API 키 가져오기
+                                api_key = os.getenv('BINANCE_API_KEY')
+                                api_secret = os.getenv('BINANCE_API_SECRET')
+                                
+                                if api_key and api_secret:
+                                    sl_tp_result = set_stop_loss_take_profit(
+                                        api_key=api_key,
+                                        api_secret=api_secret,
+                                        symbol=self.symbol,
+                                        stop_loss=stop_loss_price,
+                                        take_profit=take_profit_price,
+                                        position_side='LONG'  # 매수 포지션의 SL/TP는 매도
+                                    )
+                                    
+                                    if sl_tp_result.get('success'):
+                                        self.logger.info(f"✅ 자동 손절/익절 주문 설정 성공!")
+                                        self.logger.info(f"  - 손절가: {stop_loss_price}")
+                                        self.logger.info(f"  - 익절가: {take_profit_price}")
+                                        self.logger.info(f"  - 메시지: {sl_tp_result.get('message')}")
+                                        
+                                        # 주문 ID 저장
+                                        if 'orders' in sl_tp_result:
+                                            self.current_trade_info['sl_tp_orders'] = sl_tp_result.get('orders', [])
+                                            
+                                            # DB에 SL/TP 주문 정보 저장
+                                            try:
+                                                # 현재 포지션 ID 가져오기
+                                                active_positions = self.db_manager.get_open_positions(self.symbol)
+                                                if active_positions:
+                                                    position_id = active_positions[-1]['id']  # 가장 최근 포지션
+                                                    
+                                                    # SL/TP 주문 정보 DB에 저장
+                                                    for order in sl_tp_result.get('orders', []):
+                                                        order_info = {
+                                                            'order_id': order.get('order_id', ''),
+                                                            'symbol': self.symbol,
+                                                            'order_type': order.get('type', ''),
+                                                            'trigger_price': order.get('price', 0),
+                                                            'amount': position_size,
+                                                            'side': 'sell',  # 매수 포지션의 SL/TP는 매도
+                                                            'raw_data': order
+                                                        }
+                                                        self.db_manager.save_stop_loss_order(position_id, order_info)
+                                                        
+                                                    self.logger.info("✅ SL/TP 주문 정보가 DB에 저장되었습니다.")
+                                            except Exception as db_error:
+                                                self.logger.error(f"SL/TP 주문 DB 저장 중 오류: {str(db_error)}")
+                                    else:
+                                        self.logger.warning(f"자동 손절/익절 주문 설정 실패: {sl_tp_result.get('message')}")
+                                else:
+                                    self.logger.warning("API 키가 설정되지 않아 자동 손절/익절 주문을 설정할 수 없습니다.")
+                                    
+                            except Exception as e:
+                                self.logger.error(f"자동 손절/익절 주문 설정 중 오류: {str(e)}")
+                                # 손절/익절 설정 실패는 거래 자체를 실패시키지 않음
+                                
                 elif signal.direction == 'sell':
                     # 매도 시 거래 정보 초기화
                     if self.current_trade_info:
