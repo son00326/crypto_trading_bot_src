@@ -158,36 +158,6 @@ class Strategy:
             return None
     
 class MovingAverageCrossover(Strategy):
-    def calculate_positions(self, df):
-        """
-        포지션 계산
-        
-        Args:
-            df (DataFrame): 거래 신호가 포함된 데이터프레임
-        
-        Returns:
-            DataFrame: 포지션이 추가된 데이터프레임
-        """
-        try:
-            if 'signal' not in df.columns:
-                df = self.generate_signals(df)
-            
-            # NumPy 배열로 변환하여 포지션 계산 (다차원 인덱싱 방지)
-            signal_values = df['signal'].values
-            position_values = np.zeros_like(signal_values)
-            
-            # diff 연산을 수동으로 처리: 현재 값에서 이전 값을 빼기
-            if len(signal_values) > 1:
-                position_values[1:] = signal_values[1:] - signal_values[:-1]
-            
-            # 결과를 데이터프레임에 할당
-            df['position'] = position_values
-            
-            return df
-        except Exception as e:
-            logger.error(f"포지션 계산 중 오류 발생: {e}")
-            df['position'] = 0
-            return df
     """이동평균 교차 전략"""
     
     def __init__(self, short_period=9, long_period=26, ma_type='sma'):
@@ -334,11 +304,18 @@ class MovingAverageCrossover(Strategy):
             signals = np.where(short_ma_values > long_ma_values, 1, 
                               np.where(short_ma_values < long_ma_values, -1, 0))
             
+            # NaN 처리
+            np.nan_to_num(signals, copy=False, nan=0)
+            
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
-            # position 컬럼 추가 (signal과 동일하게 설정)
-            df['position'] = signals
+            # position 계산 (signal의 변화량)
+            position_values = np.zeros_like(signals)
+            if len(signals) > 1:
+                position_values[1:] = signals[1:] - signals[:-1]
+            
+            df['position'] = position_values
             
             return df
         except Exception as e:
@@ -382,7 +359,7 @@ class RSIStrategy(Strategy):
         RSI 전략 파라미터 유효성 검사
         
         Args:
-            params (dict): 검사할 파라미터 딘터셔너리
+            params (dict): 검사할 파라미터 딕셔너리
             
         Returns:
             tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
@@ -413,7 +390,7 @@ class RSIStrategy(Strategy):
             return False, f"과매수 기준값({overbought})은 과매도 기준값({oversold})보다 커야 합니다."
             
         return True, ""
-    
+        
     def generate_signals(self, df):
         """
         RSI 기반 거래 신호 생성
@@ -439,11 +416,18 @@ class RSIStrategy(Strategy):
             signals = np.where(rsi_values < self.oversold, 1, 
                              np.where(rsi_values > self.overbought, -1, 0))
             
+            # NaN 처리
+            np.nan_to_num(signals, copy=False, nan=0)
+            
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
-            # position 컬럼 추가 (signal과 동일하게 설정)
-            df['position'] = signals
+            # position 계산 (signal의 변화량)
+            position_values = np.zeros_like(signals)
+            if len(signals) > 1:
+                position_values[1:] = signals[1:] - signals[:-1]
+            
+            df['position'] = position_values
             
             return df
         except Exception as e:
@@ -487,7 +471,7 @@ class MACDStrategy(Strategy):
         MACD 전략 파라미터 유효성 검사
         
         Args:
-            params (dict): 검사할 파라미터 딘터셔너리
+            params (dict): 검사할 파라미터 딕셔너리
             
         Returns:
             tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
@@ -518,7 +502,7 @@ class MACDStrategy(Strategy):
             return False, f"느린 EMA 기간({slow_period})은 빠른 EMA 기간({fast_period})보다 커야 합니다."
             
         return True, ""
-    
+        
     def generate_signals(self, df):
         """
         MACD 기반 거래 신호 생성
@@ -565,17 +549,22 @@ class MACDStrategy(Strategy):
             signals = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
             
             # NaN 처리
-            signals[0] = 0  # 첫 번째 값은 0으로 설정
+            np.nan_to_num(signals, copy=False, nan=0)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
-            # position 컬럼 추가 (signal과 동일하게 설정)
-            df['position'] = signals
+            # position 계산 (signal의 변화량)
+            position_values = np.zeros_like(signals)
+            if len(signals) > 1:
+                position_values[1:] = signals[1:] - signals[:-1]
+            
+            df['position'] = position_values
             
             return df
         except Exception as e:
             logger.error(f"MACD 신호 생성 중 오류 발생: {e}")
+            logger.debug(f"데이터 크기: {len(df)}, 파라미터: fast={self.fast_period}, slow={self.slow_period}, signal={self.signal_period}")
             df['signal'] = 0
             df['position'] = 0
             return df
@@ -611,7 +600,7 @@ class BollingerBandsStrategy(Strategy):
         볼린저 밴드 전략 파라미터 유효성 검사
         
         Args:
-            params (dict): 검사할 파라미터 딘터셔너리
+            params (dict): 검사할 파라미터 딕셔너리
             
         Returns:
             tuple: (bool, str) - 유효성 여부와 오류 메시지(있는 경우)
@@ -631,7 +620,7 @@ class BollingerBandsStrategy(Strategy):
             return False, message
             
         return True, ""
-    
+        
     def generate_signals(self, df):
         """
         볼린저 밴드 기반 거래 신호 생성
@@ -681,18 +670,22 @@ class BollingerBandsStrategy(Strategy):
             signals = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
             
             # NaN 처리
-            signals[0] = 0  # 첫 번째 값은 0으로 설정
             np.nan_to_num(signals, copy=False, nan=0)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
             
-            # position 컬럼 추가 (signal과 동일하게 설정)
-            df['position'] = signals
+            # position 계산 (signal의 변화량)
+            position_values = np.zeros_like(signals)
+            if len(signals) > 1:
+                position_values[1:] = signals[1:] - signals[:-1]
+            
+            df['position'] = position_values
             
             return df
         except Exception as e:
             logger.error(f"볼린저 밴드 신호 생성 중 오류 발생: {e}")
+            logger.debug(f"데이터 크기: {len(df)}, 파라미터: period={self.period}, std_dev={self.std_dev}")
             df['signal'] = 0
             df['position'] = 0
             return df
@@ -718,36 +711,6 @@ class StochasticStrategy(Strategy):
         self.overbought = overbought
         self.oversold = oversold
         
-    def calculate_positions(self, df):
-        """
-        포지션 계산
-        
-        Args:
-            df (DataFrame): 거래 신호가 포함된 데이터프레임
-        
-        Returns:
-            DataFrame: 포지션이 추가된 데이터프레임
-        """
-        try:
-            if 'signal' not in df.columns:
-                df = self.generate_signals(df)
-            
-            # NumPy 배열로 변환하여 포지션 계산 (다차원 인덱싱 방지)
-            signal_values = df['signal'].values
-            position_values = np.zeros_like(signal_values)
-            
-            # diff 연산을 수동으로 처리: 현재 값에서 이전 값을 빼기
-            if len(signal_values) > 1:
-                position_values[1:] = signal_values[1:] - signal_values[:-1]
-            
-            # 결과를 데이터프레임에 할당
-            df['position'] = position_values
-            
-            return df
-        except Exception as e:
-            logger.error(f"포지션 계산 중 오류 발생: {e}")
-            df['position'] = 0
-            return df
     def generate_signals(self, df):
         """
         스토캐스틱 오실레이터 기반 거래 신호 생성
@@ -798,7 +761,6 @@ class StochasticStrategy(Strategy):
             signals = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
             
             # NaN 처리
-            signals[0] = 0  # 첫 번째 값은 0으로 설정
             np.nan_to_num(signals, copy=False, nan=0)
             
             # 결과를 데이터프레임에 할당
@@ -807,9 +769,10 @@ class StochasticStrategy(Strategy):
             return df
         except Exception as e:
             logger.error(f"스토캐스틱 신호 생성 중 오류 발생: {e}")
+            logger.debug(f"데이터 크기: {len(df)}, 파라미터: k_period={self.k_period}, d_period={self.d_period}")
             df['signal'] = 0
+            df['position'] = 0
             return df
-        return df
 
 class CombinedStrategy(Strategy):
     """여러 전략을 결합한 복합 전략"""
@@ -866,73 +829,6 @@ class CombinedStrategy(Strategy):
         signals = np.where(combined_signal_values > 0.3, 1, signals)  # 매수 신호
         signals = np.where(combined_signal_values < -0.3, -1, signals)  # 매도 신호
         
-        # NaN 처리
-        np.nan_to_num(signals, copy=False, nan=0)
-        
-        # 결과를 데이터프레임에 할당
-        df['signal'] = signals
-        
-        # position 컬럼 추가 (signal과 동일하게 설정)
-        df['position'] = df['signal']
-        
-        return df
-
-class BreakoutStrategy(Strategy):
-    """돌파 전략"""
-    
-    def __init__(self, period=20):
-        """
-        돌파 전략 초기화
-        
-        Args:
-            period (int): 저항/지지 레벨 계산 기간
-        """
-        super().__init__(name=f"Breakout_{period}")
-        self.period = period
-    
-    def generate_signals(self, df):
-        """
-        돌파 기반 거래 신호 생성
-        
-        Args:
-            df (DataFrame): OHLCV 데이터
-        
-        Returns:
-            DataFrame: 거래 신호가 추가된 데이터프레임
-        """
-        # 데이터프레임 복사
-        df = df.copy()
-        
-        # 저항/지지 레벨 계산
-        df['resistance'] = df['high'].rolling(window=self.period).max()
-        df['support'] = df['low'].rolling(window=self.period).min()
-        
-        # 신호 생성 (1: 매수, 0: 홀드, -1: 매도) - NumPy 배열 기반으로 변환
-        
-        # 필요한 값들을 NumPy 배열로 변환
-        close_values = df['close'].values
-        resistance_values = df['resistance'].shift(1).values
-        support_values = df['support'].shift(1).values
-        
-        # np.where를 사용한 벡터화된 조건부 할당
-        signals = np.zeros(len(df))
-        signals = np.where(close_values > resistance_values, 1, signals)  # 저항 레벨 돌파: 매수
-        signals = np.where(close_values < support_values, -1, signals)   # 지지 레벨 하향 돌파: 매도
-        
-        # NaN 처리
-        np.nan_to_num(signals, copy=False, nan=0)
-        
-        # 결과를 데이터프레임에 할당
-        df['signal'] = signals
-        
-        # position 컬럼 추가 (signal과 동일하게 설정)
-        df['position'] = signals
-        
-        return df
-
-class VolatilityBreakoutStrategy(Strategy):
-    """변동성 돌파 전략 (Larry Williams의 변동성 돌파)"""
-    
     def __init__(self, period=1, k=0.5):
         """
         변동성 돌파 전략 초기화
@@ -1049,11 +945,18 @@ class BollingerBandFuturesStrategy(Strategy):
             short_cond3 = (data['ha_close'] < data['ha_open']) & (data['close'] < data['bb_middle'])
             data.loc[long_cond1 | long_cond2 | long_cond3, 'signal'] = 1
             data.loc[short_cond1 | short_cond2 | short_cond3, 'signal'] = -1
-            # 연속 신호 제거
-            data['signal'] = data['signal'].mask(data['signal'] == data['signal'].shift(1), 0)
             
-            # position 컬럼 추가 (signal과 동일하게 설정)
-            data['position'] = data['signal']
+            # 연속 신호 제거 개선 - 진입하던 포지션과 반대 신호만 허용
+            prev_signal = data['signal'].shift(1).fillna(0)
+            # 같은 방향 연속 신호를 0으로
+            data.loc[(data['signal'] == prev_signal) & (data['signal'] != 0), 'signal'] = 0
+            
+            # position 계산 (signal의 변화량)
+            position_values = np.zeros_like(data['signal'].values)
+            if len(data) > 1:
+                position_values[1:] = data['signal'].values[1:] - data['signal'].values[:-1]
+            
+            data['position'] = position_values
             
             return data
         except Exception as e:
@@ -1062,27 +965,7 @@ class BollingerBandFuturesStrategy(Strategy):
             df['position'] = 0
             return df
 
-    def calculate_positions(self, df):
-        """
-        포지션 계산
-        Args:
-            df (DataFrame): 거래 신호가 포함된 데이터프레임
-        Returns:
-            DataFrame: 포지션이 추가된 데이터프레임
-        """
-        try:
-            if 'signal' not in df.columns:
-                df = self.generate_signals(df)
-            signal_values = df['signal'].values
-            position_values = np.zeros_like(signal_values)
-            if len(signal_values) > 1:
-                position_values[1:] = signal_values[1:] - signal_values[:-1]
-            df['position'] = position_values
-            return df
-        except Exception as e:
-            logger.error(f"포지션 계산 중 오류 발생: {e}")
-            df['position'] = 0
-            return df
+
 
 
 # 테스트 코드
