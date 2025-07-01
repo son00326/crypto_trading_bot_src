@@ -34,7 +34,7 @@ from src.indicators import (
 )
 from src.strategies import (
     MovingAverageCrossover, RSIStrategy, MACDStrategy,
-    BollingerBandsStrategy, CombinedStrategy
+    BollingerBandsStrategy, BollingerBandFuturesStrategy, StochasticStrategy
 )
 from src.trading_algorithm import TradingAlgorithm
 from src.backtesting import Backtester
@@ -105,8 +105,15 @@ def parse_arguments():
     
     # 전략 옵션
     parser.add_argument('--strategy', type=str, 
-                        choices=['ma_crossover', 'rsi', 'macd', 'bollinger', 'combined'],
+                        choices=['ma_crossover', 'rsi', 'macd', 'bollinger', 'stochastic', 'bollinger_futures'],
                         help='사용할 거래 전략')
+    
+    # 시장 타입 옵션
+    parser.add_argument('--market-type', type=str, default='spot',
+                        choices=['spot', 'futures'],
+                        help='시장 타입 (기본값: spot)')
+    parser.add_argument('--leverage', type=int, default=5,
+                        help='선물 거래 레버리지 (기본값: 5)')
     
     # 백테스팅 옵션
     parser.add_argument('--initial-balance', type=float, default=10000,
@@ -155,11 +162,32 @@ def create_strategy(strategy_name, **kwargs):
         std_dev = kwargs.get('std_dev', 2)
         return BollingerBandsStrategy(period=period, std_dev=std_dev)
     
-    elif strategy_name == 'combined':
-        return CombinedStrategy([
-            MovingAverageCrossover(short_period=9, long_period=26, ma_type='ema'),
-            RSIStrategy(period=14, overbought=70, oversold=30)
-        ])
+    elif strategy_name == 'stochastic':
+        k_period = kwargs.get('k_period', 14)
+        d_period = kwargs.get('d_period', 3)
+        smooth_k = kwargs.get('smooth_k', 3)
+        overbought = kwargs.get('overbought', 80)
+        oversold = kwargs.get('oversold', 20)
+        return StochasticStrategy(k_period=k_period, d_period=d_period, smooth_k=smooth_k,
+                                overbought=overbought, oversold=oversold)
+    
+    elif strategy_name == 'bollinger_futures':
+        bb_period = kwargs.get('bb_period', 20)
+        bb_std = kwargs.get('bb_std', 2.0)
+        rsi_period = kwargs.get('rsi_period', 14)
+        rsi_overbought = kwargs.get('rsi_overbought', 70)
+        rsi_oversold = kwargs.get('rsi_oversold', 30)
+        macd_fast = kwargs.get('macd_fast', 12)
+        macd_slow = kwargs.get('macd_slow', 26)
+        macd_signal = kwargs.get('macd_signal', 9)
+        leverage = kwargs.get('leverage', 5)
+        timeframe = kwargs.get('timeframe', '15m')
+        return BollingerBandFuturesStrategy(
+            bb_period=bb_period, bb_std=bb_std, rsi_period=rsi_period,
+            rsi_overbought=rsi_overbought, rsi_oversold=rsi_oversold,
+            macd_fast=macd_fast, macd_slow=macd_slow, macd_signal=macd_signal,
+            leverage=leverage, timeframe=timeframe
+        )
     
     else:
         logger.error(f"알 수 없는 전략: {strategy_name}")
@@ -407,9 +435,20 @@ def run_trading(args):
         return
     
     # 전략 생성
-    strategy = create_strategy(args.strategy)
+    strategy_kwargs = {}
+    if args.strategy == 'bollinger_futures':
+        strategy_kwargs['leverage'] = args.leverage
+    
+    strategy = create_strategy(args.strategy, **strategy_kwargs)
     if not strategy:
         return
+    
+    # futures 모드일 때 심볼 형식 변환 (BTC/USDT -> BTCUSDT)
+    symbol = args.symbol
+    if args.market_type == 'futures' or args.strategy == 'bollinger_futures':
+        if '/' in symbol:
+            symbol = symbol.replace('/', '')
+        logger.info(f"Futures 모드: 심볼 {args.symbol} -> {symbol}")
     
     # 위험 관리 설정
     risk_config = RISK_MANAGEMENT.copy()
@@ -421,13 +460,15 @@ def run_trading(args):
     # 거래 알고리즘 초기화
     algorithm = TradingAlgorithm(
         exchange_id=args.exchange,
-        symbol=args.symbol,
+        symbol=symbol,
         timeframe=args.timeframe,
         strategy=strategy,
         initial_balance=args.initial_balance,
         test_mode=args.test_mode,
         risk_config=risk_config,
-        use_trailing_stop=args.trailing_stop
+        use_trailing_stop=args.trailing_stop,
+        market_type=args.market_type,
+        leverage=args.leverage if args.market_type == 'futures' else None
     )
     
     # 거래 시작

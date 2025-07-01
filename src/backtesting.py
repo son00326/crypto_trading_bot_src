@@ -603,7 +603,9 @@ class Backtester:
             
             # 전략에 따른 신호 생성
             df_with_signals = strategy.generate_signals(df)
-            df_with_signals = strategy.calculate_positions(df_with_signals)
+            # BollingerBandFuturesStrategy는 generate_signals에서 이미 position을 계산함
+            if hasattr(strategy, 'calculate_positions'):
+                df_with_signals = strategy.calculate_positions(df_with_signals)
             
             # 백테스트 변수 초기화
             balance = initial_balance  # 현금 잔고

@@ -1358,7 +1358,8 @@ class CryptoTradingBotGUI(QMainWindow):
             spot_weights.append(self.bb_weight_spin.value())
 
         # futures 전략 생성
-        use_futures = self.bbfutures_check.isChecked()
+        # market_type이 futures일 때 자동으로 BollingerBandFuturesStrategy 사용
+        use_futures = market_type == 'futures' or self.bbfutures_check.isChecked()
         if use_futures:
             futures_strategy = BollingerBandFuturesStrategy(
                 bb_period=self.bbfutures_bb_period_spin.value(),
@@ -1373,31 +1374,40 @@ class CryptoTradingBotGUI(QMainWindow):
                 timeframe=timeframe
             )
 
-        # spot/futures 동시 선택 방지
-        if spot_strategies and use_futures:
-            QMessageBox.warning(self, "경고", "현물(spot) 전략과 선물(futures) 전략은 동시에 사용할 수 없습니다. 하나만 선택하세요.")
-            return
-        # spot만 선택
-        if spot_strategies:
-            weight_sum = sum(spot_weights)
-            if weight_sum > 0:
-                spot_weights = [w / weight_sum for w in spot_weights]
-            strategy = CombinedStrategy(strategies=spot_strategies, weights=spot_weights)
-            market_type = 'spot'
-            leverage = 1
-        # futures만 선택
-        elif use_futures:
+        # futures가 선택되면 spot 전략은 무시
+        if use_futures:
             strategy = futures_strategy
             market_type = 'futures'
             leverage = self.bbfutures_leverage_spin.value()
+            # Futures일 때 심볼 형식 변경 (BTC/USDT -> BTCUSDT)
+            if symbol == 'BTC/USDT':
+                symbol = 'BTCUSDT'
+            elif '/' in symbol:
+                symbol = symbol.replace('/', '')
+        # spot만 선택
+        elif spot_strategies:
+            # 여러 전략이 선택된 경우 가장 높은 가중치를 가진 전략 사용
+            if len(spot_strategies) > 1:
+                max_weight_idx = spot_weights.index(max(spot_weights))
+                strategy = spot_strategies[max_weight_idx]
+                QMessageBox.information(self, "정보", f"여러 전략이 선택되었습니다. 가장 높은 가중치를 가진 '{strategy.name}' 전략만 사용합니다.")
+            else:
+                strategy = spot_strategies[0]
+            market_type = 'spot'
+            leverage = 1
         else:
             QMessageBox.warning(self, "경고", "최소한 하나 이상의 전략을 선택해주세요.")
             return
         # 위험 관리 설정
+        risk_config = {
+            'stop_loss_pct': self.stop_loss_spin.value(),
+            'take_profit_pct': self.take_profit_spin.value(),
+            'max_position_size': self.max_position_spin.value()
+        }
         risk_manager = RiskManager(
-            stop_loss_pct=self.stop_loss_spin.value(),
-            take_profit_pct=self.take_profit_spin.value(),
-            max_position_size=self.max_position_spin.value(),
+            exchange_id=exchange,
+            symbol=symbol,
+            risk_config=risk_config,
             auto_exit_enabled=self.auto_exit_check.isChecked()  # 자동 손절매/이익실현 활성화 여부 전달
         )
         # 봇 생성
@@ -1889,9 +1899,12 @@ class CryptoTradingBotGUI(QMainWindow):
                     QMessageBox.warning(self, "경고", "적어도 하나 이상의 전략을 선택해야 합니다.")
                     return
                 
-                # 동일한 가중치 부여
-                weights = [1/len(strategies)] * len(strategies)
-                strategy = CombinedStrategy(strategies, weights)
+                # 여러 전략이 선택된 경우 첫 번째 전략만 사용
+                if len(strategies) > 1:
+                    strategy = strategies[0]
+                    QMessageBox.information(self, "정보", f"백테스트에서는 하나의 전략만 사용할 수 있습니다. '{strategy.name}' 전략을 사용합니다.")
+                else:
+                    strategy = strategies[0]
             
             # 백테스트 실행
             result = backtester.run_backtest(
