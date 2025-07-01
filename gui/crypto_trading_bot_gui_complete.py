@@ -23,8 +23,7 @@ from src.trading_algorithm import TradingAlgorithm
 from src.db_manager import DatabaseManager
 from src.strategies import (
     Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
-    BollingerBandsStrategy, StochasticStrategy, BreakoutStrategy,
-    VolatilityBreakoutStrategy, CombinedStrategy, BollingerBandFuturesStrategy
+    BollingerBandsStrategy, StochasticStrategy, BollingerBandFuturesStrategy
 )
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 QHBoxLayout,
@@ -1850,15 +1849,15 @@ class CryptoTradingBotGUI(QMainWindow):
                     overbought=self.backtest_stoch_overbought.value(),
                     oversold=self.backtest_stoch_oversold.value()
                 )
-            elif strategy_name == 'breakout':
-                strategy = BreakoutStrategy(
-                    period=self.backtest_breakout_period.value()
-                )
-            elif strategy_name == 'volatility_breakout':
-                strategy = VolatilityBreakoutStrategy(
-                    period=self.backtest_vb_period.value(),
-                    k=self.backtest_vb_k.value()
-                )
+            # elif strategy_name == 'breakout':
+            #     strategy = BreakoutStrategy(
+            #         period=self.backtest_breakout_period.value()
+            #     )
+            # elif strategy_name == 'volatility_breakout':
+            #     strategy = VolatilityBreakoutStrategy(
+            #         period=self.backtest_vb_period.value(),
+            #         k=self.backtest_vb_k.value()
+            #     )
             elif strategy_name == 'bollinger_band_futures':
                 # 볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 실제 객체 생성
                 strategy = BollingerBandFuturesStrategy(

@@ -988,8 +988,7 @@ if __name__ == "__main__":
         MACDStrategy(),
         BollingerBandsStrategy(),
         StochasticStrategy(),
-        BreakoutStrategy(),
-        VolatilityBreakoutStrategy()
+        BollingerBandFuturesStrategy()
     ]
     
     for strategy in strategies:

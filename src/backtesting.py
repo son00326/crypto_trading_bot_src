@@ -19,8 +19,7 @@ from src.data_manager import DataManager
 from src.data_collector import DataCollector
 from src.strategies import (
     Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
-    BollingerBandsStrategy, StochasticStrategy, BreakoutStrategy,
-    VolatilityBreakoutStrategy, CombinedStrategy
+    BollingerBandsStrategy, StochasticStrategy, BollingerBandFuturesStrategy
 )
 from src.config import DATA_DIR, BACKTEST_PARAMS
 
