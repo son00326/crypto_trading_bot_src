@@ -24,6 +24,7 @@ from src.config import (
     DEFAULT_EXCHANGE, DEFAULT_SYMBOL, DEFAULT_TIMEFRAME,
     DATA_DIR, RISK_MANAGEMENT
 )
+from src.utils.symbol_utils import convert_symbol_format
 from src.exchange_api import ExchangeAPI
 from src.data_manager import DataManager
 from src.data_collector import DataCollector
@@ -43,6 +44,10 @@ from src.risk_manager import RiskManager
 # 오류 처리 및 모니터링 모듈 임포트
 from src.error_handlers import ErrorAnalyzer, RateLimitManager, advanced_network_error_handler
 from src.system_health import SystemHealthMonitor
+from src.notification import EmailNotificationManager
+from src.db_manager import DatabaseManager
+from src.logging_config import get_logger
+from src.event_bus import EventBus, EventType
 from src.network_monitor import NetworkMonitor
 
 # 로깅 설정
@@ -446,9 +451,15 @@ def run_trading(args):
     # futures 모드일 때 심볼 형식 변환 (BTC/USDT -> BTCUSDT)
     symbol = args.symbol
     if args.market_type == 'futures' or args.strategy == 'bollinger_futures':
-        if '/' in symbol:
-            symbol = symbol.replace('/', '')
-        logger.info(f"Futures 모드: 심볼 {args.symbol} -> {symbol}")
+        symbol = convert_symbol_format(
+            symbol,
+            from_format='standard' if '/' in symbol else 'exchange',
+            to_format='exchange',
+            exchange_id=args.exchange,
+            market_type='futures'
+        )
+        if symbol != args.symbol:
+            logger.info(f"Futures 모드: 심볼 {args.symbol} -> {symbol}")
     
     # 위험 관리 설정
     risk_config = RISK_MANAGEMENT.copy()

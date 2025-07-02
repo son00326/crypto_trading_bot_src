@@ -26,9 +26,9 @@ from src.trading_algorithm import TradingAlgorithm
 from src.exchange_api import ExchangeAPI
 from src.db_manager import DatabaseManager
 from src.risk_manager import RiskManager
-from src.strategy import BaseStrategy
+from src.strategies import Strategy
 
-class DummyStrategy(BaseStrategy):
+class DummyStrategy(Strategy):
     """테스트용 전략 클래스"""
     def __init__(self):
         super().__init__(name="DummyStrategy")

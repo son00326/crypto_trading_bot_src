@@ -859,7 +859,9 @@ class TradingAlgorithm:
             risk_assessment = self.risk_manager.assess_risk(
                 signal=signal,
                 portfolio_status=portfolio_status,
-                current_price=current_price
+                current_price=current_price,
+                leverage=self.leverage,
+                market_type=self.market_type
             )
             
             if not risk_assessment['should_execute']:

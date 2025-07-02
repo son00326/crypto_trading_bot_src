@@ -196,6 +196,7 @@ class BotAPIServer:
                 timeframe = saved_state.get('timeframe', DEFAULT_TIMEFRAME)
                 market_type = saved_state.get('market_type', 'futures')  # 기본값을 futures로 설정
                 leverage = saved_state.get('leverage', 1)
+                strategy_params = saved_state.get('strategy_params', saved_state.get('parameters', {}))  # parameters 필드에서 strategy_params 로드하도록 수정
             else:
                 # saved_state가 없으면 기본값 사용
                 exchange_id = DEFAULT_EXCHANGE
@@ -203,6 +204,7 @@ class BotAPIServer:
                 timeframe = DEFAULT_TIMEFRAME
                 market_type = 'futures'
                 leverage = 1
+                strategy_params = {}  # 빈 dict로 초기화
                 logger.info("저장된 봇 상태가 없습니다. 기본값으로 초기화합니다.")
             
             # GUI에서 저장한 API 키 불러오기
@@ -279,7 +281,7 @@ class BotAPIServer:
             timeframe = saved_state.get('timeframe')
             
             # 저장된 전략 파라미터 가져오기
-            strategy_params = saved_state.get('parameters', {})
+            strategy_params = saved_state.get('strategy_params', saved_state.get('parameters', {}))  # parameters 필드에서 strategy_params 로드하도록 수정
             if isinstance(strategy_params, str):
                 # JSON 문자열인 경우 파싱
                 import json
@@ -319,6 +321,45 @@ class BotAPIServer:
                 'message': f"저장된 설정으로 봇 재시작 중 오류: {str(e)}"
             }
     
+    def start_bot_with_settings(self, settings):
+        """저장된 설정으로 봇 시작 (자동 재시작용)"""
+        try:
+            logger.info("저장된 설정으로 봇을 시작합니다...")
+            
+            # GUI 설정 업데이트
+            self.bot_gui.exchange_id = settings.get('exchange_id', 'binance')
+            self.bot_gui.symbol = settings.get('symbol', 'BTC/USDT')
+            self.bot_gui.timeframe = settings.get('timeframe', '1h')
+            self.bot_gui.strategy = settings.get('strategy', 'ma_crossover')
+            self.bot_gui.market_type = settings.get('market_type', 'futures')
+            self.bot_gui.leverage = settings.get('leverage', 1)
+            self.bot_gui.test_mode = settings.get('test_mode', True)
+            
+            # 전략 파라미터 설정
+            if 'strategy_params' in settings:
+                self.bot_gui.strategy_params = settings['strategy_params']
+            
+            # 추가 설정
+            if hasattr(self.bot_gui, 'stop_loss'):
+                self.bot_gui.stop_loss = settings.get('stop_loss', 2.0)
+                self.bot_gui.take_profit = settings.get('take_profit', 5.0)
+                self.bot_gui.max_position = settings.get('max_position', 1000)
+                self.bot_gui.auto_sl_tp = settings.get('auto_sl_tp', True)
+                self.bot_gui.partial_tp = settings.get('partial_tp', False)
+            
+            # 봇 시작
+            self.bot_gui.start_bot()
+            
+            # 상태 업데이트
+            self.update_bot_status()
+            
+            logger.info("봇이 자동으로 시작되었습니다!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"봇 자동 시작 실패: {e}", exc_info=True)
+            return False
+
     # 사용자 로드 콜백 함수
     def load_user(self, user_id):
         """사용자 ID로 사용자 객체 로드"""

@@ -104,14 +104,16 @@ class RiskManager:
         logger.info(f"위험 관리 설정: {self.risk_config}")
         logger.info(f"자동 손절매/이익실현 활성화: {self.auto_exit_enabled}")
     
-    def calculate_position_size(self, account_balance, current_price, risk_per_trade=None):
+    def calculate_position_size(self, account_balance, current_price, risk_per_trade=None, leverage=1, market_type='spot'):
         """
-        적절한 포지션 크기 계산
+        적절한 포지션 크기 계산 (레버리지 고려)
         
         Args:
             account_balance (float): 계좌 잔고
             current_price (float): 현재 가격
             risk_per_trade (float, optional): 거래당 위험 비율 (None인 경우 설정값 사용)
+            leverage (float): 레버리지 배수 (기본값 1)
+            market_type (str): 시장 타입 ('spot' 또는 'futures')
         
         Returns:
             float: 매수/매도할 수량
@@ -139,10 +141,31 @@ class RiskManager:
             # 최종 포지션 크기 (최대 포지션 크기와 위험 기반 크기 중 작은 값)
             position_size = min(max_position_size / current_price, risk_based_size)
             
+            # 선물 거래인 경우 레버리지 적용
+            if market_type == 'futures' and leverage > 1:
+                # 레버리지를 적용하면 같은 자금으로 더 큰 포지션을 가질 수 있음
+                position_size_with_leverage = position_size * leverage
+                
+                # 하지만 최대 포지션 크기는 초기 증거금 기준으로 제한
+                # 즉, 실제 사용할 증거금은 account_balance * max_position_size를 초과할 수 없음
+                max_notional_value = max_position_size  # 최대 명목 가치
+                max_position_with_leverage = max_notional_value / current_price
+                
+                position_size = min(position_size_with_leverage, max_position_with_leverage)
+                
+                logger.info(f"선물 포지션 크기 계산: 레버리지={leverage}x, 조정된 포지션 크기={position_size}")
+            
             # 소수점 8자리까지 반올림
             position_size = round(position_size, 8)
             
-            logger.info(f"포지션 크기 계산: 계좌잔고={account_balance}, 현재가격={current_price}, 포지션크기={position_size}")
+            # 실제 필요한 증거금 계산 (디버깅용)
+            if market_type == 'futures':
+                required_margin = (position_size * current_price) / leverage
+                logger.info(f"포지션 크기 계산: 계좌잔고={account_balance}, 현재가격={current_price}, "
+                          f"포지션크기={position_size}, 필요증거금={required_margin:.2f}")
+            else:
+                logger.info(f"포지션 크기 계산: 계좌잔고={account_balance}, 현재가격={current_price}, 포지션크기={position_size}")
+            
             return position_size
         
         except Exception as e:
@@ -858,7 +881,7 @@ class RiskManager:
             logger.error(f"위험 한도 확인 중 오류 발생: {e}")
             return False, []
     
-    def assess_risk(self, signal, portfolio_status, current_price):
+    def assess_risk(self, signal, portfolio_status, current_price, leverage=1, market_type='spot'):
         """
         거래 신호에 대한 리스크 평가
         
@@ -866,6 +889,8 @@ class RiskManager:
             signal: 거래 신호 객체
             portfolio_status (dict): 포트폴리오 상태
             current_price (float): 현재 가격
+            leverage (float): 레버리지 배수 (기본값 1)
+            market_type (str): 시장 타입 ('spot' 또는 'futures')
         
         Returns:
             dict: 리스크 평가 결과
@@ -877,6 +902,8 @@ class RiskManager:
         """
         try:
             logger.info(f"[리스크 평가] 시작 - 신호: {signal.direction}, 신뢰도: {signal.confidence:.2f}")
+            if market_type == 'futures':
+                logger.info(f"[리스크 평가] 선물 거래 모드 - 레버리지: {leverage}x")
             
             # 기본 결과 구조
             result = {
@@ -911,8 +938,13 @@ class RiskManager:
                 result['reason'] = f'신호 신뢰도 부족: {signal.confidence:.2f} < {min_confidence}'
                 return result
             
-            # 4. 포지션 크기 계산
-            position_size = self.calculate_position_size(balance, current_price)
+            # 4. 포지션 크기 계산 (레버리지와 시장 타입 전달)
+            position_size = self.calculate_position_size(
+                balance, 
+                current_price,
+                leverage=leverage,
+                market_type=market_type
+            )
             if position_size <= 0:
                 logger.warning(f"[리스크 평가] 거래 차단: 유효하지 않은 포지션 크기 ({position_size})")
                 result['should_execute'] = False

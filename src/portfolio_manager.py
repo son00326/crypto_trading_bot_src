@@ -518,13 +518,15 @@ class PortfolioManager:
             return False
     
     @safe_execution(retry_count=1)
-    def calculate_position_size(self, price, risk_manager=None):
+    def calculate_position_size(self, price, risk_manager=None, leverage=1, market_type='spot'):
         """
         위험 관리 설정에 따른 포지션 크기 계산
         
         Args:
             price (float): 현재 가격
             risk_manager: 위험 관리자 인스턴스 (선택적)
+            leverage (float): 레버리지 배수 (기본값 1)
+            market_type (str): 시장 타입 ('spot' 또는 'futures')
             
         Returns:
             float: 매수/매도할 수량
@@ -535,10 +537,21 @@ class PortfolioManager:
             
             # RiskManager를 통한 포지션 크기 계산
             if risk_manager:
-                quantity = risk_manager.calculate_position_size(available_balance, price)
+                quantity = risk_manager.calculate_position_size(
+                    available_balance, 
+                    price,
+                    leverage=leverage,
+                    market_type=market_type
+                )
             else:
                 # 간단한 기본값 로직 (가용 자산의 30% 사용)
-                quantity = (available_balance * 0.3) / price
+                position_value = available_balance * 0.3
+                
+                # 선물 거래인 경우 레버리지 적용
+                if market_type == 'futures' and leverage > 1:
+                    position_value = position_value * leverage
+                    
+                quantity = position_value / price
             
             # 최소 주문 수량 확인 (거래소마다 다름)
             min_quantity = 0.0001  # 예시 값, 실제로는 거래소별로 다름

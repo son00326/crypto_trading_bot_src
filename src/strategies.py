@@ -769,125 +769,8 @@ class StochasticStrategy(Strategy):
             return df
         except Exception as e:
             logger.error(f"스토캐스틱 신호 생성 중 오류 발생: {e}")
-            logger.debug(f"데이터 크기: {len(df)}, 파라미터: k_period={self.k_period}, d_period={self.d_period}")
             df['signal'] = 0
-            df['position'] = 0
             return df
-
-class CombinedStrategy(Strategy):
-    """여러 전략을 결합한 복합 전략"""
-    
-    def __init__(self, strategies, weights=None):
-        """
-        복합 전략 초기화
-        
-        Args:
-            strategies (list): 전략 객체 리스트
-            weights (list, optional): 각 전략의 가중치. None인 경우 동일 가중치 적용
-        """
-        strategy_names = [s.name for s in strategies]
-        super().__init__(name=f"Combined_{'_'.join(strategy_names)}")
-        
-        self.strategies = strategies
-        
-        if weights is None:
-            self.weights = [1/len(strategies)] * len(strategies)
-        else:
-            if len(weights) != len(strategies):
-                raise ValueError("전략 수와 가중치 수가 일치해야 합니다.")
-            self.weights = weights
-    
-    def generate_signals(self, df):
-        """
-        여러 전략의 신호를 결합하여 거래 신호 생성
-        
-        Args:
-            df (DataFrame): OHLCV 데이터
-        
-        Returns:
-            DataFrame: 거래 신호가 추가된 데이터프레임
-        """
-        # 데이터프레임 복사
-        df = df.copy()
-        
-        # 각 전략의 신호 계산
-        signals = []
-        for i, strategy in enumerate(self.strategies):
-            strategy_df = strategy.generate_signals(df)
-            signals.append(strategy_df['signal'] * self.weights[i])
-        
-        # 신호 결합
-        df['combined_signal'] = pd.concat(signals, axis=1).sum(axis=1)
-        
-        # 최종 신호 생성 (1: 매수, 0: 홀드, -1: 매도) - NumPy 배열 기반으로 변환
-        
-        # 필요한 값들을 NumPy 배열로 변환
-        combined_signal_values = df['combined_signal'].values
-        
-        # np.where를 사용한 벡터화된 조건부 할당
-        signals = np.zeros(len(df))
-        signals = np.where(combined_signal_values > 0.3, 1, signals)  # 매수 신호
-        signals = np.where(combined_signal_values < -0.3, -1, signals)  # 매도 신호
-        
-    def __init__(self, period=1, k=0.5):
-        """
-        변동성 돌파 전략 초기화
-        
-        Args:
-            period (int): 변동성 계산 기간
-            k (float): 변동성 계수 (0~1)
-        """
-        super().__init__(name=f"VolatilityBreakout_{period}_{k}")
-        self.period = period
-        self.k = k
-    
-    def generate_signals(self, df):
-        """
-        변동성 돌파 기반 거래 신호 생성
-        
-        Args:
-            df (DataFrame): OHLCV 데이터
-        
-        Returns:
-            DataFrame: 거래 신호가 추가된 데이터프레임
-        """
-        # 데이터프레임 복사
-        df = df.copy()
-        
-        # 전일 변동성 계산 (고가 - 저가)
-        df['volatility'] = df['high'].shift(1) - df['low'].shift(1)
-        
-        # 목표가 계산 (시가 + 변동성 * k)
-        df['target'] = df['open'] + df['volatility'] * self.k
-        
-        # 신호 생성 (1: 매수, 0: 홀드, -1: 매도) - NumPy 배열 기반으로 변환
-        
-        # 필요한 값들을 NumPy 배열로 변환
-        high_values = df['high'].values
-        target_values = df['target'].values
-        
-        # 가격이 목표가를 돌파하면 매수 신호
-        signals = np.zeros(len(df))
-        signals = np.where(high_values > target_values, 1, 0)
-        
-        # 다음 날 시가에 청산 (시프트 처리)
-        shifted_signals = np.zeros_like(signals)
-        if len(signals) > 1:
-            shifted_signals[1:] = signals[:-1]
-        
-        # 매수 신호가 있던 날 다음 날에는 매도(-1)
-        final_signals = np.where(shifted_signals == 1, -1, 0)
-        
-        # NaN 처리
-        np.nan_to_num(final_signals, copy=False, nan=0)
-        
-        # 결과를 데이터프레임에 할당
-        df['signal'] = final_signals
-        
-        # position 컬럼 추가 (signal과 동일하게 설정)
-        df['position'] = final_signals
-        
-        return df
 
 class BollingerBandFuturesStrategy(Strategy):
     """
@@ -928,23 +811,49 @@ class BollingerBandFuturesStrategy(Strategy):
             data['macd'] = macd_line
             data['macd_signal'] = signal_line
             data['macd_hist'] = hist
-            # 헤이킨 아시 캔들
+            # 헤이킨 아시 캔들 (재귀적 계산 - 더 정확한 방법)
             data['ha_close'] = (data['open'] + data['high'] + data['low'] + data['close']) / 4
-            data['ha_open'] = data['ha_close'].shift(1)
-            if not data.empty:
-                data.loc[data.index[0], 'ha_open'] = (data.loc[data.index[0], 'open'] + data.loc[data.index[0], 'close']) / 2
+            
+            # ha_open 재귀적 계산
+            ha_open = np.zeros(len(data))
+            ha_open[0] = (data['open'].iloc[0] + data['close'].iloc[0]) / 2
+            
+            for i in range(1, len(data)):
+                ha_open[i] = (ha_open[i-1] + data['ha_close'].iloc[i-1]) / 2
+            
+            data['ha_open'] = ha_open
             data['ha_high'] = data[['high', 'ha_open', 'ha_close']].max(axis=1)
             data['ha_low'] = data[['low', 'ha_open', 'ha_close']].min(axis=1)
-            # 신호 생성
+            # 신호 생성 - 가중치 기반 시스템
             data['signal'] = 0
+            data['long_score'] = 0
+            data['short_score'] = 0
+            
+            # 롱 조건들 (각 조건에 가중치 부여)
             long_cond1 = (data['close'] < data['bb_lower']) & (data['rsi'] < self.rsi_oversold)
-            long_cond2 = (data['macd_hist'] > 0) & (data['macd_hist'].shift(1) <= 0)
-            long_cond3 = (data['ha_close'] > data['ha_open']) & (data['close'] > data['bb_middle'])
+            long_cond2 = (data['macd'] > data['macd_signal']) & (data['macd_hist'] > 0) & (data['macd_hist'].shift(1) <= 0)
+            long_cond3 = (data['ha_close'] > data['ha_open']) & (data['close'] > data['close'].shift(1))
+            
+            # 숏 조건들 (각 조건에 가중치 부여)
             short_cond1 = (data['close'] > data['bb_upper']) & (data['rsi'] > self.rsi_overbought)
-            short_cond2 = (data['macd_hist'] < 0) & (data['macd_hist'].shift(1) >= 0)
-            short_cond3 = (data['ha_close'] < data['ha_open']) & (data['close'] < data['bb_middle'])
-            data.loc[long_cond1 | long_cond2 | long_cond3, 'signal'] = 1
-            data.loc[short_cond1 | short_cond2 | short_cond3, 'signal'] = -1
+            short_cond2 = (data['macd'] < data['macd_signal']) & (data['macd_hist'] < 0) & (data['macd_hist'].shift(1) >= 0)
+            short_cond3 = (data['ha_close'] < data['ha_open']) & (data['close'] < data['close'].shift(1))
+            
+            # 가중치 계산
+            data.loc[long_cond1, 'long_score'] += 0.4  # BB + RSI는 높은 가중치
+            data.loc[long_cond2, 'long_score'] += 0.3  # MACD 교차
+            data.loc[long_cond3, 'long_score'] += 0.3  # 헤이킨 아시 + 가격 상승
+            
+            data.loc[short_cond1, 'short_score'] += 0.4  # BB + RSI는 높은 가중치
+            data.loc[short_cond2, 'short_score'] += 0.3  # MACD 교차
+            data.loc[short_cond3, 'short_score'] += 0.3  # 헤이킨 아시 + 가격 하락
+            
+            # 최소 0.6 이상의 점수가 필요하고, 반대 신호가 없어야 함
+            strong_long = (data['long_score'] >= 0.6) & (data['short_score'] == 0)
+            strong_short = (data['short_score'] >= 0.6) & (data['long_score'] == 0)
+            
+            data.loc[strong_long, 'signal'] = 1
+            data.loc[strong_short, 'signal'] = -1
             
             # 연속 신호 제거 개선 - 진입하던 포지션과 반대 신호만 허용
             prev_signal = data['signal'].shift(1).fillna(0)
@@ -993,24 +902,12 @@ if __name__ == "__main__":
     
     for strategy in strategies:
         result_df = strategy.generate_signals(df)
-        result_df = strategy.calculate_positions(result_df)
         
         print(f"\n{strategy.name} 전략 테스트 결과:")
         print(f"매수 신호 수: {len(result_df[result_df['signal'] == 1])}")
         print(f"매도 신호 수: {len(result_df[result_df['signal'] == -1])}")
-        print(f"포지션 변경 수: {len(result_df[result_df['position'] != 0])}")
-    
-    # 복합 전략 테스트
-    combined = CombinedStrategy([
-        MovingAverageCrossover(short_period=9, long_period=26),
-        RSIStrategy(period=14, overbought=70, oversold=30),
-        MACDStrategy()
-    ])
-    
-    result_df = combined.generate_signals(df)
-    result_df = combined.calculate_positions(result_df)
-    
-    print(f"\n{combined.name} 전략 테스트 결과:")
-    print(f"매수 신호 수: {len(result_df[result_df['signal'] == 1])}")
-    print(f"매도 신호 수: {len(result_df[result_df['signal'] == -1])}")
-    print(f"포지션 변경 수: {len(result_df[result_df['position'] != 0])}")
+        
+        # position 커럼이 있는 경우에만 출력 (BollingerBandFuturesStrategy만)
+        if 'position' in result_df.columns:
+            print(f"포지션 변경 수: {len(result_df[result_df['position'] != 0])}")
+

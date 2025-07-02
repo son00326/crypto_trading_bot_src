@@ -17,14 +17,21 @@ from dotenv import load_dotenv
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
-# 백테스팅 모듈 임포트
-from src.backtesting import Backtester
-from src.trading_algorithm import TradingAlgorithm
-from src.db_manager import DatabaseManager
+# 프로젝트 모듈 임포트
+from src.data_analyzer import DataAnalyzer
+from src.indicators import (
+    simple_moving_average, exponential_moving_average, moving_average_convergence_divergence,
+    relative_strength_index, bollinger_bands, stochastic_oscillator
+)
 from src.strategies import (
     Strategy, MovingAverageCrossover, RSIStrategy, MACDStrategy, 
     BollingerBandsStrategy, StochasticStrategy, BollingerBandFuturesStrategy
 )
+from src.trading_algorithm import TradingAlgorithm
+from src.exchange_api import ExchangeAPI
+from src.utils.symbol_utils import convert_symbol_format
+from src.backtesting import Backtester
+from src.db_manager import DatabaseManager
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 QHBoxLayout,
 QLabel, QPushButton, QComboBox, QLineEdit, QTextEdit,
@@ -1380,10 +1387,13 @@ class CryptoTradingBotGUI(QMainWindow):
             market_type = 'futures'
             leverage = self.bbfutures_leverage_spin.value()
             # Futures일 때 심볼 형식 변경 (BTC/USDT -> BTCUSDT)
-            if symbol == 'BTC/USDT':
-                symbol = 'BTCUSDT'
-            elif '/' in symbol:
-                symbol = symbol.replace('/', '')
+            symbol = convert_symbol_format(
+                symbol,
+                from_format='standard' if '/' in symbol else 'exchange',
+                to_format='exchange',
+                exchange_id=exchange.lower(),
+                market_type='futures'
+            )
         # spot만 선택
         elif spot_strategies:
             # 여러 전략이 선택된 경우 가장 높은 가중치를 가진 전략 사용

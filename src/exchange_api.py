@@ -26,7 +26,17 @@ from src.rate_limit_manager import get_rate_limit_manager, rate_limited
 
 # 향상된 로깅 시스템 사용
 from src.logging_config import get_logger, log_api_call
-from src.error_handlers import api_error_handler, APIError, MarketTypeError, OrderNotFound, RateLimitExceeded
+from src.exceptions import (
+    APIKeyError, 
+    InsufficientBalanceError, 
+    InvalidOrderError,
+    ExchangeConnectionError,
+    OrderExecutionError,
+    SymbolNotFoundError,
+    APIError
+)
+from src.error_handlers import api_error_handler
+from src.utils.symbol_utils import normalize_symbol, convert_symbol_format, validate_symbol_format
 
 # 로거 설정
 logger = get_logger('crypto_bot.exchange')
@@ -213,28 +223,27 @@ class ExchangeAPI:
         # 심볼이 없으면 기본값 사용
         symbol = symbol or self.symbol
         
-        # 바이낸스 선물인 경우
-        if self.exchange_id == 'binance' and self.market_type == 'futures':
-            # '/'가 포함된 형태이면 제거 ('BTC/USDT' -> 'BTCUSDT')
-            if '/' in symbol:
-                formatted_symbol = symbol.replace('/', '')
-                # ':USDT' 부분 있는지 확인하고 제거
-                if ':' in formatted_symbol:
-                    base, quote = formatted_symbol.split(':')
-                    if base.endswith(quote):
-                        self.logger.warning(f"심볼 수정: {formatted_symbol} -> {base}")
-                        formatted_symbol = base
-                return formatted_symbol
-            # ':USDT' 부분 있는지 확인하고 제거
-            elif ':' in symbol:
-                base, quote = symbol.split(':')
-                if base.endswith(quote):
-                    self.logger.warning(f"심볼 수정: {symbol} -> {base}")
-                    return base
-            return symbol
+        # 심볼 검증
+        is_valid, error_msg = validate_symbol_format(symbol, self.exchange_id, self.market_type)
+        if not is_valid:
+            # 표준 형식으로 변환 시도
+            normalized = normalize_symbol(symbol, self.exchange_id, self.market_type)
+            self.logger.info(f"심볼 정규화: {symbol} -> {normalized}")
+            symbol = normalized
         
-        # 현물 거래 또는 다른 거래소의 경우 원본 그대로 사용
-        return symbol
+        # 거래소 형식으로 변환
+        formatted = convert_symbol_format(
+            symbol, 
+            from_format='standard' if '/' in symbol else 'exchange',
+            to_format='exchange',
+            exchange_id=self.exchange_id,
+            market_type=self.market_type
+        )
+        
+        if formatted != symbol:
+            self.logger.debug(f"심볼 형식 변환: {symbol} -> {formatted}")
+            
+        return formatted
         
     @api_error_handler
     def _initialize_network_recovery(self):
@@ -356,7 +365,7 @@ class ExchangeAPI:
                 # 바이낸스 선물 전용 옵션 설정
                 exchange.options['defaultType'] = 'future'
                 exchange.options['adjustForTimeDifference'] = True
-                exchange.options['recvWindow'] = 10000
+                exchange.options['recvWindow'] = 5000  # 바이낸스 권장값으로 최적화
                 
                 # 레버리지 설정 (실제 거래만)
                 if config['apiKey'] and config['secret'] and config['apiKey'] != 'your_api_key_here':
@@ -408,7 +417,93 @@ class ExchangeAPI:
             self.logger.error(f"거래소 초기화 중 오류 발생: {str(e)}\n{traceback.format_exc()}")
             raise APIError(f"거래소 초기화 오류: {str(e)}", original_exception=e)
     
-
+    def _retry_order(self, order_func, max_retries=3, fallback_to_market=True, **kwargs):
+        """
+        주문 재시도 메커니즘
+        
+        Args:
+            order_func: 실행할 주문 함수
+            max_retries: 최대 재시도 횟수
+            fallback_to_market: LIMIT 주문 실패 시 MARKET 주문으로 폴백 여부
+            **kwargs: 주문 함수에 전달할 파라미터
+            
+        Returns:
+            dict: 주문 결과
+        """
+        last_error = None
+        retry_delay = 1  # 초기 대기 시간
+        
+        for attempt in range(max_retries):
+            try:
+                # market_type 파라미터 확인 및 추가
+                if 'params' not in kwargs:
+                    kwargs['params'] = {}
+                kwargs['params']['market_type'] = self.market_type
+                
+                # 주문 실행
+                result = order_func(**kwargs)
+                
+                if result and result.get('id'):
+                    return result
+                    
+            except ccxt.InsufficientFunds as e:
+                # 잔고 부족은 재시도 불필요
+                self.logger.error(f"잔고 부족: {str(e)}")
+                raise InsufficientBalanceError(str(e), original_exception=e)
+                
+            except ccxt.InvalidOrder as e:
+                last_error = e
+                error_msg = str(e).lower()
+                
+                # 최소 주문량 미달
+                if 'min' in error_msg and 'notional' in error_msg:
+                    self.logger.error(f"최소 주문 금액 미달: {str(e)}")
+                    raise InvalidOrderError(f"최소 주문 금액 미달: {str(e)}", original_exception=e)
+                    
+                # 최소 수량 미달
+                elif 'min' in error_msg and 'qty' in error_msg:
+                    self.logger.error(f"최소 주문 수량 미달: {str(e)}")
+                    raise InvalidOrderError(f"최소 주문 수량 미달: {str(e)}", original_exception=e)
+                    
+                # 기타 주문 오류
+                else:
+                    self.logger.warning(f"주문 오류 ({attempt+1}/{max_retries}): {str(e)}")
+                    
+            except ccxt.ExchangeNotAvailable as e:
+                last_error = e
+                self.logger.warning(f"거래소 서버 오류 ({attempt+1}/{max_retries}): {str(e)}")
+                
+            except ccxt.RequestTimeout as e:
+                last_error = e
+                self.logger.warning(f"요청 타임아웃 ({attempt+1}/{max_retries}): {str(e)}")
+                
+            except ccxt.RateLimitExceeded as e:
+                last_error = e
+                self.logger.warning(f"요청 한도 초과 ({attempt+1}/{max_retries}): {str(e)}")
+                retry_delay = retry_delay * 2  # Rate limit의 경우 대기 시간 증가
+                
+            except Exception as e:
+                last_error = e
+                self.logger.error(f"예상치 못한 오류 ({attempt+1}/{max_retries}): {str(e)}")
+                
+            # 마지막 시도가 아니면 대기 후 재시도
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (2 ** attempt)  # 지수 백오프
+                self.logger.info(f"{wait_time}초 대기 후 재시도...")
+                time.sleep(wait_time)
+                
+                # LIMIT 주문 실패 시 MARKET 주문으로 폴백
+                if fallback_to_market and 'type' in kwargs and kwargs['type'] == 'limit' and attempt == max_retries - 2:
+                    self.logger.info("LIMIT 주문 실패, MARKET 주문으로 재시도")
+                    kwargs['type'] = 'market'
+                    if 'price' in kwargs:
+                        del kwargs['price']  # MARKET 주문은 가격 파라미터 불필요
+                        
+        # 모든 시도 실패
+        error_msg = f"주문 실행 최종 실패: {str(last_error)}"
+        self.logger.error(error_msg)
+        raise OrderExecutionError(error_msg, original_exception=last_error)
+    
     
     @api_error_handler
     @measure_api_performance
@@ -428,7 +523,14 @@ class ExchangeAPI:
                 if self.network_recovery is not None:
                     self.network_recovery.check_connection(self.exchange_id)
                     
-                ticker = self.exchange.fetch_ticker(symbol)
+                # market_type 파라미터 포함
+                params = {
+                    'market_type': self.market_type
+                }
+                if self.market_type == 'futures' and self.exchange_id == 'binance':
+                    params['type'] = 'future'
+                    
+                ticker = self.exchange.fetch_ticker(symbol, params)
                 return ticker
                 
             except Exception as e:
@@ -565,12 +667,14 @@ class ExchangeAPI:
         
         # 시장 타입에 따른 추가 설정
         params = {
-            'limit': limit  # limit 매개변수를 params 딕셔너리에 추가
+            'limit': limit,  # limit 매개변수를 params 딕셔너리에 추가
+            'market_type': self.market_type  # market_type 항상 포함
         }
         
         if self.market_type == 'futures' and self.exchange_id == 'binance':
             # 바이낸스 선물의 경우 필요한 추가 파라미터
             params['contract'] = True  # 선물 계약 데이터 지정
+            params['type'] = 'future'
         
         try:
             # OHLCV 데이터 가져오기 (로깅은 데코레이터에서 처리)
@@ -613,7 +717,7 @@ class ExchangeAPI:
                 return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     
     @api_error_handler
-    def create_market_buy_order(self, symbol=None, amount=None):
+    def create_market_buy_order(self, symbol=None, amount=None, use_retry=True):
         """시장가 매수 주문
         
         Args:
@@ -665,20 +769,34 @@ class ExchangeAPI:
             start_time = time.time()
             
             # 선물 거래에 필요한 추가 매개변수
-            params = {}
+            params = {
+                'market_type': self.market_type  # market_type 항상 포함
+            }
             if self.market_type == 'futures':
                 # 선물 거래 관련 매개변수 설정
-                params = {
+                params.update({
                     'reduceOnly': False,  # 포지션 청산용 주문인지
                     'timeInForce': 'GTC',  # Good Till Cancel
-                }
+                    'leverage': self.leverage
+                })
                 
                 self.logger.info(f"선물 시장가 매수 주문 시도: {symbol}, {amount}, 레버리지: {self.leverage}배")
             else:
                 self.logger.info(f"현물 시장가 매수 주문 시도: {symbol}, {amount}")
             
-            # 주문 실행
-            order = self.exchange.create_market_buy_order(symbol, amount, params)
+            # 재시도 메커니즘 사용
+            if use_retry:
+                order = self._retry_order(
+                    self.exchange.create_market_buy_order,
+                    symbol=symbol,
+                    amount=amount,
+                    params=params,
+                    type='market',
+                    side='buy'
+                )
+            else:
+                # 재시도 없이 직접 실행
+                order = self.exchange.create_market_buy_order(symbol, amount, params)
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
@@ -735,7 +853,7 @@ class ExchangeAPI:
             raise APIError(error_msg, original_exception=e)
     
     @api_error_handler
-    def create_market_sell_order(self, symbol=None, amount=None):
+    def create_market_sell_order(self, symbol=None, amount=None, use_retry=True):
         """시장가 매도 주문
         
         Args:
@@ -787,20 +905,34 @@ class ExchangeAPI:
             start_time = time.time()
             
             # 선물 거래에 필요한 추가 매개변수
-            params = {}
+            params = {
+                'market_type': self.market_type  # market_type 항상 포함
+            }
             if self.market_type == 'futures':
                 # 선물 거래 관련 매개변수 설정
-                params = {
+                params.update({
                     'reduceOnly': False,  # 포지션 청산용 주문인지 여부
                     'timeInForce': 'GTC',  # Good Till Cancel
-                }
+                    'leverage': self.leverage
+                })
                 
                 self.logger.info(f"선물 시장가 매도 주문 시도 (쇼트 포지션): {symbol}, {amount}, 레버리지: {self.leverage}배")
             else:
                 self.logger.info(f"현물 시장가 매도 주문 시도: {symbol}, {amount}")
             
-            # 주문 실행
-            order = self.exchange.create_market_sell_order(symbol, amount, params)
+            # 재시도 메커니즘 사용
+            if use_retry:
+                order = self._retry_order(
+                    self.exchange.create_market_sell_order,
+                    symbol=symbol,
+                    amount=amount,
+                    params=params,
+                    type='market',
+                    side='sell'
+                )
+            else:
+                # 재시도 없이 직접 실행
+                order = self.exchange.create_market_sell_order(symbol, amount, params)
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
@@ -857,7 +989,7 @@ class ExchangeAPI:
             raise APIError(error_msg, original_exception=e)
     
     @api_error_handler
-    def create_limit_buy_order(self, symbol=None, amount=None, price=None):
+    def create_limit_buy_order(self, symbol=None, amount=None, price=None, use_retry=True):
         """지정가 매수 주문
         
         Args:
@@ -911,20 +1043,35 @@ class ExchangeAPI:
             start_time = time.time()
             
             # 선물 거래에 필요한 추가 매개변수
-            params = {}
+            params = {
+                'market_type': self.market_type  # market_type 항상 포함
+            }
             if self.market_type == 'futures':
                 # 선물 거래 관련 매개변수 설정
-                params = {
+                params.update({
                     'reduceOnly': False,  # 포지션 청산용 주문인지 여부
                     'timeInForce': 'GTC',  # Good Till Cancel
-                }
+                    'leverage': self.leverage
+                })
                 
                 self.logger.info(f"선물 지정가 매수 주문 시도 (롱 포지션): {symbol}, {amount}, 가격: {price}, 레버리지: {self.leverage}배")
             else:
                 self.logger.info(f"현물 지정가 매수 주문 시도: {symbol}, {amount}, 가격: {price}")
             
-            # 주문 실행
-            order = self.exchange.create_limit_buy_order(symbol, amount, price, params)
+            # 재시도 메커니즘 사용
+            if use_retry:
+                order = self._retry_order(
+                    self.exchange.create_limit_buy_order,
+                    symbol=symbol,
+                    amount=amount,
+                    price=price,
+                    params=params,
+                    type='limit',
+                    side='buy'
+                )
+            else:
+                # 재시도 없이 직접 실행
+                order = self.exchange.create_limit_buy_order(symbol, amount, price, params)
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
@@ -981,7 +1128,7 @@ class ExchangeAPI:
             raise APIError(error_msg, original_exception=e)
     
     @api_error_handler
-    def create_limit_sell_order(self, symbol=None, amount=None, price=None):
+    def create_limit_sell_order(self, symbol=None, amount=None, price=None, use_retry=True):
         """지정가 매도 주문
         
         Args:
@@ -1035,13 +1182,16 @@ class ExchangeAPI:
             start_time = time.time()
             
             # 선물 거래에 필요한 추가 매개변수
-            params = {}
+            params = {
+                'market_type': self.market_type  # market_type 항상 포함
+            }
             if self.market_type == 'futures':
                 # 선물 거래 관련 매개변수 설정
-                params = {
+                params.update({
                     'reduceOnly': False,  # 포지션 청산용 주문인지 여부
                     'timeInForce': 'GTC',  # Good Till Cancel
-                }
+                    'leverage': self.leverage
+                })
                 
                 # 선물에서의 매도는 숙편 포지션 설정
                 # 매도 = 쇼트 포지션 설정 (매수는 롱 포지션)
@@ -1049,8 +1199,20 @@ class ExchangeAPI:
             else:
                 self.logger.info(f"현물 지정가 매도 주문 시도: {symbol}, {amount}, 가격: {price}")
             
-            # 주문 실행
-            order = self.exchange.create_limit_sell_order(symbol, amount, price, params)
+            # 재시도 메커니즘 사용
+            if use_retry:
+                order = self._retry_order(
+                    self.exchange.create_limit_sell_order,
+                    symbol=symbol,
+                    amount=amount,
+                    price=price,
+                    params=params,
+                    type='limit',
+                    side='sell'
+                )
+            else:
+                # 재시도 없이 직접 실행
+                order = self.exchange.create_limit_sell_order(symbol, amount, price, params)
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
@@ -1108,7 +1270,7 @@ class ExchangeAPI:
             raise APIError(error_msg, original_exception=e)
     
     @api_error_handler
-    def cancel_order(self, order_id, symbol=None):
+    def cancel_order(self, order_id, symbol=None, use_retry=True):
         """주문 취소
         
         Args:
@@ -1143,14 +1305,43 @@ class ExchangeAPI:
             start_time = time.time()
             
             # 거래소별 특수 처리
-            params = {}
+            params = {
+                'market_type': self.market_type  # market_type 항상 포함
+            }
             if self.market_type == 'futures' and self.exchange_id == 'binance':
-                params = {'type': 'future'}
+                params['type'] = 'future'
             
             self.logger.info(f"주문 취소 시도: {order_id}, {symbol}")
             
-            # 주문 취소 실행
-            result = self.exchange.cancel_order(order_id, symbol, params)
+            # 재시도 메커니즘 사용
+            if use_retry:
+                # 취소는 단순 재시도 (폴백 없음)
+                max_retries = 3
+                last_error = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        result = self.exchange.cancel_order(order_id, symbol, params)
+                        break
+                    except ccxt.OrderNotFound as e:
+                        # 주문을 찾을 수 없음 - 재시도 불필요
+                        self.logger.warning(f"주문을 찾을 수 없음: {order_id}")
+                        raise
+                    except Exception as e:
+                        last_error = e
+                        if attempt < max_retries - 1:
+                            wait_time = 1 * (2 ** attempt)
+                            self.logger.warning(f"주문 취소 실패 ({attempt+1}/{max_retries}): {str(e)}")
+                            self.logger.info(f"{wait_time}초 대기 후 재시도...")
+                            time.sleep(wait_time)
+                        else:
+                            raise
+                else:
+                    # 모든 시도 실패
+                    raise last_error if last_error else Exception("주문 취소 실패")
+            else:
+                # 재시도 없이 직접 실행
+                result = self.exchange.cancel_order(order_id, symbol, params)
             
             # 완료 시간 기록 및 성능 로깅
             elapsed = time.time() - start_time
@@ -1239,10 +1430,12 @@ class ExchangeAPI:
             start_time = time.time()
             
             # 거래소별 특수 처리
-            params = {}
+            params = {
+                'market_type': self.market_type  # market_type 항상 포함
+            }
             if self.market_type == 'futures' and self.exchange_id == 'binance':
                 # 바이낸스 선물의 경우 필요한 파라미터
-                params = {'type': 'future'}
+                params['type'] = 'future'
                 
             # 주문 상태 조회 실행
             self.logger.info(f"주문 상태 조회 요청: {symbol}, 주문 ID: {order_id}")
@@ -1635,14 +1828,18 @@ class ExchangeAPI:
             future_balance = None
             
             try:
-                spot_balance = self.exchange.fetch_balance()
+                # 현물 잔고 조회 - 바이낸스는 파라미터 없이 호출
+                spot_params = {}
+                spot_balance = self.exchange.fetch_balance(params=spot_params)
                 self.logger.debug(f"현물 잔고 조회 성공: {self.exchange_id}")
             except Exception as e:
                 self.logger.warning(f"현물 잔고 조회 실패: {str(e)}")
             
             try:
-                # 선물 잔고 파라미터
-                params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+                # 선물 잔고 파라미터 - 바이낸스는 type만 사용
+                params = {}
+                if self.exchange_id == 'binance':
+                    params['type'] = 'future'
                 future_balance = self.exchange.fetch_balance(params=params)
                 self.logger.debug(f"선물 잔고 조회 성공: {self.exchange_id}")
             except Exception as e:
@@ -1666,14 +1863,17 @@ class ExchangeAPI:
         
         # 선물 잔고만 가져오기
         elif balance_type == 'future':
-            params = {'type': 'future'} if self.exchange_id == 'binance' else {}
+            params = {}
+            if self.exchange_id == 'binance':
+                params['type'] = 'future'
             balance = self.exchange.fetch_balance(params=params)
             self.logger.info(f"선물 잔고 조회 성공: {self.exchange_id}")
             return balance
         
         # 현물 잔고만 가져오기 (기본값)
         else:  # 기본값 또는 'spot'
-            balance = self.exchange.fetch_balance()
+            params = {}
+            balance = self.exchange.fetch_balance(params=params)
             self.logger.info(f"현물 잔고 조회 성공: {self.exchange_id}")
             return balance
             
@@ -1738,7 +1938,7 @@ class ExchangeAPI:
                     timestamp = int(time.time() * 1000)
                     params = {
                         'timestamp': timestamp,
-                        'recvWindow': 20000  # 10000에서 20000으로 증가
+                        'recvWindow': 5000  # 바이낸스 권장값으로 최적화 (5초)
                     }
                     query_string = urlencode(params)
                     

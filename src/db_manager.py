@@ -500,6 +500,13 @@ class DatabaseManager:
             if 'parameters' in state_data and isinstance(state_data['parameters'], dict):
                 state_data['parameters'] = json.dumps(state_data['parameters'])
             
+            # strategy_params를 parameters로 매핑 (역호환성 유지)
+            if 'strategy_params' in state_data and 'parameters' not in state_data:
+                if isinstance(state_data['strategy_params'], dict):
+                    state_data['parameters'] = json.dumps(state_data['strategy_params'])
+                else:
+                    state_data['parameters'] = state_data['strategy_params']
+            
             if 'additional_info' in state_data and isinstance(state_data['additional_info'], dict):
                 state_data['additional_info'] = json.dumps(state_data['additional_info'])
             
@@ -1649,6 +1656,8 @@ class DatabaseManager:
             if state.get('parameters'):
                 try:
                     state['parameters'] = json.loads(state['parameters'])
+                    # strategy_params로도 매핑 (역호환성)
+                    state['strategy_params'] = state['parameters']
                 except json.JSONDecodeError:
                     pass
                     
