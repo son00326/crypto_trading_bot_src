@@ -333,11 +333,58 @@ class BotAPIServer:
             self.bot_gui.strategy = settings.get('strategy', 'ma_crossover')
             self.bot_gui.market_type = settings.get('market_type', 'futures')
             self.bot_gui.leverage = settings.get('leverage', 1)
-            self.bot_gui.test_mode = settings.get('test_mode', True)
+            
+            # 테스트 모드 설정 명시적 복원 - 기본값은 False로 설정
+            self.bot_gui.test_mode = settings.get('test_mode', False)
+            logger.info(f"테스트 모드 설정 복원: {self.bot_gui.test_mode}")
             
             # 전략 파라미터 설정
+            strategy_params = {}
             if 'strategy_params' in settings:
-                self.bot_gui.strategy_params = settings['strategy_params']
+                strategy_params = settings['strategy_params']
+                self.bot_gui.strategy_params = strategy_params
+                logger.info(f"전략 파라미터 복원: {strategy_params}")
+            
+            # 위험 관리 설정 복원 - parameters에서도 확인
+            parameters = settings.get('parameters', {})
+            
+            # 위험 관리 설정을 명시적으로 복원
+            risk_management = {}
+            
+            # strategy_params에서 위험 관리 설정 추출
+            if 'stop_loss_pct' in strategy_params:
+                risk_management['stop_loss_pct'] = strategy_params.get('stop_loss_pct')
+            if 'take_profit_pct' in strategy_params:
+                risk_management['take_profit_pct'] = strategy_params.get('take_profit_pct')
+            if 'max_position_size' in strategy_params:
+                risk_management['max_position_size'] = strategy_params.get('max_position_size')
+                
+            # parameters에서도 확인 (legacy 지원)
+            if not risk_management and isinstance(parameters, dict):
+                if 'stop_loss_pct' in parameters:
+                    risk_management['stop_loss_pct'] = parameters.get('stop_loss_pct')
+                if 'take_profit_pct' in parameters:
+                    risk_management['take_profit_pct'] = parameters.get('take_profit_pct')
+                if 'max_position_size' in parameters:
+                    risk_management['max_position_size'] = parameters.get('max_position_size')
+            
+            if risk_management:
+                logger.info(f"위험 관리 설정 복원: {risk_management}")
+                
+                # GUI에 위험 관리 설정 적용
+                if hasattr(self.bot_gui, 'stop_loss_spin') and 'stop_loss_pct' in risk_management:
+                    self.bot_gui.stop_loss_spin.setValue(float(risk_management['stop_loss_pct']))
+                
+                if hasattr(self.bot_gui, 'take_profit_spin') and 'take_profit_pct' in risk_management:
+                    self.bot_gui.take_profit_spin.setValue(float(risk_management['take_profit_pct']))
+                
+                if hasattr(self.bot_gui, 'max_position_spin') and 'max_position_size' in risk_management:
+                    self.bot_gui.max_position_spin.setValue(float(risk_management['max_position_size']))
+                    
+                # 전략 파라미터에 위험 관리 설정 병합
+                if not 'strategy_params' in settings:
+                    self.bot_gui.strategy_params = {}
+                self.bot_gui.strategy_params.update(risk_management)
             
             # 추가 설정
             if hasattr(self.bot_gui, 'stop_loss'):

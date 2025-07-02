@@ -160,7 +160,7 @@ class Strategy:
 class MovingAverageCrossover(Strategy):
     """이동평균 교차 전략"""
     
-    def __init__(self, short_period=9, long_period=26, ma_type='sma'):
+    def __init__(self, short_period=9, long_period=26, ma_type='sma', stop_loss_pct=4.0, take_profit_pct=8.0):
         """
         이동평균 교차 전략 초기화
         
@@ -168,6 +168,8 @@ class MovingAverageCrossover(Strategy):
             short_period (int): 단기 이동평균 기간
             long_period (int): 장기 이동평균 기간
             ma_type (str): 이동평균 유형 ('sma' 또는 'ema')
+            stop_loss_pct (float): 손절가 비율(%)
+            take_profit_pct (float): 이익실현 비율(%)
         """
         # 파라미터 유효성 검사
         valid, message = self.validate_parameters({
@@ -186,6 +188,8 @@ class MovingAverageCrossover(Strategy):
         self.short_period = short_period
         self.long_period = long_period
         self.ma_type = ma_type
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
         
         # 데이터 포인트 요구사항 설정 (장기 이동평균 기간의 3배로 설정하여 충분한 데이터 확보)
         self.required_data_points = self.long_period * 3
@@ -249,25 +253,43 @@ class MovingAverageCrossover(Strategy):
         # 단기 이동평균 기간 검사
         short_period = params.get('short_period')
         valid, message = self.validate_numeric_parameter('short_period', short_period, 
-                                                       min_value=2, max_value=100)
+                                                       min_value=2, max_value=50)
         if not valid:
             return False, message
         
         # 장기 이동평균 기간 검사
         long_period = params.get('long_period')
         valid, message = self.validate_numeric_parameter('long_period', long_period, 
-                                                      min_value=5, max_value=200)
+                                                     min_value=5, max_value=200)
         if not valid:
             return False, message
             
-        # 이동평균 기간 비교 (장기가 단기보다 커야 함)
+        # 장/단기 이동평균 비교
         if short_period >= long_period:
-            return False, f"장기 이동평균 기간({long_period})은 단기 이동평균 기간({short_period})보다 커야 합니다."
+            return False, f"단기 기간({short_period})은 장기 기간({long_period})보다 작아야 합니다."
             
         # 이동평균 유형 검사
         ma_type = params.get('ma_type')
         if ma_type not in ['sma', 'ema']:
-            return False, f"이동평균 유형은 'sma' 또는 'ema'여야 합니다. 현재 값: {ma_type}"
+            return False, f"지원되지 않는 이동평균 유형: {ma_type}. 'sma' 또는 'ema'만 지원합니다."
+
+        # 손절가 검사
+        stop_loss_pct = params.get('stop_loss_pct')
+        valid, message = self.validate_numeric_parameter('stop_loss_pct', stop_loss_pct, 
+                                                      min_value=0.5, max_value=20)
+        if not valid:
+            return False, message
+            
+        # 이익실현가 검사
+        take_profit_pct = params.get('take_profit_pct')
+        valid, message = self.validate_numeric_parameter('take_profit_pct', take_profit_pct, 
+                                                       min_value=1, max_value=50)
+        if not valid:
+            return False, message
+            
+        # 이익실현가와 손절가 비교
+        if take_profit_pct <= stop_loss_pct:
+            return False, f"이익실현 비율({take_profit_pct})은 손절 비율({stop_loss_pct})보다 커야 합니다."
             
         return True, ""
     
@@ -777,7 +799,7 @@ class BollingerBandFuturesStrategy(Strategy):
     볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 (복합 신호)
     """
     def __init__(self, bb_period=20, bb_std=2.0, rsi_period=14, rsi_overbought=70, rsi_oversold=30,
-                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=2.0, take_profit_pct=5.0,
+                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=4.0, take_profit_pct=8.0,
                  trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=3, timeframe='4h'):
         super().__init__(name=f"BollingerBandFutures_{bb_period}_{bb_std}_{rsi_period}_{macd_fast}_{macd_slow}_{macd_signal}")
         self.bb_period = bb_period
