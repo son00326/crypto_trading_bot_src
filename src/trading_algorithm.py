@@ -662,7 +662,7 @@ class TradingAlgorithm:
             
             # 포지션 정보
             all_positions = portfolio.get('positions', [])
-            open_positions = [p for p in all_positions if p.get('status') == 'open']
+            positions = [p for p in all_positions if p.get('status') == 'open']
             
             # 수익 계산 - 데이터베이스에서 닫힌 포지션 정보 가져오기
             closed_positions = self.db_manager.get_closed_positions() if self.db_manager else []
@@ -671,7 +671,7 @@ class TradingAlgorithm:
             total_profit_pct = (total_profit / initial_investment) * 100 if initial_investment > 0 else 0
             
             # 미실현 수익 계산
-            unrealized_profit = sum([p.get('unrealized_profit', 0) for p in open_positions])
+            unrealized_profit = sum([p.get('unrealized_profit', 0) for p in positions])
             unrealized_profit_pct = (unrealized_profit / initial_investment) * 100 if initial_investment > 0 else 0
             
             # 거래 통계
@@ -688,7 +688,7 @@ class TradingAlgorithm:
                 'current_price': current_price,
                 'total_base_value': total_base_value,
                 'total_quote_value': total_quote_value,
-                'open_positions': len(open_positions),
+                'open_positions': len(positions),
                 'closed_positions': len(closed_positions),
                 'total_profit': total_profit,
                 'total_profit_pct': total_profit_pct,

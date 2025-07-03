@@ -324,11 +324,11 @@ class PortfolioManager:
         """
         try:
             symbol = self.symbol  # 현재 설정된 심볼 사용
-            open_positions = self.get_open_positions(symbol)
+            positions = self.get_open_positions(symbol)
             
             return {
-                'count': len(open_positions),
-                'positions': open_positions,
+                'count': len(positions),
+                'positions': positions,
                 'symbol': symbol,
                 'timestamp': datetime.now().isoformat()
             }
@@ -369,13 +369,13 @@ class PortfolioManager:
         # 1. 테스트 모드인 경우 - 메모리에서 가져오기
         if self.test_mode:
             # 메모리 내 포트폴리오에서 열린 포지션만 필터링
-            open_positions = [p for p in self.portfolio['positions'] if p['status'] == 'open']
+            positions = [p for p in self.portfolio['positions'] if p['status'] == 'open']
             
             # 심볼이 지정된 경우 필터링
             if symbol:
-                open_positions = [p for p in open_positions if p['symbol'] == symbol]
+                positions = [p for p in positions if p['symbol'] == symbol]
                 
-            return open_positions
+            return positions
             
         # 2. 실제 모드인 경우
         try:

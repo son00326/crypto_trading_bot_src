@@ -322,14 +322,38 @@ class AutoPositionManager:
                     
             except Exception as e:
                 logger.error(f"RiskManager를 통한 가격 계산 중 오류: {e}")
-                # 폴백: 직접 계산
-                logger.warning(f"폴백 모드로 직접 계산 수행")
-                if side.lower() == 'long':
-                    stop_loss_price = entry_price * (1 - risk_config['stop_loss_pct'])
-                    take_profit_price = entry_price * (1 + risk_config['take_profit_pct'])
-                else:  # short
-                    stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
-                    take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
+                # 폴백: 기본 RiskManager 인스턴스 생성하여 계산
+                logger.warning(f"폴백 모드로 새 RiskManager 인스턴스 생성")
+                try:
+                    from src.risk_manager import RiskManager
+                    fallback_risk_manager = RiskManager(self.config)
+                    fallback_risk_manager.risk_config = {
+                        'stop_loss_pct': risk_config.get('stop_loss_pct', self.sl_percentage),
+                        'take_profit_pct': risk_config.get('take_profit_pct', self.tp_percentage)
+                    }
+                    
+                    stop_loss_price = fallback_risk_manager.calculate_stop_loss_price(
+                        entry_price=entry_price,
+                        side=side
+                    )
+                    
+                    take_profit_price = fallback_risk_manager.calculate_take_profit_price(
+                        entry_price=entry_price,
+                        side=side
+                    )
+                    
+                    if stop_loss_price is None or take_profit_price is None:
+                        raise ValueError("폴백 계산도 실패")
+                        
+                except Exception as fallback_error:
+                    logger.error(f"폴백 계산 중 오류: {fallback_error}")
+                    # 최후의 수단: 직접 계산 (이전 로직 유지)
+                    if side.lower() == 'long':
+                        stop_loss_price = entry_price * (1 - risk_config['stop_loss_pct'])
+                        take_profit_price = entry_price * (1 + risk_config['take_profit_pct'])
+                    else:  # short
+                        stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
+                        take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
             
             logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}")
             

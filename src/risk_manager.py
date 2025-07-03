@@ -853,21 +853,21 @@ class RiskManager:
             
             # 최대 포지션 수 확인
             if 'max_positions' in self.risk_config:
-                open_positions = [p for p in portfolio['positions'] if p['status'] == 'open']
+                positions = [p for p in portfolio['positions'] if p['status'] == 'open']
                 max_positions = self.risk_config['max_positions']
                 
-                if len(open_positions) > max_positions:
+                if len(positions) > max_positions:
                     risk_exceeded = True
-                    warning = f"최대 포지션 수 초과: 현재 포지션 수={len(open_positions)}, 한도={max_positions}"
+                    warning = f"최대 포지션 수 초과: 현재 포지션 수={len(positions)}, 한도={max_positions}"
                     warnings.append(warning)
                     logger.warning(warning)
             
             # 최대 포지션 크기 확인
             if 'max_position_size' in self.risk_config:
-                open_positions = [p for p in portfolio['positions'] if p['status'] == 'open']
+                positions = [p for p in portfolio['positions'] if p['status'] == 'open']
                 max_position_size = portfolio['quote_balance'] * self.risk_config['max_position_size']
                 
-                for position in open_positions:
+                for position in positions:
                     position_value = position['quantity'] * current_price
                     if position_value > max_position_size:
                         risk_exceeded = True
@@ -983,8 +983,8 @@ class RiskManager:
                 return result
             
             # 7. 동일 방향 포지션 확인
-            open_positions = [p for p in portfolio_status.get('positions', []) if p.get('status') == 'open']
-            same_direction_positions = [p for p in open_positions if p.get('side') == side]
+            positions = [p for p in portfolio_status.get('positions', []) if p.get('status') == 'open']
+            same_direction_positions = [p for p in positions if p.get('side') == side]
             
             max_same_direction = self.risk_config.get('max_same_direction_positions', 2)
             if len(same_direction_positions) >= max_same_direction:
@@ -995,7 +995,7 @@ class RiskManager:
             
             # 8. 마진 안전성 확인 (선물 거래인 경우)
             if self.margin_safety_enabled:
-                margin_check = self.check_margin_safety(portfolio_status, open_positions)
+                margin_check = self.check_margin_safety(portfolio_status, positions)
                 if margin_check['action'] != 'safe':
                     logger.warning(f"[리스크 평가] 거래 차단: 마진 안전성 문제 - {margin_check['message']}")
                     result['should_execute'] = False
