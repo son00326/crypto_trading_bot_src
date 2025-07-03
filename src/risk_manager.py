@@ -116,7 +116,7 @@ class RiskManager:
             market_type (str): 시장 타입 ('spot' 또는 'futures')
         
         Returns:
-            float: 매수/매도할 수량
+            float: 거래할 수량
         """
         try:
             # 거래당 위험 비율 설정

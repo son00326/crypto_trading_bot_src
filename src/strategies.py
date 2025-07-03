@@ -131,7 +131,17 @@ class Strategy:
                 return None
                 
             # 포지션 변화가 있으면 신호 생성
-            direction = 'buy' if last_position > 0 else 'sell' if last_position < 0 else None
+            # 포지션 변화를 기반으로 방향 결정
+            # position > 0: 새로운 진입, position < 0: 포지션 청산
+            if last_position > 0:
+                # 새로운 포지션 진입 - signal에 따라 롱/숏 결정
+                direction = 'long' if last_signal > 0 else 'short'
+            elif last_position < 0:
+                # 포지션 청산 - 반대 방향의 매매
+                # 기존 포지션이 롱이면 sell, 숏이면 buy로 청산
+                direction = 'close'
+            else:
+                direction = None
             
             if direction:
                 from src.models import TradeSignal
@@ -259,7 +269,17 @@ class MovingAverageCrossover(Strategy):
                 return None
                 
             # 포지션 변화가 있으면 신호 생성
-            direction = 'buy' if last_position > 0 else 'sell' if last_position < 0 else None
+            # 포지션 변화를 기반으로 방향 결정
+            # position > 0: 새로운 진입, position < 0: 포지션 청산
+            if last_position > 0:
+                # 새로운 포지션 진입 - signal에 따라 롱/숏 결정
+                direction = 'long' if last_signal > 0 else 'short'
+            elif last_position < 0:
+                # 포지션 청산 - 반대 방향의 매매
+                # 기존 포지션이 롱이면 sell, 숏이면 buy로 청산
+                direction = 'close'
+            else:
+                direction = None
             
             if direction:
                 from src.models import TradeSignal
@@ -382,7 +402,7 @@ class MovingAverageCrossover(Strategy):
                     
                     # 교차 발생 검사
                     if prev_diff <= 0 and curr_diff > 0:
-                        # 상향 교차 (매수 신호)
+                        # 상향 교차 (롱 포지션 진입 신호)
                         signals[i] = 1
                         
                         # 신호 강도 (교차 지점에서의 차이)
@@ -399,9 +419,9 @@ class MovingAverageCrossover(Strategy):
                         suggested_sizes[i] = suggested_size
                         
                     elif prev_diff >= 0 and curr_diff < 0:
-                        # 하향 교차 (매도 신호)
+                        # 하향 교차 (숏 포지션 진입 신호)
                         signals[i] = -1
-                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                        suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
                     else:
                         # 교차 없음 (현상태 유지)
                         signals[i] = signals[i-1]
@@ -562,7 +582,7 @@ class RSIStrategy(Strategy):
                 else:
                     # RSI에 기반한 신호 생성
                     if rsi_values[i] < self.oversold and rsi_values[i-1] >= self.oversold:
-                        # 과매도 영역 진입 (매수 신호)
+                        # 과매도 영역 진입 (롱 포지션 진입 신호)
                         signals[i] = 1
                         
                         # 신호 강도 (RSI가 과매도 기준에서 얼마나 멀리 떨어져 있는지)
@@ -579,9 +599,9 @@ class RSIStrategy(Strategy):
                         suggested_sizes[i] = suggested_size
                         
                     elif rsi_values[i] > self.overbought and rsi_values[i-1] <= self.overbought:
-                        # 과매수 영역 진입 (매도 신호)
+                        # 과매수 영역 진입 (숏 포지션 진입 신호)
                         signals[i] = -1
-                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                        suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
                     else:
                         # 신호 없음 (현상태 유지)
                         signals[i] = signals[i-1]
@@ -754,7 +774,7 @@ class MACDStrategy(Strategy):
                 else:
                     # MACD와 시그널 라인의 교차 검사
                     if macd_values[i] > signal_values[i] and macd_values[i-1] <= signal_values[i-1]:
-                        # 상향 교차 (매수 신호)
+                        # 상향 교차 (롱 포지션 진입 신호)
                         signals[i] = 1
                         
                         # 신호 강도 (히스토그램의 크기를 활용)
@@ -771,9 +791,9 @@ class MACDStrategy(Strategy):
                         suggested_sizes[i] = suggested_size
                         
                     elif macd_values[i] < signal_values[i] and macd_values[i-1] >= signal_values[i-1]:
-                        # 하향 교차 (매도 신호)
+                        # 하향 교차 (숏 포지션 진입 신호)
                         signals[i] = -1
-                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                        suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
                     else:
                         # 교차 없음 (현상태 유지)
                         signals[i] = signals[i-1]
@@ -931,7 +951,7 @@ class BollingerBandsStrategy(Strategy):
                 else:
                     # 볼린저 밴드 터치 및 반향 확인
                     if close_values[i] < lower_band_values[i] and close_values[i-1] >= lower_band_values[i-1]:
-                        # 하단 밴드 터치 (매수 신호)
+                        # 하단 밴드 터치 (롱 포지션 진입 신호)
                         signals[i] = 1
                         
                         # 신호 강도 (하단 밴드에서 얼마나 멀리 떨어져 있는지)
@@ -950,9 +970,9 @@ class BollingerBandsStrategy(Strategy):
                         suggested_sizes[i] = suggested_size
                         
                     elif close_values[i] > upper_band_values[i] and close_values[i-1] <= upper_band_values[i-1]:
-                        # 상단 밴드 터치 (매도 신호)
+                        # 상단 밴드 터치 (숏 포지션 진입 신호)
                         signals[i] = -1
-                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                        suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
                     else:
                         # 밴드 내부 (현상태 유지)
                         signals[i] = signals[i-1]
@@ -1053,7 +1073,7 @@ class StochasticStrategy(Strategy):
                 else:
                     # 스토캐스틱 교차 및 과매도/과매수 영역 확인
                     if (k_values[i] > d_values[i] and k_values[i-1] <= d_values[i-1] and k_values[i] < self.oversold):
-                        # 과매도 영역에서 상향 교차 (매수 신호)
+                        # 과매도 영역에서 상향 교차 (롱 포지션 진입 신호)
                         signals[i] = 1
                         
                         # 신호 강도 (과매도 기준에서 얼마나 멀리 떨어져 있는지)
@@ -1070,9 +1090,9 @@ class StochasticStrategy(Strategy):
                         suggested_sizes[i] = suggested_size
                         
                     elif (k_values[i] < d_values[i] and k_values[i-1] >= d_values[i-1] and k_values[i] > self.overbought):
-                        # 과매수 영역에서 하향 교차 (매도 신호)
+                        # 과매수 영역에서 하향 교차 (숏 포지션 진입 신호)
                         signals[i] = -1
-                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                        suggested_sizes[i] = 0  # 포지션 청산 시에는 모둉 청산
                     else:
                         # 신호 없음 (현상태 유지)
                         signals[i] = signals[i-1]
@@ -1262,8 +1282,8 @@ if __name__ == "__main__":
         result_df = strategy.generate_signals(df)
         
         print(f"\n{strategy.name} 전략 테스트 결과:")
-        print(f"매수 신호 수: {len(result_df[result_df['signal'] == 1])}")
-        print(f"매도 신호 수: {len(result_df[result_df['signal'] == -1])}")
+        print(f"롱 신호 수: {len(result_df[result_df['signal'] == 1])}")
+        print(f"숏 신호 수: {len(result_df[result_df['signal'] == -1])}")
         
         # position 커럼이 있는 경우에만 출력 (BollingerBandFuturesStrategy만)
         if 'position' in result_df.columns:

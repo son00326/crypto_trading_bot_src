@@ -288,19 +288,10 @@ class AutoPositionManager:
                 # 기본 값 설정 (자체 설정 사용)
                 risk_config = {'stop_loss_pct': self.sl_percentage, 'take_profit_pct': self.tp_percentage}
             
-            # 손절매/이익실현 가격 계산
-            if side.lower() == 'long':
-                stop_loss_price = entry_price * (1 - risk_config['stop_loss_pct'])
-                take_profit_price = entry_price * (1 + risk_config['take_profit_pct'])
-            else:  # short
-                stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
-                take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
-            
-            logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}")
-            
-            # 위험 관리자 가져오기
+            # RiskManager를 사용하여 손절매/이익실현 가격 계산
             try:
                 risk_manager = self.trading_algorithm.exchange_api.risk_manager
+                
                 # 위험 관리자 설정 업데이트
                 risk_manager.partial_tp_enabled = self.partial_tp_enabled
                 risk_manager.auto_exit_enabled = self.auto_sl_tp_enabled
@@ -312,9 +303,35 @@ class AutoPositionManager:
                 risk_manager.risk_config['stop_loss_pct'] = self.sl_percentage
                 risk_manager.risk_config['take_profit_pct'] = self.tp_percentage
                 
-            except AttributeError as e:
-                logger.error(f"위험 관리자 가져오기 실패: {e}")
-                raise APIError("Risk Manager 가져오기 실패")
+                # RiskManager의 중앙화된 계산 메서드 사용
+                stop_loss_price = risk_manager.calculate_stop_loss_price(
+                    entry_price=entry_price,
+                    side=side,
+                    custom_pct=risk_config.get('stop_loss_pct')
+                )
+                
+                take_profit_price = risk_manager.calculate_take_profit_price(
+                    entry_price=entry_price,
+                    side=side,
+                    custom_pct=risk_config.get('take_profit_pct')
+                )
+                
+                if stop_loss_price is None or take_profit_price is None:
+                    logger.error(f"포지션 {position_id}: 손절매/이익실현 가격 계산 실패")
+                    raise ValueError("손절매/이익실현 가격 계산 실패")
+                    
+            except Exception as e:
+                logger.error(f"RiskManager를 통한 가격 계산 중 오류: {e}")
+                # 폴백: 직접 계산
+                logger.warning(f"폴백 모드로 직접 계산 수행")
+                if side.lower() == 'long':
+                    stop_loss_price = entry_price * (1 - risk_config['stop_loss_pct'])
+                    take_profit_price = entry_price * (1 + risk_config['take_profit_pct'])
+                else:  # short
+                    stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
+                    take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
+            
+            logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}")
             
             # 종료 조건 확인 - API 오류 발생 가능
             try:

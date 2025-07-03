@@ -850,6 +850,54 @@ class DatabaseManager:
             self.logger.error(f"열린 포지션 조회 오류: {e}")
             return []
     
+    def get_closed_positions(self, symbol=None):
+        """
+        닫힌 포지션 가져오기
+
+        Args:
+            symbol (str, optional): 특정 심볼 필터링
+
+        Returns:
+            list: 포지션 정보 목록
+        """
+        try:
+            # 스레드 안전 연결 가져오기
+            conn, cursor = self._get_connection()
+            
+            query = "SELECT * FROM positions WHERE status = 'closed' ORDER BY closed_at DESC"
+            params = []
+
+            if symbol:
+                query += " AND symbol = ?"
+                params.append(symbol)
+
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            positions = []
+            for row in rows:
+                position = dict(row)
+
+                # JSON 필드 역직렬화
+                if 'additional_info' in position and position['additional_info']:
+                    try:
+                        position['additional_info'] = json.loads(position['additional_info'])
+                    except json.JSONDecodeError:
+                        position['additional_info'] = {}
+                        self.logger.warning(f"포지션 ID {position.get('id')}의 additional_info JSON 파싱 오류")
+
+                # 필수 필드 기본값 설정
+                position.setdefault('type', position.get('side', 'unknown'))
+                position.setdefault('realized_profit', position.get('pnl', 0))
+
+                positions.append(position)
+
+            return positions
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"닫힌 포지션 조회 오류: {e}")
+            return []
+    
     def save_trade(self, trade_data):
         """
         거래 내역 저장

@@ -14,7 +14,7 @@ class TradeSignal:
     """거래 신호 모델 클래스"""
     
     symbol: str
-    direction: str  # 'buy', 'sell', 'hold'
+    direction: str  # 'long', 'short', 'close', 'hold'
     price: float
     strategy_name: str  # 신호를 생성한 전략 이름
     

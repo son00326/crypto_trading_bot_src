@@ -2,7 +2,7 @@
 거래 알고리즘 모듈 - 암호화폐 자동매매 봇
 
 이 모듈은 거래 신호 생성 및 주문 실행을 담당하는 거래 알고리즘을 구현합니다.
-다양한 전략을 기반으로 매수/매도 신호를 생성하고 실제 거래를 수행합니다.
+다양한 전략을 기반으로 롱/숏 신호를 생성하고 실제 거래를 수행합니다.
 """
 
 import os
@@ -223,7 +223,7 @@ class TradingAlgorithm:
         
         # 거래 상태 (기본값)
         self.trading_active = False
-        self.last_signal = 0  # 0: 중립, 1: 매수, -1: 매도
+        self.last_signal = 0  # 0: 중립, 1: 롱, -1: 숏
         
         # 현재 거래 정보 (진입가, 목표가, 손절가 등)
         self.current_trade_info = {}
@@ -661,10 +661,11 @@ class TradingAlgorithm:
             total_quote_value = (base_balance * current_price) + quote_balance if current_price > 0 else quote_balance
             
             # 포지션 정보
-            open_positions = portfolio.get('open_positions', [])
-            closed_positions = portfolio.get('closed_positions', [])
+            all_positions = portfolio.get('positions', [])
+            open_positions = [p for p in all_positions if p.get('status') == 'open']
             
-            # 수익 계산
+            # 수익 계산 - 데이터베이스에서 닫힌 포지션 정보 가져오기
+            closed_positions = self.db_manager.get_closed_positions() if self.db_manager else []
             total_profit = sum([p.get('realized_profit', 0) for p in closed_positions])
             initial_investment = portfolio.get('initial_investment', 1) # 0으로 나누는 것 방지
             total_profit_pct = (total_profit / initial_investment) * 100 if initial_investment > 0 else 0
@@ -805,7 +806,7 @@ class TradingAlgorithm:
             # 1. 현재 포트폴리오 상태 확인
             self.logger.info("1단계: 포트폴리오 상태 확인 중...")
             portfolio_status = self.portfolio_manager.get_portfolio_status()
-            self.logger.info(f"포트폴리오 상태: 잔액={portfolio_status.get('quote_balance', 0):.4f}, 포지션 수={len(portfolio_status.get('open_positions', []))}")
+            self.logger.info(f"포트폴리오 상태: 잔액={portfolio_status.get('quote_balance', 0):.4f}, 포지션 수={len(portfolio_status.get('positions', []))}")
             
             # 2. 시장 데이터 가져오기 (OHLCV 데이터)
             self.logger.info("2단계: 시장 데이터 수집 중...")
@@ -897,8 +898,10 @@ class TradingAlgorithm:
                 'risk_assessment': risk_assessment
             }
             
-            if signal.direction == 'buy':
-                self.logger.info(f"6단계: 매수 주문 실행 중...")
+            # 전략 신호를 거래 주문으로 변환
+            if signal.direction == 'long':
+                # 롱 포지션 진입 = 매수 주문 실행
+                self.logger.info(f"6단계: 롱 포지션 진입 신호 - 매수 주문 실행 중...")
                 self.logger.info(f"  - 수량: {position_size}")
                 self.logger.info(f"  - 가격: {current_price}")
                 order_result = self.order_executor.execute_buy(
@@ -907,16 +910,45 @@ class TradingAlgorithm:
                     portfolio=portfolio_status,
                     additional_info=additional_info
                 )
-            elif signal.direction == 'sell':
-                self.logger.info(f"6단계: 매도 주문 실행 중...")
+            elif signal.direction == 'short':
+                # 숏 포지션 진입 = 매도 주문 실행 (현물 거래에서는 제한적)
+                self.logger.info(f"6단계: 숏 포지션 진입 신호 - 매도 주문 실행 중...")
                 self.logger.info(f"  - 수량: {position_size}")
                 self.logger.info(f"  - 가격: {current_price}")
+                # 현물 거래에서는 숏 포지션을 단순 매도로 처리
                 order_result = self.order_executor.execute_sell(
                     price=current_price,
                     quantity=position_size,
                     portfolio=portfolio_status,
                     additional_info=additional_info
                 )
+            elif signal.direction == 'close':
+                # 포지션 청산
+                self.logger.info(f"6단계: 포지션 청산 실행 중...")
+                # 현재 포지션 확인
+                open_positions = self.position_manager.get_open_positions(
+                    self.exchange_id, self.symbol
+                )
+                if open_positions:
+                    for position in open_positions:
+                        # 롱 포지션은 매도 주문으로 청산, 숏 포지션은 매수 주문으로 청산
+                        if position['side'] == 'long':
+                            order_result = self.order_executor.execute_sell(
+                                price=current_price,
+                                quantity=position['quantity'],
+                                portfolio=portfolio_status,
+                                additional_info=additional_info
+                            )
+                        elif position['side'] == 'short':
+                            order_result = self.order_executor.execute_buy(
+                                price=current_price,
+                                quantity=position['quantity'],
+                                portfolio=portfolio_status,
+                                additional_info=additional_info
+                            )
+                else:
+                    self.logger.warning("청산할 포지션이 없습니다.")
+                    return
             else:
                 self.logger.warning(f"알 수 없는 신호 디렉션: {signal.direction}")
                 return
@@ -928,7 +960,7 @@ class TradingAlgorithm:
                 self.logger.info(f"  - 주문 ID: {order_result.get('order_id')}")
                 self.logger.info(f"  - 금액: {position_size}")
                 
-                # 거래 정보 저장 (매수 시)
+                # 거래 정보 저장 (롱 포지션 진입 시)
                 if signal.direction == 'buy':
                     self.current_trade_info = {
                         'entry_price': current_price,
@@ -966,7 +998,7 @@ class TradingAlgorithm:
                                         symbol=self.symbol,
                                         stop_loss=stop_loss_price,
                                         take_profit=take_profit_price,
-                                        position_side='LONG'  # 매수 포지션의 SL/TP는 매도
+                                        position_side='LONG'  # 롱 포지션의 SL/TP는 매도 주문
                                     )
                                     
                                     if sl_tp_result.get('success'):
@@ -982,9 +1014,9 @@ class TradingAlgorithm:
                                             # DB에 SL/TP 주문 정보 저장
                                             try:
                                                 # 현재 포지션 ID 가져오기
-                                                active_positions = self.db_manager.get_open_positions(self.symbol)
-                                                if active_positions:
-                                                    position_id = active_positions[-1]['id']  # 가장 최근 포지션
+                                                open_positions = self.db_manager.get_open_positions(self.symbol)
+                                                if open_positions:
+                                                    position_id = open_positions[-1]['id']  # 가장 최근 포지션
                                                     
                                                     # SL/TP 주문 정보 DB에 저장
                                                     for order in sl_tp_result.get('orders', []):
@@ -994,7 +1026,7 @@ class TradingAlgorithm:
                                                             'order_type': order.get('type', ''),
                                                             'trigger_price': order.get('price', 0),
                                                             'amount': position_size,
-                                                            'side': 'sell',  # 매수 포지션의 SL/TP는 매도
+                                                            'side': 'sell',  # 롱 포지션의 SL/TP는 매도 주문
                                                             'raw_data': order
                                                         }
                                                         self.db_manager.save_stop_loss_order(position_id, order_info)
@@ -1012,7 +1044,7 @@ class TradingAlgorithm:
                                 # 손절/익절 설정 실패는 거래 자체를 실패시키지 않음
                                 
                 elif signal.direction == 'sell':
-                    # 매도 시 거래 정보 초기화
+                    # 포지션 청산 시 거래 정보 초기화
                     if self.current_trade_info:
                         self.logger.info(f"포지션 청산 - 진입가: {self.current_trade_info.get('entry_price')}, 청산가: {current_price}")
                         self.current_trade_info = {}
@@ -1164,7 +1196,7 @@ class TradingAlgorithm:
             }
             
             if side == 'long':
-                # 롱 포지션 청산 = 매도
+                # 롱 포지션 청산 = 매도 주문 실행
                 order_result = self.order_executor.execute_sell(
                     price=current_price,
                     quantity=close_size,
@@ -1174,7 +1206,7 @@ class TradingAlgorithm:
                     position_id=position.get('id') or position.get('position_id')
                 )
             elif side == 'short':
-                # 숏 포지션 청산 = 매수
+                # 숏 포지션 청산 = 매수 주문 실행
                 order_result = self.order_executor.execute_buy(
                     price=current_price,
                     quantity=close_size,
