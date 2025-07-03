@@ -9,6 +9,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, Union, List, Tuple
 
+from src.models.position import Position
 from src.error_handlers import (
     simple_error_handler, safe_execution, api_error_handler,
     network_error_handler, db_error_handler, trade_error_handler
@@ -475,20 +476,26 @@ class PortfolioManager:
             bool: 성공 여부
         """
         try:
+            # Position 객체인 경우 딕셔너리로 변환
+            if isinstance(position, Position):
+                position_dict = position.to_dict()
+            else:
+                position_dict = position
+                
             # 포지션이 없는지 확인
             for existing_pos in self.portfolio['positions']:
-                if existing_pos.get('id') == position.get('id'):
-                    logger.warning(f"포지션 ID '{position.get('id')}'가 이미 존재합니다")
+                if existing_pos.get('id') == position_dict.get('id'):
+                    logger.warning(f"포지션 ID '{position_dict.get('id')}'가 이미 존재합니다")
                     return False
             
             # 새 포지션 추가
-            self.portfolio['positions'].append(position)
-            logger.info(f"새 포지션 추가됨: {position.get('id')}, 심볼: {position.get('symbol')}, 수량: {position.get('amount')}")
+            self.portfolio['positions'].append(position_dict)
+            logger.info(f"새 포지션 추가됨: {position_dict.get('id')}, 심볼: {position_dict.get('symbol')}, 수량: {position_dict.get('amount')}")
             
             # 포지션 오픈 이벤트 발행
             self.event_manager.publish(EventType.POSITION_OPENED, {
-                'position': position,
-                'position_id': position.get('id'),
+                'position': position_dict,
+                'position_id': position_dict.get('id'),
                 'timestamp': datetime.now().isoformat()
             })
             

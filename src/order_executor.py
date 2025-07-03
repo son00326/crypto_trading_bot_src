@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional, Union, List, Tuple
 
+from src.models.position import Position
 from src.error_handlers import (
     simple_error_handler, safe_execution, api_error_handler,
     network_error_handler, db_error_handler, trade_error_handler
@@ -182,21 +183,21 @@ class OrderExecutor:
                     if additional_info:
                         position_additional_info.update(additional_info)
                         
-                    # 포지션 추가
-                    position = {
-                        'id': f"pos_{int(time.time() * 1000)}",  # 고유 ID 생성
-                        'symbol': self.symbol,
-                        'side': 'long',
-                        'contracts': quantity,  # 'amount' 대신 'contracts' 사용
-                        'entry_price': price,
-                        'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
-                        'opened_at': order_time.isoformat(),
-                        'status': 'open',
-                        'additional_info': position_additional_info
-                    }
+                    # Position 객체 생성
+                    position = Position(
+                        id=f"pos_{int(time.time() * 1000)}",  # 고유 ID 생성
+                        symbol=self.symbol,
+                        side='long',
+                        amount=quantity,  # 표준 필드명 사용
+                        entry_price=price,
+                        leverage=self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
+                        opened_at=order_time,
+                        status='open',
+                        additional_info=position_additional_info
+                    )
                     
-                    # 포트폴리오에 새 포지션 추가
-                    portfolio['positions'].append(position)
+                    # 포트폴리오에 새 포지션 추가 (딕셔너리로 변환)
+                    portfolio['positions'].append(position.to_dict())
                     
                     # 데이터베이스에 포지션 저장
                     self.db.save_position(position)
@@ -246,25 +247,25 @@ class OrderExecutor:
                             'test_mode': False
                         }
                         
-                        # 사용자 정의 추가 정보가 있는 경우 병합
+                        # 사용자 정의 추가 정보가 있뜸 경우 병합
                         if additional_info:
                             position_additional_info.update(additional_info)
                             
-                        # 포지션 객체 생성
-                        position = {
-                            'id': f"pos_{order['id']}",  # 주문 ID로 포지션 ID 생성
-                            'symbol': self.symbol,
-                            'side': 'long',
-                            'contracts': quantity,  # 'amount' 대신 'contracts' 사용
-                            'entry_price': price,
-                            'leverage': self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
-                            'opened_at': order_time.isoformat(),
-                            'status': 'open',
-                            'additional_info': position_additional_info
-                        }
+                        # Position 객체 생성
+                        position = Position(
+                            id=f"pos_{order['id']}",  # 주문 ID로 포지션 ID 생성
+                            symbol=self.symbol,
+                            side='long',
+                            amount=quantity,  # 표준 필드명 사용
+                            entry_price=price,
+                            leverage=self.exchange_api.leverage if hasattr(self.exchange_api, 'leverage') else 1,
+                            opened_at=order_time,
+                            status='open',
+                            additional_info=position_additional_info
+                        )
                         
-                        # 포트폴리오에 포지션 추가
-                        portfolio['positions'].append(position)
+                        # 포트폴리오에 포지션 추가 (딕셔너리로 변환)
+                        portfolio['positions'].append(position.to_dict())
                         
                         # 데이터베이스에 포지션 저장
                         self.db.save_position(position)

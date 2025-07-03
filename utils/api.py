@@ -12,6 +12,7 @@ import time
 import os
 import logging
 import traceback
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 
 # CCXT 라이브러리
@@ -19,6 +20,12 @@ import ccxt
 
 # config 모듈 가져오기
 from utils.config import is_testnet_enabled
+
+# Position 클래스 import
+import sys
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
+from src.models.position import Position
 
 logger = logging.getLogger(__name__)
 
@@ -665,6 +672,65 @@ def get_positions(api_key: str, api_secret: str, symbol: Optional[str] = None) -
         return active_positions
     except Exception as e:
         logger.error(f"포지션 조회 실패: {str(e)}")
+        logger.error(traceback.format_exc())
+        return []
+
+
+def get_positions_with_objects(api_key: str, api_secret: str, symbol: Optional[str] = None) -> List[Position]:
+    """
+    현재 열린 포지션 정보를 Position 객체로 조회하는 함수
+    
+    Args:
+        api_key: 바이낸스 API 키
+        api_secret: 바이낸스 API 시크릿
+        symbol: 특정 심볼에 대한 포지션만 조회할 경우 지정 (옵션)
+        
+    Returns:
+        Position 객체 목록
+    """
+    try:
+        # 기존 함수를 사용하여 딕셔너리 형태로 포지션 조회
+        positions_dict_list = get_positions(api_key, api_secret, symbol)
+        
+        # Position 객체로 변환
+        position_objects = []
+        for pos_dict in positions_dict_list:
+            try:
+                # Position 객체 생성을 위한 딕셔너리 매핑
+                position_data = {
+                    'id': f"{pos_dict['symbol']}_{int(time.time())}",  # 고유 ID 생성
+                    'symbol': pos_dict['symbol'],
+                    'side': pos_dict['side'],
+                    'amount': pos_dict['contracts'],  # contracts를 amount로 매핑
+                    'entry_price': pos_dict['entry_price'],
+                    'opened_at': datetime.now().isoformat(),
+                    'status': 'open',
+                    'leverage': pos_dict['leverage'],
+                    'liquidation_price': pos_dict['liquidation_price'],
+                    'margin': pos_dict.get('notional', 0) / pos_dict['leverage'] if pos_dict['leverage'] > 0 else 0,
+                    'pnl': pos_dict['unrealized_pnl'],
+                    'additional_info': {
+                        'notional': pos_dict['notional'],
+                        'mark_price': pos_dict['mark_price'],
+                        'margin_mode': pos_dict['margin_mode'],
+                        'raw_data': pos_dict.get('raw_data', {})
+                    }
+                }
+                
+                # Position 객체 생성
+                position = Position.from_dict_compatible(position_data)
+                position_objects.append(position)
+                
+            except Exception as e:
+                logger.error(f"Position 객체 변환 실패: {str(e)}")
+                logger.error(f"원본 데이터: {pos_dict}")
+                continue
+        
+        logger.info(f"Position 객체 생성 성공: {len(position_objects)}개")
+        return position_objects
+        
+    except Exception as e:
+        logger.error(f"Position 객체 조회 실패: {str(e)}")
         logger.error(traceback.format_exc())
         return []
 

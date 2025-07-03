@@ -21,7 +21,8 @@ from pathlib import Path
 import psutil
 from src.error_handlers import (
     simple_error_handler, safe_execution, api_error_handler,
-    network_error_handler, db_error_handler, trade_error_handler
+    network_error_handler, db_error_handler, trade_error_handler,
+    APIError
 )
 
 from src.exchange_api import ExchangeAPI
@@ -338,12 +339,19 @@ class TradingAlgorithm:
                     permissions = exchange_api.verify_api_permissions()
                     self.logger.info(f"API 권한 확인 결과: {permissions['message']}")
                     
-                    if not permissions['can_trade']:
-                        self.logger.error("거래 권한이 없습니다! API 키 설정을 확인해주세요.")
+                    # 현물/선물 거래 권한 확인
+                    if self.market_type == 'futures' and not permissions.get('can_trade_futures', False):
+                        self.logger.error("선물 거래 권한이 없습니다! API 키 설정을 확인해주세요.")
                         if self.test_mode:
                             self.logger.info("테스트 모드이므로 계속 진행합니다.")
                         else:
-                            raise APIError("API 키에 거래 권한이 없습니다. 바이낸스에서 API 권한을 확인해주세요.")
+                            raise APIError("API 키에 선물 거래 권한이 없습니다. 바이낸스에서 Futures API 권한을 활성화해주세요.")
+                    elif self.market_type == 'spot' and not permissions['can_trade']:
+                        self.logger.error("현물 거래 권한이 없습니다! API 키 설정을 확인해주세요.")
+                        if self.test_mode:
+                            self.logger.info("테스트 모드이므로 계속 진행합니다.")
+                        else:
+                            raise APIError("API 키에 현물 거래 권한이 없습니다. 바이낸스에서 Spot API 권한을 활성화해주세요.")
                     
                     return exchange_api
                 except Exception as validation_error:
@@ -1135,6 +1143,50 @@ class TradingAlgorithm:
             
         except Exception as e:
             self.logger.error(f"포지션 조회 중 오류 발생: {e}")
+            return []
+    
+    def get_open_positions_as_objects(self, symbol=None):
+        """
+        현재 오픈된 포지션을 Position 객체로 가져옵니다.
+        
+        Args:
+            symbol (str): 포지션을 조회할 심볼 (None일 경우 모든 포지션)
+            
+        Returns:
+            list: Position 객체 목록
+        """
+        try:
+            if symbol is None:
+                symbol = self.symbol
+                
+            # 디테일한 포지션 데이터 가져오기
+            positions_dict = self.get_open_positions(symbol)
+            
+            # Position 객체로 변환
+            position_objects = []
+            for pos_dict in positions_dict:
+                try:
+                    # DB에서 포지션 ID 확인
+                    position_id = pos_dict.get('id')
+                    if not position_id:
+                        # ID가 없으면 생성
+                        position_id = f"{pos_dict.get('symbol', 'UNKNOWN')}_{int(datetime.now().timestamp())}"
+                        pos_dict['id'] = position_id
+                    
+                    # Position 객체 생성
+                    position = Position.from_dict_compatible(pos_dict)
+                    position_objects.append(position)
+                    
+                except Exception as e:
+                    self.logger.error(f"Position 객체 변환 실패: {e}")
+                    self.logger.error(f"원본 데이터: {pos_dict}")
+                    continue
+            
+            self.logger.info(f"Position 객체로 {len(position_objects)}개 포지션 조회")
+            return position_objects
+            
+        except Exception as e:
+            self.logger.error(f"Position 객체 조회 중 오류 발생: {e}")
             return []
     
     def close_position(self, symbol=None, position_id=None, size=None):

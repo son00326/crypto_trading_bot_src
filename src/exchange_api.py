@@ -2051,3 +2051,105 @@ class ExchangeAPI:
         except Exception as e:
             self.logger.error(f"포지션 조회 오류: {str(e)}")
             return []
+    
+    def verify_api_permissions(self):
+        """
+        API 키의 권한을 확인하는 메서드
+        
+        Returns:
+            dict: {
+                'can_read': bool,  # 시장 데이터 및 계정 정보 읽기 권한
+                'can_trade': bool,  # 거래 권한
+                'can_withdraw': bool,  # 출금 권한
+                'can_trade_futures': bool,  # 선물 거래 권한
+                'message': str  # 결과 메시지
+            }
+        """
+        try:
+            # API 키가 설정되어 있는지 확인
+            if not self.exchange.checkRequiredCredentials():
+                return {
+                    'can_read': False,
+                    'can_trade': False,
+                    'can_withdraw': False,
+                    'can_trade_futures': False,
+                    'message': 'API 키가 설정되지 않았습니다'
+                }
+            
+            # 바이낸스의 경우
+            if self.exchange_id == 'binance':
+                # 계정 정보 조회로 권한 확인 (가장 기본적인 API 호출)
+                try:
+                    # fetchBalance는 기본 읽기 권한 필요
+                    balance = self.exchange.fetch_balance()
+                    can_read = True
+                    
+                    # 미체결 주문 조회로 거래 권한 확인
+                    try:
+                        # fetchOpenOrders는 거래 권한 필요
+                        orders = self.exchange.fetch_open_orders()
+                        can_trade = True
+                    except Exception as e:
+                        # 권한 부족 오류 확인
+                        error_msg = str(e).lower()
+                        if 'permission' in error_msg or 'unauthorized' in error_msg or 'api-key' in error_msg:
+                            can_trade = False
+                        else:
+                            # 다른 오류일 경우에도 거래 가능한 것으로 간주
+                            can_trade = True
+                    
+                    # 선물 거래 권한 확인
+                    can_trade_futures = False
+                    if self.market_type == 'futures':
+                        try:
+                            # 선물 포지션 조회로 선물 거래 권한 확인
+                            futures_positions = self.exchange.fetch_positions() if hasattr(self.exchange, 'fetch_positions') else []
+                            can_trade_futures = True
+                        except Exception as e:
+                            error_msg = str(e).lower()
+                            if 'permission' in error_msg or 'unauthorized' in error_msg or 'api-key' in error_msg:
+                                can_trade_futures = False
+                            else:
+                                # 다른 오류일 경우 선물 거래 가능한 것으로 간주
+                                can_trade_futures = True
+                    
+                    # 출금 권한은 보통 비활성화하므로 기본값 False
+                    can_withdraw = False
+                    
+                    check_mark = '\u2713'
+                    x_mark = '\u2717'
+                    message = f"API 권한: 읽기={check_mark if can_read else x_mark}, 현물거래={check_mark if can_trade else x_mark}, 선물거래={check_mark if can_trade_futures else x_mark}, 출금={check_mark if can_withdraw else x_mark}"
+                    
+                except Exception as e:
+                    # 잔고 조회 실패 = 읽기 권한 없음
+                    can_read = False
+                    can_trade = False
+                    can_withdraw = False
+                    can_trade_futures = False
+                    message = f"API 권한 확인 실패: {str(e)}"
+            
+            else:
+                # 다른 거래소의 경우 기본값 반환
+                message = f"{self.exchange_id} 거래소의 권한 확인은 지원되지 않습니다"
+                can_read = True
+                can_trade = True
+                can_withdraw = False
+                can_trade_futures = True  # 다른 거래소는 기본적으로 선물 거래 가능으로 가정
+            
+            return {
+                'can_read': can_read,
+                'can_trade': can_trade,
+                'can_withdraw': can_withdraw,
+                'can_trade_futures': can_trade_futures,
+                'message': message
+            }
+            
+        except Exception as e:
+            self.logger.error(f"API 권한 확인 중 오류: {str(e)}")
+            return {
+                'can_read': False,
+                'can_trade': False,
+                'can_withdraw': False,
+                'can_trade_futures': False,
+                'message': f"API 권한 확인 중 오류 발생: {str(e)}"
+            }

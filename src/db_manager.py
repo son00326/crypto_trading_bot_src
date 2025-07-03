@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from src.db_connection_manager import get_db_connection
 from contextlib import contextmanager
+from src.models.position import Position
 
 
 class DatabaseManager:
@@ -545,32 +546,43 @@ class DatabaseManager:
         단일 포지션 저장
         
         Args:
-            position_data (dict): 포지션 데이터
+            position_data (dict or Position): 포지션 데이터 또는 Position 객체
         
         Returns:
             int: 포지션 ID
         """
         try:
+            # Position 객체인 경우 딕셔너리로 변환
+            if isinstance(position_data, Position):
+                position_dict = position_data.to_dict()
+                self.logger.debug(f"원본 Position to_dict: {position_dict}")
+            else:
+                position_dict = position_data
+                
             # 스레드 안전 연결 가져오기
             conn, cursor = self._get_connection()
             
-            # camelCase -> snake_case 필드명 변환 매핑
+            # Position 객체 필드 -> DB 필드 매핑
             field_mapping = {
                 'entryPrice': 'entry_price',
                 'markPrice': 'mark_price',
                 'liquidationPrice': 'liquidation_price',
                 'unrealizedPnl': 'unrealized_pnl',
                 'marginMode': 'margin_mode',
-                'contractSize': 'contractSize',  # 이미 적절한 형식
+                'contractSize': 'contractSize',
+                'amount': 'contracts',  # amount -> contracts
+                'stop_loss': 'stop_loss_price',  # stop_loss -> stop_loss_price
+                'take_profit': 'take_profit_price',  # take_profit -> take_profit_price
             }
             
             # 필드명 변환
             converted_position = {}
-            for key, value in position_data.items():
+            for key, value in position_dict.items():
                 # 매핑이 있으면 변환, 없으면 그대로 사용
                 new_key = field_mapping.get(key, key)
                 converted_position[new_key] = value
             
+            # 필수 필드 추가 및 변환
             # opened_at 필드가 없으면 현재 시간 추가
             if 'opened_at' not in converted_position:
                 converted_position['opened_at'] = datetime.now().isoformat()
@@ -578,6 +590,14 @@ class DatabaseManager:
             # status 필드가 없으면 'open' 추가
             if 'status' not in converted_position:
                 converted_position['status'] = 'open'
+                
+            # contracts 필드가 없으면 기본값 설정
+            if 'contracts' not in converted_position and 'amount' in position_dict:
+                converted_position['contracts'] = position_dict['amount']
+                
+            # contract_size 처리 (contractSize로 저장)
+            if 'contract_size' in converted_position:
+                converted_position['contractSize'] = converted_position.pop('contract_size')
             
             # JSON으로 직렬화해야 하는 필드 처리
             if 'additional_info' in converted_position and isinstance(converted_position['additional_info'], dict):
@@ -619,6 +639,9 @@ class DatabaseManager:
                 self.logger.warning(f"유효하지 않은 키 발견: {invalid_keys}. 제거합니다.")
                 for key in invalid_keys:
                     del converted_position[key]
+                    
+            # 디버깅: 변환된 데이터 확인
+            self.logger.debug(f"변환된 포지션 데이터: {converted_position}")
             
             # 포지션 존재 여부 확인
             query = "SELECT id FROM positions WHERE symbol = ? AND side = ? AND status = 'open'"
@@ -626,18 +649,21 @@ class DatabaseManager:
             existing = cursor.fetchone()
             
             if existing:
-                # 기존 포지션 업데이트
-                update_fields = [f"{k} = ?" for k in converted_position.keys() if k != 'id']
+                # 기존 포지션 업데이트 (id 필드 제외)
+                update_data = {k: v for k, v in converted_position.items() if k != 'id'}
+                update_fields = [f"{k} = ?" for k in update_data.keys()]
                 query = f"UPDATE positions SET {', '.join(update_fields)} WHERE id = ?"
-                values = [converted_position[k] for k in converted_position.keys() if k != 'id'] + [existing[0]]
+                values = list(update_data.values()) + [existing[0]]
                 cursor.execute(query, values)
                 position_id = existing[0]
             else:
-                # 새 포지션 삽입
-                fields = list(converted_position.keys())
+                # 새 포지션 삽입 (id 필드 제외)
+                # SQLite의 INTEGER PRIMARY KEY는 자동 생성되므로 id 필드 제거
+                insert_data = {k: v for k, v in converted_position.items() if k != 'id'}
+                fields = list(insert_data.keys())
                 placeholders = ['?' for _ in fields]
                 query = f"INSERT INTO positions ({', '.join(fields)}) VALUES ({', '.join(placeholders)})"
-                values = [converted_position[k] for k in fields]
+                values = [insert_data[k] for k in fields]
                 cursor.execute(query, values)
                 position_id = cursor.lastrowid
         
@@ -848,6 +874,39 @@ class DatabaseManager:
             
         except sqlite3.Error as e:
             self.logger.error(f"열린 포지션 조회 오류: {e}")
+            return []
+    
+    def get_open_positions_as_objects(self, symbol=None):
+        """
+        열린 포지션을 Position 객체로 가져오기
+
+        Args:
+            symbol (str, optional): 특정 심볼 필터링
+
+        Returns:
+            list: Position 객체 목록
+        """
+        try:
+            # 딕셔너리 형태로 포지션 조회
+            positions_dict = self.get_open_positions(symbol)
+            
+            # Position 객체로 변환
+            position_objects = []
+            for pos_dict in positions_dict:
+                try:
+                    # Position 객체 생성
+                    position = Position.from_dict_compatible(pos_dict)
+                    position_objects.append(position)
+                except Exception as e:
+                    self.logger.error(f"Position 객체 변환 실패: {e}")
+                    self.logger.error(f"원본 데이터: {pos_dict}")
+                    continue
+            
+            self.logger.info(f"Position 객체 조회 성공: {len(position_objects)}개")
+            return position_objects
+            
+        except Exception as e:
+            self.logger.error(f"Position 객체 조회 오류: {e}")
             return []
     
     def get_closed_positions(self, symbol=None):

@@ -43,7 +43,7 @@ from urllib.parse import urlparse
 # 유틸리티 모듈 가져오기
 from utils.config import validate_api_key, get_validated_api_credentials
 import utils.api as api
-from utils.api import get_formatted_balances, get_spot_balance, get_future_balance, get_ticker, get_orderbook, get_positions, set_stop_loss_take_profit
+from utils.api import get_api_balance, call_webhook, get_positions, get_positions_with_objects, get_formatted_balances, get_spot_balance, get_future_balance, get_ticker, get_orderbook, set_stop_loss_take_profit
 from PyQt5.QtWidgets import QApplication
 from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash, session
 from flask_cors import CORS
@@ -706,6 +706,64 @@ class BotAPIServer:
                 logger.error(f"포지션 조회 중 오류 발생: {str(e)}")
                 logger.error(traceback.format_exc())
                 return self._create_error_response(e, status_code=500, endpoint='get_positions')
+        
+        # Position 객체로 포지션 조회 API
+        @app.route('/api/positions_objects', methods=['GET'])
+        @login_required
+        def get_positions_objects():
+            """
+            Position 객체를 사용하여 포지션 조회
+            """
+            try:
+                logger.info("[시작] Position 객체 기반 포지션 조회")
+                
+                # API 자격 증명 가져오기
+                api_result = get_validated_api_credentials()
+                if not api_result.get('success'):
+                    logger.warning(f"API 키 검증 실패: {api_result.get('message', '알 수 없는 오류')}")
+                    return jsonify({
+                        'success': False,
+                        'error': api_result['error']
+                    }), 401 if 'API credentials' in api_result['error'] else 400
+                
+                api_key = api_result['api_key']
+                api_secret = api_result['api_secret']
+                    
+                # Position 객체로 포지션 정보 가져오기
+                position_objects = get_positions_with_objects(api_key, api_secret)
+                
+                # Position 객체를 딕셔너리로 변환하여 JSON 직렬화 가능하게 만듦
+                positions_data = []
+                for pos in position_objects:
+                    try:
+                        pos_dict = pos.to_dict_compatible()
+                        # 추가 정보 포함
+                        pos_dict['type'] = 'Position Object'
+                        pos_dict['class_name'] = pos.__class__.__name__
+                        positions_data.append(pos_dict)
+                    except Exception as e:
+                        logger.error(f"Position 객체 변환 실패: {e}")
+                        continue
+                
+                # DB에도 저장 (Position 객체로)
+                if position_objects:
+                    for pos_obj in position_objects:
+                        self.db.save_position(pos_obj)
+                    logger.info(f"Position 객체 DB 저장 완료: {len(position_objects)}개")
+                
+                logger.info(f"Position 객체 조회 완료: {len(positions_data)}개")
+                
+                return jsonify({
+                    'success': True,
+                    'data': positions_data,
+                    'count': len(positions_data),
+                    'message': f"{len(positions_data)}개의 포지션이 조회되었습니다."
+                })
+                
+            except Exception as e:
+                logger.error(f"Position 객체 조회 중 오류 발생: {str(e)}")
+                logger.error(traceback.format_exc())
+                return self._create_error_response(e, status_code=500, endpoint='get_positions_objects')
         
         # 손절/이익실현 설정 API
         @app.route('/api/set_stop_loss_take_profit', methods=['POST'])

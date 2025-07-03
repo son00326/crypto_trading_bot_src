@@ -195,3 +195,81 @@ class Position:
         # 남은 수량 업데이트
         if 'amount' in exit_data:
             self.amount -= exit_data['amount']
+    
+    # Backward compatibility를 위한 속성 별칭
+    @property
+    def quantity(self) -> float:
+        """amount의 별칭 (backward compatibility)"""
+        return self.amount
+    
+    @quantity.setter
+    def quantity(self, value: float):
+        """amount의 별칭 (backward compatibility)"""
+        self.amount = value
+    
+    @property
+    def contracts(self) -> float:
+        """amount의 별칭 (backward compatibility)"""
+        return self.amount * self.contract_size
+    
+    @contracts.setter
+    def contracts(self, value: float):
+        """amount의 별칭 (backward compatibility)"""
+        self.amount = value / self.contract_size
+    
+    @property
+    def unrealized_profit(self) -> float:
+        """미실현 손익 (status가 open인 경우 pnl 반환)"""
+        return self.pnl if self.status == 'open' else 0.0
+    
+    @property
+    def realized_profit(self) -> float:
+        """실현 손익 (status가 closed인 경우 pnl 반환)"""
+        return self.pnl if self.status == 'closed' else 0.0
+    
+    @classmethod
+    def from_dict_compatible(cls, data: Dict[str, Any]) -> 'Position':
+        """
+        딕셔너리에서 포지션 객체 생성 (backward compatibility)
+        quantity, contracts 등의 별칭 필드를 자동 변환
+        """
+        # 데이터 복사
+        position_data = data.copy()
+        
+        # 별칭 처리
+        if 'quantity' in position_data and 'amount' not in position_data:
+            position_data['amount'] = position_data.pop('quantity')
+        elif 'contracts' in position_data and 'amount' not in position_data:
+            contract_size = position_data.get('contract_size', 1.0)
+            position_data['amount'] = position_data.pop('contracts') / contract_size
+        
+        # unrealized_profit/realized_profit 처리
+        if 'unrealized_profit' in position_data or 'realized_profit' in position_data:
+            if 'pnl' not in position_data:
+                position_data['pnl'] = position_data.get('unrealized_profit', 0) + position_data.get('realized_profit', 0)
+            position_data.pop('unrealized_profit', None)
+            position_data.pop('realized_profit', None)
+        
+        # created_at을 opened_at으로 변환
+        if 'created_at' in position_data and 'opened_at' not in position_data:
+            position_data['opened_at'] = position_data.pop('created_at')
+        
+        return cls.from_dict(position_data)
+    
+    def to_dict_compatible(self, use_aliases: bool = False) -> Dict[str, Any]:
+        """
+        포지션을 딕셔너리로 변환 (backward compatibility)
+        use_aliases=True인 경우 별칭 필드도 포함
+        """
+        result = self.to_dict()
+        
+        if use_aliases:
+            # 별칭 추가
+            result['quantity'] = self.quantity
+            result['contracts'] = self.contracts
+            if self.status == 'open':
+                result['unrealized_profit'] = self.pnl
+            elif self.status == 'closed':
+                result['realized_profit'] = self.pnl
+        
+        return result
