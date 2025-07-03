@@ -245,6 +245,46 @@ class RiskManager:
             logger.error(f"이익실현 가격 계산 중 오류 발생: {e}")
             return None
     
+    def calculate_liquidation_price(self, entry_price, side, leverage, margin_ratio=0.004):
+        """
+        선물거래 청산 가격 계산
+        
+        Args:
+            entry_price (float): 진입 가격
+            side (str): 포지션 방향 ('long' 또는 'short')
+            leverage (int): 레버리지 배수
+            margin_ratio (float): 유지 마진 비율 (기본값: 0.004 = 0.4%)
+        
+        Returns:
+            float: 청산 가격
+        """
+        try:
+            # 기본 마진 비율: 1 / leverage
+            initial_margin_ratio = 1 / leverage
+            
+            # 청산 가격 계산
+            if side.lower() == 'long':
+                # 롱 포지션: 가격이 하락하면 청산
+                # 청산가격 = 진입가격 * (1 - 1/레버리지 + 유지마진비율)
+                liquidation_price = entry_price * (1 - initial_margin_ratio + margin_ratio)
+            elif side.lower() == 'short':
+                # 숏 포지션: 가격이 상승하면 청산
+                # 청산가격 = 진입가격 * (1 + 1/레버리지 - 유지마진비율)
+                liquidation_price = entry_price * (1 + initial_margin_ratio - margin_ratio)
+            else:
+                logger.error(f"잘못된 포지션 방향: {side}")
+                return None
+            
+            # 소수점 2자리까지 반올림
+            liquidation_price = round(liquidation_price, 2)
+            
+            logger.info(f"{side} 포지션 청산 가격 계산: 진입가={entry_price}, 레버리지={leverage}x, 청산가={liquidation_price}")
+            return liquidation_price
+            
+        except Exception as e:
+            logger.error(f"청산 가격 계산 중 오류 발생: {e}")
+            return None
+    
     @simple_error_handler(default_return=0)
     def calculate_risk_reward_ratio(self, entry_price, stop_loss_price, take_profit_price):
         """
@@ -995,11 +1035,11 @@ class RiskManager:
             
             # 8. 마진 안전성 확인 (선물 거래인 경우)
             if self.margin_safety_enabled:
-                margin_check = self.check_margin_safety(portfolio_status, positions)
-                if margin_check['action'] != 'safe':
-                    logger.warning(f"[리스크 평가] 거래 차단: 마진 안전성 문제 - {margin_check['message']}")
+                margin_status, margin_message, margin_actions = self.check_margin_safety(portfolio_status, positions)
+                if margin_status != 'safe':
+                    logger.warning(f"[리스크 평가] 거래 차단: 마진 안전성 문제 - {margin_message}")
                     result['should_execute'] = False
-                    result['reason'] = f"마진 안전성 문제: {margin_check['message']}"
+                    result['reason'] = f"마진 안전성 문제: {margin_message}"
                     return result
             
             # 모든 체크 통과

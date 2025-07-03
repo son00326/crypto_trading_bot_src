@@ -449,7 +449,7 @@ class ExchangeAPI:
             except ccxt.InsufficientFunds as e:
                 # 잔고 부족은 재시도 불필요
                 self.logger.error(f"잔고 부족: {str(e)}")
-                raise InsufficientBalanceError(str(e), original_exception=e)
+                raise InsufficientBalanceError(str(e))
                 
             except ccxt.InvalidOrder as e:
                 last_error = e
@@ -458,12 +458,12 @@ class ExchangeAPI:
                 # 최소 주문량 미달
                 if 'min' in error_msg and 'notional' in error_msg:
                     self.logger.error(f"최소 주문 금액 미달: {str(e)}")
-                    raise InvalidOrderError(f"최소 주문 금액 미달: {str(e)}", original_exception=e)
+                    raise InvalidOrderError(f"최소 주문 금액 미달: {str(e)}")
                     
                 # 최소 수량 미달
                 elif 'min' in error_msg and 'qty' in error_msg:
                     self.logger.error(f"최소 주문 수량 미달: {str(e)}")
-                    raise InvalidOrderError(f"최소 주문 수량 미달: {str(e)}", original_exception=e)
+                    raise InvalidOrderError(f"최소 주문 수량 미달: {str(e)}")
                     
                 # 기타 주문 오류
                 else:
@@ -592,9 +592,19 @@ class ExchangeAPI:
             # 특정 심볼의 시장 정보 반환
             if symbol in self.exchange.markets:
                 return self.exchange.markets[symbol]
-            else:
-                self.logger.warning(f"시장 정보를 찾을 수 없음: {symbol}")
-                return None
+            
+            # futures 모드에서 BTCUSDT 형식을 BTC/USDT:USDT로 변환하여 재시도
+            if self.market_type == 'futures' and '/' not in symbol and symbol.endswith('USDT'):
+                # BTCUSDT -> BTC/USDT:USDT
+                base = symbol[:-4]
+                quote = 'USDT'
+                futures_symbol = f"{base}/{quote}:USDT"
+                if futures_symbol in self.exchange.markets:
+                    self.logger.info(f"시장 정보 찾음: {symbol} -> {futures_symbol}")
+                    return self.exchange.markets[futures_symbol]
+                    
+            self.logger.warning(f"시장 정보를 찾을 수 없음: {symbol}")
+            return None
                 
         except Exception as e:
             self.logger.error(f"시장 정보 조회 실패: {str(e)}")
@@ -642,12 +652,26 @@ class ExchangeAPI:
             
             # 정밀도 체크
             precision = market_info.get('precision', {})
-            amount_precision = precision.get('amount', 8)
+            amount_precision = precision.get('amount', 0.00000001)
+            
+            # amount_precision이 소수인 경우 (CCXT 형식) 소수점 자릿수로 변환
+            if isinstance(amount_precision, float):
+                # 0.001 -> 3, 0.0001 -> 4 등으로 변환
+                precision_str = str(amount_precision)
+                if '.' in precision_str:
+                    decimal_count = len(precision_str.split('.')[1].rstrip('0'))
+                else:
+                    decimal_count = 0
+            else:
+                # 이미 정수인 경우 그대로 사용
+                decimal_count = int(amount_precision)
             
             # 소수점 자릿수 체크
-            decimal_places = str(amount).split('.')
-            if len(decimal_places) > 1 and len(decimal_places[1]) > amount_precision:
-                return False, f"주문 수량의 소수점 자릿수가 {amount_precision}자리를 초과합니다"
+            amount_str = f"{amount:.10f}".rstrip('0').rstrip('.')
+            if '.' in amount_str:
+                amount_decimal_count = len(amount_str.split('.')[1])
+                if amount_decimal_count > decimal_count:
+                    return False, f"주문 수량의 소수점 자릿수({amount_decimal_count})가 허용된 자릿수({decimal_count})를 초과합니다"
             
             return True, None
             
@@ -776,8 +800,8 @@ class ExchangeAPI:
                 # 선물 거래 관련 매개변수 설정
                 params.update({
                     'reduceOnly': False,  # 포지션 청산용 주문인지
-                    'timeInForce': 'GTC',  # Good Till Cancel
                     'leverage': self.leverage
+                    # 시장가 주문에서는 timeInForce 필요 없음
                 })
                 
                 self.logger.info(f"선물 시장가 매수 주문 시도: {symbol}, {amount}, 레버리지: {self.leverage}배")
@@ -790,9 +814,7 @@ class ExchangeAPI:
                     self.exchange.create_market_buy_order,
                     symbol=symbol,
                     amount=amount,
-                    params=params,
-                    type='market',
-                    side='buy'
+                    params=params
                 )
             else:
                 # 재시도 없이 직접 실행
@@ -912,8 +934,8 @@ class ExchangeAPI:
                 # 선물 거래 관련 매개변수 설정
                 params.update({
                     'reduceOnly': False,  # 포지션 청산용 주문인지 여부
-                    'timeInForce': 'GTC',  # Good Till Cancel
                     'leverage': self.leverage
+                    # 시장가 주문에서는 timeInForce 필요 없음
                 })
                 
                 self.logger.info(f"선물 시장가 매도 주문 시도 (쇼트 포지션): {symbol}, {amount}, 레버리지: {self.leverage}배")
@@ -926,9 +948,7 @@ class ExchangeAPI:
                     self.exchange.create_market_sell_order,
                     symbol=symbol,
                     amount=amount,
-                    params=params,
-                    type='market',
-                    side='sell'
+                    params=params
                 )
             else:
                 # 재시도 없이 직접 실행

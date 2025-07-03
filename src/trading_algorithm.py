@@ -969,7 +969,18 @@ class TradingAlgorithm:
                 self.logger.info(f"  - 금액: {position_size}")
                 
                 # 거래 정보 저장 (롱 포지션 진입 시)
-                if signal.direction == 'buy':
+                if signal.direction == 'long' or signal.direction == 'short':
+                    # 선물거래인 경우 청산 가격 계산
+                    liquidation_price = None
+                    if self.market_type.lower() == 'futures' and self.leverage > 1:
+                        liquidation_price = self.risk_manager.calculate_liquidation_price(
+                            entry_price=current_price,
+                            side=signal.direction,
+                            leverage=self.leverage
+                        )
+                        if liquidation_price:
+                            self.logger.warning(f"\u26a0\ufe0f  청산 가격 경고: {liquidation_price} ({signal.direction} 포지션, {self.leverage}x 레버리지)")
+                    
                     self.current_trade_info = {
                         'entry_price': current_price,
                         'entry_time': datetime.now().isoformat(),
@@ -977,6 +988,7 @@ class TradingAlgorithm:
                         'order_id': order_result.get('order_id'),
                         'take_profit': risk_assessment.get('take_profit'),
                         'stop_loss': risk_assessment.get('stop_loss'),
+                        'liquidation_price': liquidation_price,
                         'signal': {
                             'direction': signal.direction,
                             'strength': signal.strength,
@@ -1006,7 +1018,7 @@ class TradingAlgorithm:
                                         symbol=self.symbol,
                                         stop_loss=stop_loss_price,
                                         take_profit=take_profit_price,
-                                        position_side='LONG'  # 롱 포지션의 SL/TP는 매도 주문
+                                        position_side=signal.direction.upper()  # 'long' -> 'LONG', 'short' -> 'SHORT'
                                     )
                                     
                                     if sl_tp_result.get('success'):
@@ -1051,7 +1063,7 @@ class TradingAlgorithm:
                                 self.logger.error(f"자동 손절/익절 주문 설정 중 오류: {str(e)}")
                                 # 손절/익절 설정 실패는 거래 자체를 실패시키지 않음
                                 
-                elif signal.direction == 'sell':
+                elif signal.direction == 'close':
                     # 포지션 청산 시 거래 정보 초기화
                     if self.current_trade_info:
                         self.logger.info(f"포지션 청산 - 진입가: {self.current_trade_info.get('entry_price')}, 청산가: {current_price}")

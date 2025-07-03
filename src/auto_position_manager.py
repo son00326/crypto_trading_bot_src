@@ -354,40 +354,62 @@ class AutoPositionManager:
                     else:  # short
                         stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
                         take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
+        except Exception as main_error:
+            logger.error(f"포지션 {position_id} 처리 중 일반 오류: {main_error}")
+            # 기본값으로 직접 계산
+            if side.lower() == 'long':
+                stop_loss_price = entry_price * (1 - self.sl_percentage)
+                take_profit_price = entry_price * (1 + self.tp_percentage)
+            else:  # short
+                stop_loss_price = entry_price * (1 + self.sl_percentage)
+                take_profit_price = entry_price * (1 - self.tp_percentage)
+        
+        # 선물거래인 경우 청산 가격 확인
+        if self.trading_algorithm.market_type.lower() == 'futures':
+            leverage = position.get('leverage', 10)  # 기본 레버리지 10
+            liquidation_price = risk_manager.calculate_liquidation_price(
+                entry_price=entry_price,
+                side=side,
+                leverage=leverage
+            )
             
-            logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}")
-            
-            # 종료 조건 확인 - API 오류 발생 가능
-            try:
-                exit_type, exit_reason, exit_percentage = risk_manager.check_exit_conditions(
-                    current_price=current_price,
-                    position_type=side,
-                    entry_price=entry_price,
-                    stop_loss_price=stop_loss_price,
-                    take_profit_price=take_profit_price,
-                    position_id=position_id,
-                    check_partial=self.partial_tp_enabled
-                )
-            except Exception as e:
-                logger.error(f"포지션 {position_id}: 종료 조건 검사 중 오류: {e}")
-                raise APIError(f"종료 조건 검사 실패: {e}")
-            
-            # 청산 조건 충족 시 처리
-            if exit_type:
-                logger.info(f"포지션 {position_id}: {exit_type} 시그널 발생, 이유: {exit_reason}, 비율: {exit_percentage:.1%}")
-                self._execute_position_exit(position, current_price, exit_type, exit_reason, exit_percentage)
-                return True
+            if liquidation_price:
+                # 현재 가격과 청산 가격의 거리 계산
+                if side.lower() == 'long':
+                    liq_distance_pct = (current_price - liquidation_price) / current_price * 100
+                    if liq_distance_pct < 5:  # 청산 가격과 5% 이내 근접
+                        logger.critical(f"⚠️⚠️⚠️ 포지션 {position_id} 청산 경고! 현재가={current_price}, 청산가={liquidation_price} (이격: {liq_distance_pct:.2f}%)")
+                else:  # short
+                    liq_distance_pct = (liquidation_price - current_price) / current_price * 100
+                    if liq_distance_pct < 5:  # 청산 가격과 5% 이내 근접
+                        logger.critical(f"⚠️⚠️⚠️ 포지션 {position_id} 청산 경고! 현재가={current_price}, 청산가={liquidation_price} (이격: {liq_distance_pct:.2f}%)")
                 
-            return False
-            
-        except NetworkError as e:
-            # 네트워크 오류 발생 - 재시도 가능
-            logger.warning(f"포지션 {position_id} 검사 중 네트워크 오류: {e}")
-            raise  # trade_error_handler에서 재시도 처리
+                logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}, 청산가={liquidation_price:.2f}")
+        else:
+            logger.debug(f"포지션 {position_id} (유형: {side}) 검사: 현재가={current_price}, 손절가={stop_loss_price:.2f}, 이익실현가={take_profit_price:.2f}")
+        
+        # 종료 조건 확인 - API 오류 발생 가능
+        try:
+            exit_type, exit_reason, exit_percentage = risk_manager.check_exit_conditions(
+                current_price=current_price,
+                position_type=side,
+                entry_price=entry_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                position_id=position_id,
+                check_partial=self.partial_tp_enabled
+            )
         except Exception as e:
-            # 기타 예상치 못한 오류
-            logger.error(f"포지션 {position_id} 검사 중 오류: {e}")
-            raise PositionError(f"포지션 검사 오류: {e}")
+            logger.error(f"포지션 {position_id}: 종료 조건 검사 중 오류: {e}")
+            raise APIError(f"종료 조건 검사 실패: {e}")
+        
+        # 청산 조건 충족 시 처리
+        if exit_type:
+            logger.info(f"포지션 {position_id}: {exit_type} 시그널 발생, 이유: {exit_reason}, 비율: {exit_percentage:.1%}")
+            self._execute_position_exit(position, current_price, exit_type, exit_reason, exit_percentage)
+            return True
+            
+        return False
             
     @trade_error_handler(retry_count=3, max_delay=20)
     def _execute_position_exit(self, position, current_price, exit_type, exit_reason, exit_percentage):

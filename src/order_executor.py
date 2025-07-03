@@ -230,10 +230,8 @@ class OrderExecutor:
                 # 실제 거래소 주문 실행
                 try:
                     # 거래소 API를 통한 실제 매수 주문
-                    order = self.exchange_api.create_order(
+                    order = self.exchange_api.create_market_buy_order(
                         symbol=self.symbol,
-                        type='market',
-                        side='buy',
                         amount=quantity
                     )
                     
@@ -438,10 +436,8 @@ class OrderExecutor:
             else:
                 try:
                     # 거래소 API를 통한 실제 매도 주문
-                    order = self.exchange_api.create_order(
+                    order = self.exchange_api.create_market_sell_order(
                         symbol=self.symbol,
-                        type='market',
-                        side='sell',
                         amount=actual_quantity
                     )
                     
