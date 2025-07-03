@@ -341,28 +341,29 @@ class AutoPositionManager:
                         entry_price=entry_price,
                         side=side
                     )
-                    
-                    if stop_loss_price is None or take_profit_price is None:
-                        raise ValueError("폴백 계산도 실패")
-                        
-                except Exception as fallback_error:
-                    logger.error(f"폴백 계산 중 오류: {fallback_error}")
-                    # 최후의 수단: 직접 계산 (이전 로직 유지)
-                    if side.lower() == 'long':
-                        stop_loss_price = entry_price * (1 - risk_config['stop_loss_pct'])
-                        take_profit_price = entry_price * (1 + risk_config['take_profit_pct'])
-                    else:  # short
-                        stop_loss_price = entry_price * (1 + risk_config['stop_loss_pct'])
-                        take_profit_price = entry_price * (1 - risk_config['take_profit_pct'])
+                except:
+                    # RiskManager가 완전히 실패한 경우에만 None 반환
+                    logger.critical(f"포지션 {position_id}: RiskManager 완전 실패")
+                    stop_loss_price = None
+                    take_profit_price = None
         except Exception as main_error:
             logger.error(f"포지션 {position_id} 처리 중 일반 오류: {main_error}")
-            # 기본값으로 직접 계산
-            if side.lower() == 'long':
-                stop_loss_price = entry_price * (1 - self.sl_percentage)
-                take_profit_price = entry_price * (1 + self.tp_percentage)
-            else:  # short
-                stop_loss_price = entry_price * (1 + self.sl_percentage)
-                take_profit_price = entry_price * (1 - self.tp_percentage)
+            # 기본값으로 RiskManager 호출
+            try:
+                stop_loss_price = risk_manager.calculate_stop_loss_price(
+                    entry_price=entry_price,
+                    side=side,
+                    custom_pct=self.sl_percentage
+                )
+                take_profit_price = risk_manager.calculate_take_profit_price(
+                    entry_price=entry_price,
+                    side=side,
+                    custom_pct=self.tp_percentage
+                )
+            except:
+                logger.critical(f"포지션 {position_id}: 모든 가격 계산 실패")
+                stop_loss_price = None
+                take_profit_price = None
         
         # 선물거래인 경우 청산 가격 확인
         if self.trading_algorithm.market_type.lower() == 'futures':
