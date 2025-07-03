@@ -696,19 +696,33 @@ class Backtester:
                             current_trade['exit_price'] = current_price
                             current_trade['status'] = 'closed'
                             current_trade['exit_balance'] = balance
-                            current_trade['profit'] = balance - current_trade['entry_balance']
                             
-                            # 기본 수익률 계산
-                            base_profit_percent = (balance / current_trade['entry_balance'] - 1) * 100
+                            # 가격 차이에 기반한 수익률 계산 (가격 변동 비율)
+                            price_change_pct = (current_price / current_trade['entry_price'] - 1) * 100
                             
-                            # 선물 거래의 경우 레버리지를 고려한 수익률 표시
+                            # 선물 거래의 경우 레버리지 적용
                             if is_futures:
                                 current_trade['leverage'] = leverage_multiplier
                                 current_trade['market_type'] = 'futures'
+                                # 레버리지를 고려한 수익률 (수수료 제외)
+                                leveraged_pct = price_change_pct * leverage_multiplier
+                                # 수수료 비용 반영 (왕복 수수료)
+                                fee_impact = commission * 2 * leverage_multiplier * 100  # 퍼센트로 변환
+                                profit_percent = leveraged_pct - fee_impact
                             else:
                                 current_trade['market_type'] = 'spot'
-                                
-                            current_trade['profit_percent'] = base_profit_percent
+                                # 현물 거래 수익률 (수수료 제외)
+                                profit_percent = price_change_pct
+                                # 수수료 비용 반영 (왕복 수수료)
+                                fee_impact = commission * 2 * 100  # 퍼센트로 변환
+                                profit_percent = profit_percent - fee_impact
+                            
+                            # 손익 계산 (초기 투자 금액에 대한 수익/손실)
+                            current_trade['profit_percent'] = profit_percent
+                            
+                            # 절대적 손익 금액 계산
+                            trade_initial_value = current_trade['entry_amount']
+                            current_trade['profit'] = trade_initial_value * (profit_percent / 100)
                             
                             trades.append(current_trade)
                             result.add_trade(current_trade)

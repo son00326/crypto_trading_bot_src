@@ -162,34 +162,49 @@ class TradingAlgorithm:
                     strategy = MovingAverageCrossover(
                         short_period=self.strategy_params.get('short_period', 9),
                         long_period=self.strategy_params.get('long_period', 26),
-                        ma_type=self.strategy_params.get('ma_type', 'sma')
+                        ma_type=self.strategy_params.get('ma_type', 'sma'),
+                        stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0)
                     )
                     
                 elif strategy_name == 'RSIStrategy':
                     strategy = RSIStrategy(
                         period=self.strategy_params.get('period', 14),
                         overbought=self.strategy_params.get('overbought', 70),
-                        oversold=self.strategy_params.get('oversold', 30)
+                        oversold=self.strategy_params.get('oversold', 30),
+                        stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2)
                     )
                     
                 elif strategy_name == 'MACDStrategy':
                     strategy = MACDStrategy(
                         fast_period=self.strategy_params.get('fast_period', 12),
                         slow_period=self.strategy_params.get('slow_period', 26),
-                        signal_period=self.strategy_params.get('signal_period', 9)
+                        signal_period=self.strategy_params.get('signal_period', 9),
+                        stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2)
                     )
                     
                 elif strategy_name == 'BollingerBandsStrategy':
                     strategy = BollingerBandsStrategy(
                         period=self.strategy_params.get('period', 20),
-                        std_dev=self.strategy_params.get('std_dev', 2.0)
+                        std_dev=self.strategy_params.get('std_dev', 2.0),
+                        stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2)
                     )
                     
                 elif strategy_name == 'BollingerBandFuturesStrategy':
                     # 웹에서 전달된 파라미터는 strategy_params 바로 아래에 있음
                     strategy = BollingerBandFuturesStrategy(
                         bb_period=self.strategy_params.get('period', 20),
-                        bb_std=self.strategy_params.get('std_dev', 2.0)  # bb_std로 수정
+                        bb_std=self.strategy_params.get('std_dev', 2.0),  # bb_std로 수정
+                        stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
+                        risk_per_trade=self.strategy_params.get('max_position_size', 0.2),
+                        leverage=self.leverage if self.market_type == 'futures' else 1
                     )
                 else:
                     # 나머지 전략은 기본 파라미터로 처리
@@ -872,25 +887,35 @@ class TradingAlgorithm:
             
             # 7. 신호에 따른 주문 실행
             position_size = risk_assessment['position_size']
+            
+            # Add signal metadata to additional_info for order tracking
+            additional_info = {
+                'signal_direction': signal.direction,
+                'signal_confidence': signal.confidence,
+                'signal_strength': signal.strength,
+                'signal_strategy': signal.strategy,
+                'risk_assessment': risk_assessment
+            }
+            
             if signal.direction == 'buy':
                 self.logger.info(f"6단계: 매수 주문 실행 중...")
-                self.logger.info(f"  - 금액: {position_size}")
+                self.logger.info(f"  - 수량: {position_size}")
                 self.logger.info(f"  - 가격: {current_price}")
                 order_result = self.order_executor.execute_buy(
-                    symbol=self.symbol,
-                    amount=position_size,
                     price=current_price,
-                    signal=signal
+                    quantity=position_size,
+                    portfolio=portfolio_status,
+                    additional_info=additional_info
                 )
             elif signal.direction == 'sell':
                 self.logger.info(f"6단계: 매도 주문 실행 중...")
-                self.logger.info(f"  - 금액: {position_size}")
+                self.logger.info(f"  - 수량: {position_size}")
                 self.logger.info(f"  - 가격: {current_price}")
                 order_result = self.order_executor.execute_sell(
-                    symbol=self.symbol,
-                    amount=position_size,
                     price=current_price,
-                    signal=signal
+                    quantity=position_size,
+                    portfolio=portfolio_status,
+                    additional_info=additional_info
                 )
             else:
                 self.logger.warning(f"알 수 없는 신호 디렉션: {signal.direction}")
@@ -1124,21 +1149,39 @@ class TradingAlgorithm:
             close_size = min(close_size, position_size)  # 포지션 크기를 초과하지 않도록
             
             # 반대 방향 주문으로 포지션 청산
+            # Get current portfolio for order execution
+            portfolio_status = self.portfolio_manager.get_portfolio_status()
+            
+            # Get current price for market order
+            current_price = self.get_current_price(symbol)
+            if current_price is None:
+                self.logger.error(f"현재 가격을 가져올 수 없습니다: {symbol}")
+                return {'success': False, 'error': 'Failed to get current price'}
+            
+            close_info = {
+                'reason': reason or 'manual_close',
+                'original_position': position
+            }
+            
             if side == 'long':
                 # 롱 포지션 청산 = 매도
                 order_result = self.order_executor.execute_sell(
-                    symbol=symbol,
-                    amount=close_size,
-                    price=None,  # 시장가 주문
-                    signal=None
+                    price=current_price,
+                    quantity=close_size,
+                    portfolio=portfolio_status,
+                    additional_info=close_info,
+                    close_position=True,
+                    position_id=position.get('id') or position.get('position_id')
                 )
             elif side == 'short':
                 # 숏 포지션 청산 = 매수
                 order_result = self.order_executor.execute_buy(
-                    symbol=symbol,
-                    amount=close_size,
-                    price=None,  # 시장가 주문
-                    signal=None
+                    price=current_price,
+                    quantity=close_size,
+                    portfolio=portfolio_status,
+                    additional_info=close_info,
+                    close_position=True,
+                    position_id=position.get('id') or position.get('position_id')
                 )
             else:
                 self.logger.error(f"알 수 없는 포지션 사이드: {side}")

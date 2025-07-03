@@ -488,6 +488,71 @@ def plot_indicators(df, indicators=None, title='Technical Indicators'):
     plt.tight_layout()
     plt.show()
 
+def volume_weighted_average_price(df, period=1, reset_period=24):
+    """
+    VWAP(Volume Weighted Average Price) 계산
+    
+    Args:
+        df (DataFrame): OHLCV 데이터
+        period (int): 계산 기간 (단위: 일)
+        reset_period (int): VWAP 초기화 주기 (단위: 시간)
+    
+    Returns:
+        Series: VWAP 값
+    """
+    try:
+        # 입력 데이터 검증
+        if df is None or len(df) == 0:
+            logger.error("VWAP 계산 오류: 입력 데이터프레임이 비어있거나 None입니다.")
+            return pd.Series(np.nan, index=range(1))
+        
+        if 'volume' not in df.columns:
+            logger.error("VWAP 계산 오류: 'volume' 컬럼이 데이터프레임에 없습니다.")
+            return pd.Series(np.nan, index=df.index)
+        
+        # 데이터프레임 복사
+        df_copy = df.copy()
+        
+        # 타임스탬프가 있는지 확인 (UTC 자정 초기화를 위해)
+        has_timestamp = 'timestamp' in df_copy.columns or isinstance(df_copy.index, pd.DatetimeIndex)
+        
+        # 초기화 그룹 설정
+        if has_timestamp:
+            if isinstance(df_copy.index, pd.DatetimeIndex):
+                timestamps = df_copy.index
+            else:
+                timestamps = pd.to_datetime(df_copy['timestamp'])
+            
+            # reset_period 시간마다 초기화 (예: 24시간)
+            reset_groups = (timestamps.hour // reset_period) + (timestamps.dayofyear * (24 // reset_period))
+        else:
+            # 타임스탬프가 없으면 지정된 기간으로 그룹화
+            n = len(df_copy)
+            reset_groups = np.arange(n) // (period * reset_period)
+        
+        # VWAP 계산
+        df_copy['typical_price'] = (df_copy['high'] + df_copy['low'] + df_copy['close']) / 3
+        df_copy['price_volume'] = df_copy['typical_price'] * df_copy['volume']
+        
+        result = np.full(len(df_copy), np.nan)
+        
+        # 그룹별 VWAP 계산
+        group_indices = pd.Series(reset_groups).to_numpy()
+        unique_groups = np.unique(group_indices)
+        
+        for group in unique_groups:
+            mask = (group_indices == group)
+            cum_pv = np.cumsum(df_copy.loc[mask, 'price_volume'].to_numpy())
+            cum_vol = np.cumsum(df_copy.loc[mask, 'volume'].to_numpy())
+            # 0으로 나누기 방지
+            result[mask] = np.where(cum_vol > 0, cum_pv / cum_vol, np.nan)
+        
+        return pd.Series(result, index=df_copy.index)
+    
+    except Exception as e:
+        logger.error(f"VWAP 계산 오류: {e}")
+        return pd.Series(np.nan, index=df.index if df is not None and hasattr(df, 'index') else range(1))
+
 # 테스트 코드
 if __name__ == "__main__":
     # 테스트용 데이터 생성

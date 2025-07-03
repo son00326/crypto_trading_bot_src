@@ -938,13 +938,29 @@ class RiskManager:
                 result['reason'] = f'신호 신뢰도 부족: {signal.confidence:.2f} < {min_confidence}'
                 return result
             
-            # 4. 포지션 크기 계산 (레버리지와 시장 타입 전달)
-            position_size = self.calculate_position_size(
-                balance, 
-                current_price,
-                leverage=leverage,
-                market_type=market_type
-            )
+            # 4. 포지션 크기 결정
+            # 전략에서 제안한 포지션 크기가 있으면 우선 사용
+            if hasattr(signal, 'suggested_quantity') and signal.suggested_quantity is not None and signal.suggested_quantity > 0:
+                logger.info(f"[리스크 평가] 전략 제안 포지션 크기 사용: {signal.suggested_quantity:.8f}")
+                
+                # 전략 제안 크기를 최대 포지션 크기로 제한
+                max_position_value = balance * self.risk_config['max_position_size']
+                max_position_quantity = max_position_value / current_price
+                
+                position_size = min(signal.suggested_quantity, max_position_quantity)
+                
+                if position_size < signal.suggested_quantity:
+                    logger.warning(f"[리스크 평가] 포지션 크기 조정: {signal.suggested_quantity:.8f} -> {position_size:.8f} (최대 한도 적용)")
+            else:
+                # 전략 제안이 없으면 기존 방식대로 계산
+                logger.info(f"[리스크 평가] 전략 제안 없음, RiskManager에서 포지션 크기 계산")
+                position_size = self.calculate_position_size(
+                    balance, 
+                    current_price,
+                    leverage=leverage,
+                    market_type=market_type
+                )
+            
             if position_size <= 0:
                 logger.warning(f"[리스크 평가] 거래 차단: 유효하지 않은 포지션 크기 ({position_size})")
                 result['should_execute'] = False

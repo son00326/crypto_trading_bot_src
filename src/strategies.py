@@ -139,6 +139,14 @@ class Strategy:
                 
                 logger.info(f"[{self.name}] 거래 신호 생성: {direction}, 신뢰도: {confidence:.2f}")
                 
+                # suggested_position_size가 있으면 사용
+                suggested_quantity = None
+                if 'suggested_position_size' in df_with_signals.columns:
+                    last_suggested_size = df_with_signals['suggested_position_size'].iloc[-1]
+                    if last_suggested_size > 0:
+                        suggested_quantity = last_suggested_size
+                        logger.info(f"[{self.name}] 제안된 포지션 크기: {suggested_quantity:.8f}")
+                
                 return TradeSignal(
                     direction=direction,
                     symbol=market_data['symbol'].iloc[0] if 'symbol' in market_data.columns else None,
@@ -147,6 +155,7 @@ class Strategy:
                     strength=confidence,  # strength를 confidence와 동일하게 설정
                     timestamp=datetime.now(),
                     strategy_name=self.name,
+                    suggested_quantity=suggested_quantity  # 전략에서 계산한 포지션 크기 추가
                 )
             
             logger.info(f"[{self.name}] 방향이 없으므로 거래 신호 없음")
@@ -154,13 +163,42 @@ class Strategy:
             
         except Exception as e:
             logger.error(f"[{self.name}] 신호 생성 중 오류 발생: {e}")
-            logger.exception(f"[{self.name}] 상세 오류:")
+            logger.exception(e)
             return None
+    
+    def suggest_position_size(self, confidence, volatility, stop_loss_pct, risk_per_trade=0.02):
+        """
+        신호의 신뢰도와 변동성을 기반으로 포지션 크기를 제안합니다.
+        
+        Args:
+            confidence (float): 신호의 신뢰도 (0.0 ~ 1.0)
+            volatility (float): 현재 시장의 변동성
+            stop_loss_pct (float): 손절 비율 (%)
+            risk_per_trade (float): 거래당 위험 비율 (자본 대비)
+            
+        Returns:
+            float: 제안된 포지션 크기 (자본 대비 비율)
+        """
+        # 기본 포지션 크기는 손절 비율과 거래당 위험으로 결정
+        base_position_size = risk_per_trade / (stop_loss_pct / 100)
+        
+        # 신뢰도에 따른 조정
+        confidence_factor = min(confidence, 1.0)  # 0 ~ 1 범위로 제한
+        
+        # 변동성에 따른 조정 (변동성이 높을수록 포지션 크기 감소)
+        volatility_factor = 1.0 / (1.0 + volatility)
+        
+        # 최종 포지션 크기 계산
+        suggested_size = base_position_size * confidence_factor * volatility_factor
+        
+        # 최대 포지션 크기로 제한
+        max_position = getattr(self, 'max_position_size', 0.2)
+        return min(suggested_size, max_position)
     
 class MovingAverageCrossover(Strategy):
     """이동평균 교차 전략"""
     
-    def __init__(self, short_period=9, long_period=26, ma_type='sma', stop_loss_pct=4.0, take_profit_pct=8.0):
+    def __init__(self, short_period=9, long_period=26, ma_type='sma', stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
         """
         이동평균 교차 전략 초기화
         
@@ -170,6 +208,7 @@ class MovingAverageCrossover(Strategy):
             ma_type (str): 이동평균 유형 ('sma' 또는 'ema')
             stop_loss_pct (float): 손절가 비율(%)
             take_profit_pct (float): 이익실현 비율(%)
+            max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
         """
         # 파라미터 유효성 검사
         valid, message = self.validate_parameters({
@@ -190,6 +229,7 @@ class MovingAverageCrossover(Strategy):
         self.ma_type = ma_type
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
+        self.max_position_size = max_position_size
         
         # 데이터 포인트 요구사항 설정 (장기 이동평균 기간의 3배로 설정하여 충분한 데이터 확보)
         self.required_data_points = self.long_period * 3
@@ -321,23 +361,64 @@ class MovingAverageCrossover(Strategy):
             short_ma_values = df['short_ma'].values
             long_ma_values = df['long_ma'].values
             
-            # np.where를 사용한 벡터화된 조건부 할당
+            # 변동성 계산 (표준편차 기반)
+            returns = df['close'].pct_change()
+            rolling_volatility = returns.rolling(window=20).std()
+            
+            # signals, positions, suggested_sizes 배열 생성
             signals = np.zeros(len(df))
-            signals = np.where(short_ma_values > long_ma_values, 1, 
-                              np.where(short_ma_values < long_ma_values, -1, 0))
+            position_values = np.zeros(len(df))
+            suggested_sizes = np.zeros(len(df))
+            
+            for i in range(len(df)):
+                if i == 0:
+                    signals[i] = 0
+                    position_values[i] = 0
+                    suggested_sizes[i] = 0
+                else:
+                    # 이전 조건
+                    prev_diff = short_ma_values[i-1] - long_ma_values[i-1]
+                    curr_diff = short_ma_values[i] - long_ma_values[i]
+                    
+                    # 교차 발생 검사
+                    if prev_diff <= 0 and curr_diff > 0:
+                        # 상향 교차 (매수 신호)
+                        signals[i] = 1
+                        
+                        # 신호 강도 (교차 지점에서의 차이)
+                        signal_strength = abs(curr_diff / long_ma_values[i]) if long_ma_values[i] != 0 else 0
+                        confidence = min(signal_strength * 10, 1.0)  # 0~1 범위로 정규화
+                        
+                        # 현재 변동성
+                        volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
+                        
+                        # 포지션 크기 제안
+                        suggested_size = self.suggest_position_size(
+                            confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                        )
+                        suggested_sizes[i] = suggested_size
+                        
+                    elif prev_diff >= 0 and curr_diff < 0:
+                        # 하향 교차 (매도 신호)
+                        signals[i] = -1
+                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                    else:
+                        # 교차 없음 (현상태 유지)
+                        signals[i] = signals[i-1]
+                        suggested_sizes[i] = suggested_sizes[i-1]
+                    
+                    # position 계산 (signal의 변화량)
+                    position_values[i] = signals[i] - signals[i-1]
             
             # NaN 처리
-            np.nan_to_num(signals, copy=False, nan=0)
+            signals = np.nan_to_num(signals)
+            position_values = np.nan_to_num(position_values)
+            suggested_sizes = np.nan_to_num(suggested_sizes)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
-            
-            # position 계산 (signal의 변화량)
-            position_values = np.zeros_like(signals)
-            if len(signals) > 1:
-                position_values[1:] = signals[1:] - signals[:-1]
-            
             df['position'] = position_values
+            df['suggested_position_size'] = suggested_sizes
             
             return df
         except Exception as e:
@@ -349,7 +430,8 @@ class MovingAverageCrossover(Strategy):
 class RSIStrategy(Strategy):
     """RSI 기반 전략"""
     
-    def __init__(self, period=14, overbought=70, oversold=30):
+    def __init__(self, period=14, overbought=70, oversold=30, 
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
         """
         RSI 전략 초기화
         
@@ -357,12 +439,17 @@ class RSIStrategy(Strategy):
             period (int): RSI 계산 기간
             overbought (int): 과매수 기준값
             oversold (int): 과매도 기준값
+            stop_loss_pct (float): 손절가 비율(%)
+            take_profit_pct (float): 이익실현 비율(%)
+            max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
         """
         # 파라미터 유효성 검사
         valid, message = self.validate_parameters({
             'period': period,
             'overbought': overbought,
-            'oversold': oversold
+            'oversold': oversold,
+            'stop_loss_pct': stop_loss_pct,
+            'take_profit_pct': take_profit_pct
         })
         
         if not valid:
@@ -370,11 +457,16 @@ class RSIStrategy(Strategy):
             period = 14
             overbought = 70
             oversold = 30
+            stop_loss_pct = 4.0
+            take_profit_pct = 8.0
             
         super().__init__(name=f"RSI_{period}_{overbought}_{oversold}")
         self.period = period
         self.overbought = overbought
         self.oversold = oversold
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.max_position_size = max_position_size
         
     def validate_parameters(self, params):
         """
@@ -410,6 +502,26 @@ class RSIStrategy(Strategy):
         # 과매수와 과매도 기준값 비교
         if overbought <= oversold:
             return False, f"과매수 기준값({overbought})은 과매도 기준값({oversold})보다 커야 합니다."
+        
+        # 손절 비율 검사
+        stop_loss_pct = params.get('stop_loss_pct')
+        if stop_loss_pct is not None:
+            valid, message = self.validate_numeric_parameter('stop_loss_pct', stop_loss_pct, 
+                                                          min_value=0.1, max_value=50.0)
+            if not valid:
+                return False, message
+        
+        # 이익실현 비율 검사
+        take_profit_pct = params.get('take_profit_pct')
+        if take_profit_pct is not None:
+            valid, message = self.validate_numeric_parameter('take_profit_pct', take_profit_pct, 
+                                                          min_value=0.1, max_value=100.0)
+            if not valid:
+                return False, message
+            
+            # 이익실현이 손절보다 커야 함
+            if stop_loss_pct is not None and take_profit_pct <= stop_loss_pct:
+                return False, f"이익실현 비율({take_profit_pct})은 손절 비율({stop_loss_pct})보다 커야 합니다."
             
         return True, ""
         
@@ -433,35 +545,74 @@ class RSIStrategy(Strategy):
             # NumPy 배열로 변환하여 신호 생성 (다차원 인덱싱 방지)
             rsi_values = df['rsi'].values
             
-            # np.where를 사용한 벡터화된 조건부 할당
+            # 변동성 계산 (표준편차 기반)
+            returns = df['close'].pct_change()
+            rolling_volatility = returns.rolling(window=20).std()
+            
+            # signals, positions, suggested_sizes 배열 생성
             signals = np.zeros(len(df))
-            signals = np.where(rsi_values < self.oversold, 1, 
-                             np.where(rsi_values > self.overbought, -1, 0))
+            position_values = np.zeros(len(df))
+            suggested_sizes = np.zeros(len(df))
+            
+            for i in range(len(df)):
+                if i == 0:
+                    signals[i] = 0
+                    position_values[i] = 0
+                    suggested_sizes[i] = 0
+                else:
+                    # RSI에 기반한 신호 생성
+                    if rsi_values[i] < self.oversold and rsi_values[i-1] >= self.oversold:
+                        # 과매도 영역 진입 (매수 신호)
+                        signals[i] = 1
+                        
+                        # 신호 강도 (RSI가 과매도 기준에서 얼마나 멀리 떨어져 있는지)
+                        confidence = abs(self.oversold - rsi_values[i]) / self.oversold if self.oversold != 0 else 0
+                        confidence = min(confidence * 2, 1.0)  # 0~1 범위로 정규화
+                        
+                        # 현재 변동성
+                        volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
+                        
+                        # 포지션 크기 제안
+                        suggested_size = self.suggest_position_size(
+                            confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                        )
+                        suggested_sizes[i] = suggested_size
+                        
+                    elif rsi_values[i] > self.overbought and rsi_values[i-1] <= self.overbought:
+                        # 과매수 영역 진입 (매도 신호)
+                        signals[i] = -1
+                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                    else:
+                        # 신호 없음 (현상태 유지)
+                        signals[i] = signals[i-1]
+                        suggested_sizes[i] = suggested_sizes[i-1]
+                    
+                    # position 계산 (signal의 변화량)
+                    position_values[i] = signals[i] - signals[i-1]
             
             # NaN 처리
-            np.nan_to_num(signals, copy=False, nan=0)
+            signals = np.nan_to_num(signals)
+            position_values = np.nan_to_num(position_values)
+            suggested_sizes = np.nan_to_num(suggested_sizes)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
-            
-            # position 계산 (signal의 변화량)
-            position_values = np.zeros_like(signals)
-            if len(signals) > 1:
-                position_values[1:] = signals[1:] - signals[:-1]
-            
             df['position'] = position_values
+            df['suggested_position_size'] = suggested_sizes
             
             return df
         except Exception as e:
             logger.error(f"RSI 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
             df['position'] = 0
+            df['suggested_position_size'] = 0
             return df
 
 class MACDStrategy(Strategy):
     """MACD 기반 전략"""
     
-    def __init__(self, fast_period=12, slow_period=26, signal_period=9):
+    def __init__(self, fast_period=12, slow_period=26, signal_period=9,
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
         """
         MACD 전략 초기화
         
@@ -469,12 +620,17 @@ class MACDStrategy(Strategy):
             fast_period (int): 빠른 EMA 기간
             slow_period (int): 느린 EMA 기간
             signal_period (int): 시그널 기간
+            stop_loss_pct (float): 손절가 비율(%)
+            take_profit_pct (float): 이익실현 비율(%)
+            max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
         """
         # 파라미터 유효성 검사
         valid, message = self.validate_parameters({
             'fast_period': fast_period,
             'slow_period': slow_period,
-            'signal_period': signal_period
+            'signal_period': signal_period,
+            'stop_loss_pct': stop_loss_pct,
+            'take_profit_pct': take_profit_pct
         })
         
         if not valid:
@@ -482,11 +638,16 @@ class MACDStrategy(Strategy):
             fast_period = 12
             slow_period = 26
             signal_period = 9
+            stop_loss_pct = 4.0
+            take_profit_pct = 8.0
             
         super().__init__(name=f"MACD_{fast_period}_{slow_period}_{signal_period}")
         self.fast_period = fast_period
         self.slow_period = slow_period
         self.signal_period = signal_period
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.max_position_size = max_position_size
         
     def validate_parameters(self, params):
         """
@@ -522,6 +683,26 @@ class MACDStrategy(Strategy):
         # 빠른/느린 EMA 기간 비교
         if fast_period >= slow_period:
             return False, f"느린 EMA 기간({slow_period})은 빠른 EMA 기간({fast_period})보다 커야 합니다."
+        
+        # 손절 비율 검사
+        stop_loss_pct = params.get('stop_loss_pct')
+        if stop_loss_pct is not None:
+            valid, message = self.validate_numeric_parameter('stop_loss_pct', stop_loss_pct, 
+                                                          min_value=0.1, max_value=50.0)
+            if not valid:
+                return False, message
+        
+        # 이익실현 비율 검사
+        take_profit_pct = params.get('take_profit_pct')
+        if take_profit_pct is not None:
+            valid, message = self.validate_numeric_parameter('take_profit_pct', take_profit_pct, 
+                                                          min_value=0.1, max_value=100.0)
+            if not valid:
+                return False, message
+            
+            # 이익실현이 손절보다 커야 함
+            if stop_loss_pct is not None and take_profit_pct <= stop_loss_pct:
+                return False, f"이익실현 비율({take_profit_pct})은 손절 비율({stop_loss_pct})보다 커야 합니다."
             
         return True, ""
         
@@ -554,34 +735,62 @@ class MACDStrategy(Strategy):
             # NumPy 배열로 변환하여 신호 생성 (다차원 인덱싱 방지)
             macd_values = df['macd'].values
             signal_values = df['signal_line'].values
+            histogram_values = df['histogram'].values
             
-            # 이전 값을 사용하기 위해 시프트된 배열 생성
-            macd_prev = np.roll(macd_values, 1)
-            macd_prev[0] = np.nan  # 첫 번째 값은 유효하지 않음
+            # 변동성 계산 (표준편차 기반)
+            returns = df['close'].pct_change()
+            rolling_volatility = returns.rolling(window=20).std()
             
-            signal_prev = np.roll(signal_values, 1)
-            signal_prev[0] = np.nan
-            
-            # 신호 생성을 위한 조건 배열
-            buy_condition = (macd_values > signal_values) & (macd_prev <= signal_prev)
-            sell_condition = (macd_values < signal_values) & (macd_prev >= signal_prev)
-            
-            # 신호 생성 (다차원 인덱싱 방지)
+            # signals, positions, suggested_sizes 배열 생성
             signals = np.zeros(len(df))
-            signals = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
+            position_values = np.zeros(len(df))
+            suggested_sizes = np.zeros(len(df))
+            
+            for i in range(len(df)):
+                if i == 0:
+                    signals[i] = 0
+                    position_values[i] = 0
+                    suggested_sizes[i] = 0
+                else:
+                    # MACD와 시그널 라인의 교차 검사
+                    if macd_values[i] > signal_values[i] and macd_values[i-1] <= signal_values[i-1]:
+                        # 상향 교차 (매수 신호)
+                        signals[i] = 1
+                        
+                        # 신호 강도 (히스토그램의 크기를 활용)
+                        signal_strength = abs(histogram_values[i]) / df['close'].iloc[i] if df['close'].iloc[i] != 0 else 0
+                        confidence = min(signal_strength * 100, 1.0)  # 0~1 범위로 정규화
+                        
+                        # 현재 변동성
+                        volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
+                        
+                        # 포지션 크기 제안
+                        suggested_size = self.suggest_position_size(
+                            confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                        )
+                        suggested_sizes[i] = suggested_size
+                        
+                    elif macd_values[i] < signal_values[i] and macd_values[i-1] >= signal_values[i-1]:
+                        # 하향 교차 (매도 신호)
+                        signals[i] = -1
+                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                    else:
+                        # 교차 없음 (현상태 유지)
+                        signals[i] = signals[i-1]
+                        suggested_sizes[i] = suggested_sizes[i-1]
+                    
+                    # position 계산 (signal의 변화량)
+                    position_values[i] = signals[i] - signals[i-1]
             
             # NaN 처리
-            np.nan_to_num(signals, copy=False, nan=0)
+            signals = np.nan_to_num(signals)
+            position_values = np.nan_to_num(position_values)
+            suggested_sizes = np.nan_to_num(suggested_sizes)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
-            
-            # position 계산 (signal의 변화량)
-            position_values = np.zeros_like(signals)
-            if len(signals) > 1:
-                position_values[1:] = signals[1:] - signals[:-1]
-            
             df['position'] = position_values
+            df['suggested_position_size'] = suggested_sizes
             
             return df
         except Exception as e:
@@ -594,28 +803,39 @@ class MACDStrategy(Strategy):
 class BollingerBandsStrategy(Strategy):
     """볼린저 밴드 기반 전략"""
     
-    def __init__(self, period=20, std_dev=2):
+    def __init__(self, period=20, std_dev=2,
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
         """
         볼린저 밴드 전략 초기화
         
         Args:
             period (int): 이동평균 기간
             std_dev (float): 표준편차 배수
+            stop_loss_pct (float): 손절가 비율(%)
+            take_profit_pct (float): 이익실현 비율(%)
+            max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
         """
         # 파라미터 유효성 검사
         valid, message = self.validate_parameters({
             'period': period,
-            'std_dev': std_dev
+            'std_dev': std_dev,
+            'stop_loss_pct': stop_loss_pct,
+            'take_profit_pct': take_profit_pct
         })
         
         if not valid:
             logger.warning(f"볼린저 밴드 전략 파라미터 오류: {message}. 기본값을 사용합니다.")
             period = 20
             std_dev = 2
+            stop_loss_pct = 4.0
+            take_profit_pct = 8.0
             
         super().__init__(name=f"BollingerBands_{period}_{std_dev}")
         self.period = period
         self.std_dev = std_dev
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.max_position_size = max_position_size
         
     def validate_parameters(self, params):
         """
@@ -640,6 +860,26 @@ class BollingerBandsStrategy(Strategy):
                                                       min_value=0.5, max_value=4)
         if not valid:
             return False, message
+            
+        # 손절 비율 검사
+        stop_loss_pct = params.get('stop_loss_pct')
+        if stop_loss_pct is not None:
+            valid, message = self.validate_numeric_parameter('stop_loss_pct', stop_loss_pct, 
+                                                          min_value=0.1, max_value=50.0)
+            if not valid:
+                return False, message
+        
+        # 이익실현 비율 검사
+        take_profit_pct = params.get('take_profit_pct')
+        if take_profit_pct is not None:
+            valid, message = self.validate_numeric_parameter('take_profit_pct', take_profit_pct, 
+                                                          min_value=0.1, max_value=100.0)
+            if not valid:
+                return False, message
+            
+            # 이익실현이 손절보다 커야 함
+            if stop_loss_pct is not None and take_profit_pct <= stop_loss_pct:
+                return False, f"이익실현 비율({take_profit_pct})은 손절 비율({stop_loss_pct})보다 커야 합니다."
             
         return True, ""
         
@@ -672,37 +912,64 @@ class BollingerBandsStrategy(Strategy):
             close_values = df['close'].values
             lower_band_values = df['lower_band'].values
             upper_band_values = df['upper_band'].values
+            middle_band_values = df['middle_band'].values
             
-            # 이전 값을 사용하기 위해 시프트된 배열 생성
-            close_prev = np.roll(close_values, 1)
-            close_prev[0] = np.nan
+            # 변동성 계산 (표준편차 기반)
+            returns = df['close'].pct_change()
+            rolling_volatility = returns.rolling(window=20).std()
             
-            lower_band_prev = np.roll(lower_band_values, 1)
-            lower_band_prev[0] = np.nan
-            
-            upper_band_prev = np.roll(upper_band_values, 1)
-            upper_band_prev[0] = np.nan
-            
-            # 신호 생성을 위한 조건 배열
-            buy_condition = (close_values < lower_band_prev) & (close_values > close_prev)
-            sell_condition = (close_values > upper_band_prev) & (close_values < close_prev)
-            
-            # 신호 생성 (다차원 인덱싱 방지)
+            # signals, positions, suggested_sizes 배열 생성
             signals = np.zeros(len(df))
-            signals = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
+            position_values = np.zeros(len(df))
+            suggested_sizes = np.zeros(len(df))
+            
+            for i in range(len(df)):
+                if i == 0:
+                    signals[i] = 0
+                    position_values[i] = 0
+                    suggested_sizes[i] = 0
+                else:
+                    # 볼린저 밴드 터치 및 반향 확인
+                    if close_values[i] < lower_band_values[i] and close_values[i-1] >= lower_band_values[i-1]:
+                        # 하단 밴드 터치 (매수 신호)
+                        signals[i] = 1
+                        
+                        # 신호 강도 (하단 밴드에서 얼마나 멀리 떨어져 있는지)
+                        bandwidth = upper_band_values[i] - lower_band_values[i]
+                        distance_from_lower = lower_band_values[i] - close_values[i]
+                        signal_strength = distance_from_lower / bandwidth if bandwidth != 0 else 0
+                        confidence = min(signal_strength * 2, 1.0)  # 0~1 범위로 정규화
+                        
+                        # 현재 변동성
+                        volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
+                        
+                        # 포지션 크기 제안
+                        suggested_size = self.suggest_position_size(
+                            confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                        )
+                        suggested_sizes[i] = suggested_size
+                        
+                    elif close_values[i] > upper_band_values[i] and close_values[i-1] <= upper_band_values[i-1]:
+                        # 상단 밴드 터치 (매도 신호)
+                        signals[i] = -1
+                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                    else:
+                        # 밴드 내부 (현상태 유지)
+                        signals[i] = signals[i-1]
+                        suggested_sizes[i] = suggested_sizes[i-1]
+                    
+                    # position 계산 (signal의 변화량)
+                    position_values[i] = signals[i] - signals[i-1]
             
             # NaN 처리
-            np.nan_to_num(signals, copy=False, nan=0)
+            signals = np.nan_to_num(signals)
+            position_values = np.nan_to_num(position_values)
+            suggested_sizes = np.nan_to_num(suggested_sizes)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
-            
-            # position 계산 (signal의 변화량)
-            position_values = np.zeros_like(signals)
-            if len(signals) > 1:
-                position_values[1:] = signals[1:] - signals[:-1]
-            
             df['position'] = position_values
+            df['suggested_position_size'] = suggested_sizes
             
             return df
         except Exception as e:
@@ -715,7 +982,8 @@ class BollingerBandsStrategy(Strategy):
 class StochasticStrategy(Strategy):
     """스토캐스틱 오실레이터 기반 전략"""
     
-    def __init__(self, k_period=14, d_period=3, slowing=3, overbought=80, oversold=20):
+    def __init__(self, k_period=14, d_period=3, slowing=3, overbought=80, oversold=20,
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
         """
         스토캐스틱 전략 초기화
         
@@ -725,6 +993,9 @@ class StochasticStrategy(Strategy):
             slowing (int): 슬로잉 기간
             overbought (int): 과매수 기준값
             oversold (int): 과매도 기준값
+            stop_loss_pct (float): 손절가 비율(%)
+            take_profit_pct (float): 이익실현 비율(%)
+            max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
         """
         super().__init__(name=f"Stochastic_{k_period}_{d_period}_{slowing}")
         self.k_period = k_period
@@ -732,6 +1003,9 @@ class StochasticStrategy(Strategy):
         self.slowing = slowing
         self.overbought = overbought
         self.oversold = oversold
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.max_position_size = max_position_size
         
     def generate_signals(self, df):
         """
@@ -762,36 +1036,67 @@ class StochasticStrategy(Strategy):
             k_values = df['stoch_k'].values
             d_values = df['stoch_d'].values
             
-            # 이전 값을 사용하기 위해 시프트된 배열 생성
-            k_prev = np.roll(k_values, 1)
-            k_prev[0] = np.nan
+            # 변동성 계산 (표준편차 기반)
+            returns = df['close'].pct_change()
+            rolling_volatility = returns.rolling(window=20).std()
             
-            d_prev = np.roll(d_values, 1)
-            d_prev[0] = np.nan
-            
-            # 신호 생성을 위한 조건 배열
-            buy_condition = (k_values > d_values) & \
-                           (k_prev <= d_prev) & \
-                           (k_values < self.oversold)
-                           
-            sell_condition = (k_values < d_values) & \
-                            (k_prev >= d_prev) & \
-                            (k_values > self.overbought)
-            
-            # 신호 생성 (다차원 인덱싱 방지)
+            # signals, positions, suggested_sizes 배열 생성
             signals = np.zeros(len(df))
-            signals = np.where(buy_condition, 1, np.where(sell_condition, -1, 0))
+            position_values = np.zeros(len(df))
+            suggested_sizes = np.zeros(len(df))
+            
+            for i in range(len(df)):
+                if i == 0:
+                    signals[i] = 0
+                    position_values[i] = 0
+                    suggested_sizes[i] = 0
+                else:
+                    # 스토캐스틱 교차 및 과매도/과매수 영역 확인
+                    if (k_values[i] > d_values[i] and k_values[i-1] <= d_values[i-1] and k_values[i] < self.oversold):
+                        # 과매도 영역에서 상향 교차 (매수 신호)
+                        signals[i] = 1
+                        
+                        # 신호 강도 (과매도 기준에서 얼마나 멀리 떨어져 있는지)
+                        signal_strength = abs(self.oversold - k_values[i]) / self.oversold if self.oversold != 0 else 0
+                        confidence = min(signal_strength * 2, 1.0)  # 0~1 범위로 정규화
+                        
+                        # 현재 변동성
+                        volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
+                        
+                        # 포지션 크기 제안
+                        suggested_size = self.suggest_position_size(
+                            confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                        )
+                        suggested_sizes[i] = suggested_size
+                        
+                    elif (k_values[i] < d_values[i] and k_values[i-1] >= d_values[i-1] and k_values[i] > self.overbought):
+                        # 과매수 영역에서 하향 교차 (매도 신호)
+                        signals[i] = -1
+                        suggested_sizes[i] = 0  # 매도 시에는 모두 청산
+                    else:
+                        # 신호 없음 (현상태 유지)
+                        signals[i] = signals[i-1]
+                        suggested_sizes[i] = suggested_sizes[i-1]
+                    
+                    # position 계산 (signal의 변화량)
+                    position_values[i] = signals[i] - signals[i-1]
             
             # NaN 처리
-            np.nan_to_num(signals, copy=False, nan=0)
+            signals = np.nan_to_num(signals)
+            position_values = np.nan_to_num(position_values)
+            suggested_sizes = np.nan_to_num(suggested_sizes)
             
             # 결과를 데이터프레임에 할당
             df['signal'] = signals
+            df['position'] = position_values
+            df['suggested_position_size'] = suggested_sizes
             
             return df
         except Exception as e:
             logger.error(f"스토캐스틱 신호 생성 중 오류 발생: {e}")
             df['signal'] = 0
+            df['position'] = 0
+            df['suggested_position_size'] = 0
             return df
 
 class BollingerBandFuturesStrategy(Strategy):
@@ -800,7 +1105,7 @@ class BollingerBandFuturesStrategy(Strategy):
     """
     def __init__(self, bb_period=20, bb_std=2.0, rsi_period=14, rsi_overbought=70, rsi_oversold=30,
                  macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=4.0, take_profit_pct=8.0,
-                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=3, timeframe='4h'):
+                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=3, timeframe='4h', max_position_size=0.2):
         super().__init__(name=f"BollingerBandFutures_{bb_period}_{bb_std}_{rsi_period}_{macd_fast}_{macd_slow}_{macd_signal}")
         self.bb_period = bb_period
         self.bb_std = bb_std
@@ -816,6 +1121,7 @@ class BollingerBandFuturesStrategy(Strategy):
         self.risk_per_trade = risk_per_trade
         self.leverage = leverage
         self.timeframe = timeframe
+        self.max_position_size = max_position_size
 
     def generate_signals(self, df):
         try:
@@ -882,12 +1188,42 @@ class BollingerBandFuturesStrategy(Strategy):
             # 같은 방향 연속 신호를 0으로
             data.loc[(data['signal'] == prev_signal) & (data['signal'] != 0), 'signal'] = 0
             
+            # 변동성 계산 (표준편차 기반)
+            returns = data['close'].pct_change()
+            rolling_volatility = returns.rolling(window=20).std()
+            
+            # suggested_position_size 계산
+            data['suggested_position_size'] = 0.0
+            
+            # 롤 신호에 대해 position size 계산
+            long_signals = strong_long & (data['signal'] == 1)
+            if long_signals.any():
+                # 신호 강도 (score를 confidence로 변환)
+                data.loc[long_signals, 'confidence'] = data.loc[long_signals, 'long_score'] / 1.0  # 최대 점수 1.0
+                
+                # 각 롱 신호에 대해 position size 계산
+                for idx in data[long_signals].index:
+                    volatility = rolling_volatility.loc[idx] if not pd.isna(rolling_volatility.loc[idx]) else returns.std()
+                    confidence = data.loc[idx, 'confidence']
+                    
+                    # 레버리지를 고려한 position size 계산
+                    base_size = self.suggest_position_size(
+                        confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                    )
+                    # 레버리지 적용 (레버리지가 높을수록 위험하므로 포지션 크기를 줄임)
+                    leveraged_size = base_size / self.leverage
+                    data.loc[idx, 'suggested_position_size'] = leveraged_size
+            
             # position 계산 (signal의 변화량)
             position_values = np.zeros_like(data['signal'].values)
             if len(data) > 1:
                 position_values[1:] = data['signal'].values[1:] - data['signal'].values[:-1]
             
             data['position'] = position_values
+            
+            # confidence 커럼 제거 (임시로 사용)
+            if 'confidence' in data.columns:
+                data.drop('confidence', axis=1, inplace=True)
             
             return data
         except Exception as e:
