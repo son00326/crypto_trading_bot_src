@@ -1,0 +1,20 @@
+{
+  "timestamp": "2025-07-04T13:32:29.782592",
+  "results": {
+    "connection": true,
+    "account_info": true,
+    "positions": true,
+    "orders": true,
+    "leverage": true,
+    "stop_loss_take_profit": true,
+    "pnl_calculation": true,
+    "risk_management": true,
+    "auto_position_manager": true
+  },
+  "summary": {
+    "total": 9,
+    "passed": 9,
+    "failed": 0,
+    "success_rate": "100.0%"
+  }
+}
