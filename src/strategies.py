@@ -208,7 +208,7 @@ class Strategy:
 class MovingAverageCrossover(Strategy):
     """이동평균 교차 전략"""
     
-    def __init__(self, short_period=20, long_period=50, ma_type='ema', stop_loss_pct=1.5, take_profit_pct=3.0, max_position_size=0.2):
+    def __init__(self, short_period=12, long_period=26, ma_type='sma', stop_loss_pct=None, take_profit_pct=None, max_position_size=None, leverage=3):
         """
         이동평균 교차 전략 초기화
         
@@ -216,30 +216,21 @@ class MovingAverageCrossover(Strategy):
             short_period (int): 단기 이동평균 기간
             long_period (int): 장기 이동평균 기간
             ma_type (str): 이동평균 유형 ('sma' 또는 'ema')
-            stop_loss_pct (float): 손절가 비율(%)
-            take_profit_pct (float): 이익실현 비율(%)
-            max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
+            stop_loss_pct (float): 손절 비율 (0~1)
+            take_profit_pct (float): 이익실현 비율 (0~1)
+            max_position_size (float): 최대 포지션 크기 (0~1)
+            leverage (int): 레버리지 배수 (기본값: 3)
         """
-        # 파라미터 유효성 검사
-        valid, message = self.validate_parameters({
-            'short_period': short_period,
-            'long_period': long_period,
-            'ma_type': ma_type
-        })
-        
-        if not valid:
-            logger.warning(f"이동평균 교차 전략 파라미터 오류: {message}. 기본값을 사용합니다.")
-            short_period = 9
-            long_period = 26
-            ma_type = 'ema'
-            
-        super().__init__(name=f"MA_Crossover_{short_period}_{long_period}_{ma_type}")
+        # name 속성 설정
+        name = f"MA_Crossover_{short_period}_{long_period}_{ma_type}"
+        super().__init__(name=name)
         self.short_period = short_period
         self.long_period = long_period
         self.ma_type = ma_type
-        self.stop_loss_pct = stop_loss_pct
-        self.take_profit_pct = take_profit_pct
-        self.max_position_size = max_position_size
+        self.stop_loss_pct = stop_loss_pct if stop_loss_pct is not None else 0.04  # 기본값: 4% 손절
+        self.take_profit_pct = take_profit_pct if take_profit_pct is not None else 0.08  # 기본값: 8% 이익
+        self.max_position_size = max_position_size if max_position_size is not None else 1.0  # 기본값: 100%
+        self.leverage = leverage  # 레버리지 배수
         
         # 데이터 포인트 요구사항 설정 (장기 이동평균 기간의 3배로 설정하여 충분한 데이터 확보)
         self.required_data_points = self.long_period * 3
@@ -412,8 +403,9 @@ class MovingAverageCrossover(Strategy):
                     # 교차 발생 검사
                     if prev_diff <= 0 and curr_diff > 0:
                         # 상향 교차 (롱 포지션 진입 신호)
-                        # RSI가 과매도 상태가 아니고, 볼륨이 평균 이상일 때만 신호 발생
-                        if i > 0 and rsi_values[i] < 70 and volume_values[i] > volume_ma_values[i] * 0.8:
+                        # RSI 필터: 과매수 상태(RSI > 70)가 아닐 때만
+                        # 볼륨 필터: 현재 볼륨이 평균의 50% 이상일 때만 (조건 완화)
+                        if i > 0 and (rsi_values[i] < 70 and volume_values[i] > volume_ma_values[i] * 0.5):
                             signals[i] = 1
                             
                             # 신호 강도 (교차 지점에서의 차이)
@@ -429,22 +421,28 @@ class MovingAverageCrossover(Strategy):
                             )
                             suggested_sizes[i] = suggested_size
                         else:
-                            signals[i] = signals[i-1]
-                            suggested_sizes[i] = suggested_sizes[i-1]
+                            signals[i] = 0  # 필터 조건 불충족 시 중립
+                            suggested_sizes[i] = 0
                         
                     elif prev_diff >= 0 and curr_diff < 0:
-                        # 하향 교차 (숏 포지션 진입 신호)
-                        # RSI가 과매수 상태가 아니고, 볼륨이 평균 이상일 때만 신호 발생
-                        if i > 0 and rsi_values[i] > 30 and volume_values[i] > volume_ma_values[i] * 0.8:
+                        # 하향 교차 (숙 포지션 진입 신호)
+                        # RSI 필터: 과매도 상태(RSI < 30)가 아닐 때만
+                        # 볼륨 필터: 현재 볼륨이 평균의 50% 이상일 때만 (조건 완화)
+                        if i > 0 and (rsi_values[i] > 30 and volume_values[i] > volume_ma_values[i] * 0.5):
                             signals[i] = -1
                             suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
                         else:
-                            signals[i] = signals[i-1]
-                            suggested_sizes[i] = suggested_sizes[i-1]
+                            signals[i] = 0  # 필터 조건 불충족 시 중립
+                            suggested_sizes[i] = 0
                     else:
-                        # 교차 없음 (현상태 유지)
-                        signals[i] = signals[i-1]
-                        suggested_sizes[i] = suggested_sizes[i-1]
+                        # 교차 없음 - 포지션 유지
+                        # 현재 포지션이 있으면 유지, 없으면 중립
+                        if signals[i-1] != 0:
+                            signals[i] = signals[i-1]  # 포지션 유지
+                            suggested_sizes[i] = suggested_sizes[i-1]
+                        else:
+                            signals[i] = 0  # 중립 상태 유지
+                            suggested_sizes[i] = 0
                     
                     # position 계산 (signal의 변화량)
                     position_values[i] = signals[i] - signals[i-1]
@@ -470,7 +468,7 @@ class RSIStrategy(Strategy):
     """RSI 기반 전략"""
     
     def __init__(self, period=14, overbought=70, oversold=30, 
-                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2, leverage=3):
         """
         RSI 전략 초기화
         
@@ -481,6 +479,7 @@ class RSIStrategy(Strategy):
             stop_loss_pct (float): 손절가 비율(%)
             take_profit_pct (float): 이익실현 비율(%)
             max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
+            leverage (int): 레버리지 배수 (기본값: 3)
         """
         # 파라미터 유효성 검사
         valid, message = self.validate_parameters({
@@ -506,6 +505,7 @@ class RSIStrategy(Strategy):
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.max_position_size = max_position_size
+        self.leverage = leverage
         
     def validate_parameters(self, params):
         """
@@ -651,7 +651,7 @@ class MACDStrategy(Strategy):
     """MACD 기반 전략"""
     
     def __init__(self, fast_period=12, slow_period=26, signal_period=9,
-                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2, leverage=3):
         """
         MACD 전략 초기화
         
@@ -687,6 +687,7 @@ class MACDStrategy(Strategy):
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.max_position_size = max_position_size
+        self.leverage = leverage
         
     def validate_parameters(self, params):
         """
@@ -843,7 +844,7 @@ class BollingerBandsStrategy(Strategy):
     """볼린저 밴드 기반 전략"""
     
     def __init__(self, period=20, std_dev=2,
-                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2, leverage=3):
         """
         볼린저 밴드 전략 초기화
         
@@ -875,6 +876,7 @@ class BollingerBandsStrategy(Strategy):
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.max_position_size = max_position_size
+        self.leverage = leverage
         
     def validate_parameters(self, params):
         """
@@ -1022,7 +1024,7 @@ class StochasticStrategy(Strategy):
     """스토캐스틱 오실레이터 기반 전략"""
     
     def __init__(self, k_period=14, d_period=3, slowing=3, overbought=80, oversold=20,
-                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
+                 stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2, leverage=3):
         """
         스토캐스틱 전략 초기화
         
@@ -1035,6 +1037,7 @@ class StochasticStrategy(Strategy):
             stop_loss_pct (float): 손절가 비율(%)
             take_profit_pct (float): 이익실현 비율(%)
             max_position_size (float): 최대 포지션 크기 (자본 대비 비율)
+            leverage (int): 레버리지 배수 (기본값: 3)
         """
         super().__init__(name=f"Stochastic_{k_period}_{d_period}_{slowing}")
         self.k_period = k_period
@@ -1045,6 +1048,7 @@ class StochasticStrategy(Strategy):
         self.stop_loss_pct = stop_loss_pct
         self.take_profit_pct = take_profit_pct
         self.max_position_size = max_position_size
+        self.leverage = leverage
         
     def generate_signals(self, df):
         """
@@ -1143,8 +1147,8 @@ class BollingerBandFuturesStrategy(Strategy):
     볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 (복합 신호)
     """
     def __init__(self, bb_period=20, bb_std=2.0, rsi_period=14, rsi_overbought=70, rsi_oversold=30,
-                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=2.0, take_profit_pct=3.0,
-                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=2, timeframe='4h', max_position_size=0.2):
+                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=4.0, take_profit_pct=8.0,
+                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=3, timeframe='4h', max_position_size=0.2):
         super().__init__(name=f"BollingerBandFutures_{bb_period}_{bb_std}_{rsi_period}_{macd_fast}_{macd_slow}_{macd_signal}")
         self.bb_period = bb_period
         self.bb_std = bb_std

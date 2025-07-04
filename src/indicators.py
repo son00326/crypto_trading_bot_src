@@ -157,59 +157,44 @@ def relative_strength_index(df, period=14, column='close'):
         Series: RSI 값
     """
     try:
-        # 데이터프레임 복사본 생성
-        df_rsi = df.copy()
+        # 데이터 길이 확인
+        if len(df) < period + 1:
+            logger.warning(f"RSI 계산에 충분한 데이터가 없습니다. 필요: {period+1}, 실제: {len(df)}")
+            return pd.Series(np.nan, index=df.index)
         
         # 가격 변화 계산
-        df_rsi['delta'] = df_rsi[column].diff()
+        delta = df[column].diff()
         
         # 상승/하락 구분
-        df_rsi['gain'] = df_rsi['delta'].clip(lower=0)
-        df_rsi['loss'] = -df_rsi['delta'].clip(upper=0)
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
         
-        # 초기 평균 값
-        first_avg_gain = df_rsi['gain'].rolling(window=period).mean().iloc[period-1]
-        first_avg_loss = df_rsi['loss'].rolling(window=period).mean().iloc[period-1]
+        # 첫 번째 평균 계산 (SMA)
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
         
-        # wilder's smoothing
-        df_rsi['avg_gain'] = np.nan
-        df_rsi['avg_loss'] = np.nan
-        df_rsi.loc[period-1, 'avg_gain'] = first_avg_gain
-        df_rsi.loc[period-1, 'avg_loss'] = first_avg_loss
-        
-        # 숫자로 변환하여 연산 수행
-        gain_values = df_rsi['gain'].values
-        loss_values = df_rsi['loss'].values
-        avg_gain_values = np.full_like(gain_values, np.nan)
-        avg_loss_values = np.full_like(loss_values, np.nan)
-        avg_gain_values[period-1] = first_avg_gain
-        avg_loss_values[period-1] = first_avg_loss
-        
-        # 벡터화 대신 단순 반복문 사용
-        for i in range(period, len(df_rsi)):
-            avg_gain_values[i] = (avg_gain_values[i-1] * (period-1) + gain_values[i]) / period
-            avg_loss_values[i] = (avg_loss_values[i-1] * (period-1) + loss_values[i]) / period
-        
-        # 계산된 값을 다시 데이터프레임에 저장
-        df_rsi['avg_gain'] = avg_gain_values
-        df_rsi['avg_loss'] = avg_loss_values
+        # Wilder's smoothing 적용
+        for i in range(period, len(df)):
+            if pd.notna(avg_gain.iloc[i-1]) and pd.notna(avg_loss.iloc[i-1]):
+                avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period-1) + gain.iloc[i]) / period
+                avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period-1) + loss.iloc[i]) / period
         
         # 0으로 나누기 방지
-        df_rsi['avg_loss'] = np.where(df_rsi['avg_loss'] == 0, 0.001, df_rsi['avg_loss'])
+        avg_loss = avg_loss.replace(0, 0.001)
         
-        # RS(Relative Strength) 계산
-        df_rsi['rs'] = df_rsi['avg_gain'] / df_rsi['avg_loss']
+        # RS 계산
+        rs = avg_gain / avg_loss
         
-        # RSI 계산: RSI = 100 - (100 / (1 + RS))
-        df_rsi['rsi'] = 100 - (100 / (1 + df_rsi['rs']))
+        # RSI 계산
+        rsi = 100 - (100 / (1 + rs))
         
-        # NaN 처리
-        df_rsi = df_rsi.replace([np.inf, -np.inf], np.nan)
+        # 무한대 값을 NaN으로 변환
+        rsi = rsi.replace([np.inf, -np.inf], np.nan)
         
-        return df_rsi['rsi']
+        return rsi
     
     except Exception as e:
-        logger.error(f"RSI 계산 오류: {e}")
+        logger.error(f"RSI 계산 오류: {e}", exc_info=True)
         # 빈 시리즈 반환
         return pd.Series(np.nan, index=df.index)
 

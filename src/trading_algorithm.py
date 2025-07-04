@@ -165,7 +165,8 @@ class TradingAlgorithm:
                         long_period=self.strategy_params.get('long_period', 26),
                         ma_type=self.strategy_params.get('ma_type', 'sma'),
                         stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
-                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0)
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
+                        leverage=self.leverage if self.market_type == 'futures' else 1
                     )
                     
                 elif strategy_name == 'RSIStrategy':
@@ -175,7 +176,8 @@ class TradingAlgorithm:
                         oversold=self.strategy_params.get('oversold', 30),
                         stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
                         take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
-                        max_position_size=self.strategy_params.get('max_position_size', 0.2)
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2),
+                        leverage=self.leverage if self.market_type == 'futures' else 1
                     )
                     
                 elif strategy_name == 'MACDStrategy':
@@ -185,7 +187,8 @@ class TradingAlgorithm:
                         signal_period=self.strategy_params.get('signal_period', 9),
                         stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
                         take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
-                        max_position_size=self.strategy_params.get('max_position_size', 0.2)
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2),
+                        leverage=self.leverage if self.market_type == 'futures' else 1
                     )
                     
                 elif strategy_name == 'BollingerBandsStrategy':
@@ -194,7 +197,21 @@ class TradingAlgorithm:
                         std_dev=self.strategy_params.get('std_dev', 2.0),
                         stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
                         take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
-                        max_position_size=self.strategy_params.get('max_position_size', 0.2)
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2),
+                        leverage=self.leverage if self.market_type == 'futures' else 1
+                    )
+                    
+                elif strategy_name == 'StochasticStrategy':
+                    strategy = StochasticStrategy(
+                        k_period=self.strategy_params.get('k_period', 14),
+                        d_period=self.strategy_params.get('d_period', 3),
+                        smooth_k=self.strategy_params.get('smooth_k', 3),
+                        overbought=self.strategy_params.get('overbought', 80),
+                        oversold=self.strategy_params.get('oversold', 20),
+                        stop_loss_pct=self.strategy_params.get('stop_loss_pct', 4.0),
+                        take_profit_pct=self.strategy_params.get('take_profit_pct', 8.0),
+                        max_position_size=self.strategy_params.get('max_position_size', 0.2),
+                        leverage=self.leverage if self.market_type == 'futures' else 1
                     )
                     
                 elif strategy_name == 'BollingerBandFuturesStrategy':
@@ -236,6 +253,12 @@ class TradingAlgorithm:
         
         # 위험 관리 설정
         self.risk_management = RISK_MANAGEMENT.copy()
+        
+        # RISK_MANAGEMENT의 키 이름을 RiskManager가 기대하는 형식으로 변환
+        if 'stop_loss_pct' in self.risk_management:
+            self.risk_management['stop_loss_percent'] = self.risk_management.pop('stop_loss_pct')
+        if 'take_profit_pct' in self.risk_management:
+            self.risk_management['take_profit_percent'] = self.risk_management.pop('take_profit_pct')
         
         # strategy_params에서 위험 관리 설정 업데이트
         if self.strategy_params:
