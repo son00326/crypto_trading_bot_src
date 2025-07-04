@@ -43,7 +43,7 @@ from urllib.parse import urlparse
 # 유틸리티 모듈 가져오기
 from utils.config import validate_api_key, get_validated_api_credentials
 import utils.api as api
-from utils.api import get_api_balance, call_webhook, get_positions, get_positions_with_objects, get_formatted_balances, get_spot_balance, get_future_balance, get_ticker, get_orderbook, set_stop_loss_take_profit
+from utils.api import get_positions, get_positions_with_objects, get_formatted_balances, get_spot_balance, get_future_balance, get_ticker, get_orderbook, set_stop_loss_take_profit
 from PyQt5.QtWidgets import QApplication
 from flask import Flask, jsonify, request, render_template, send_from_directory, redirect, url_for, flash, session
 from flask_cors import CORS
