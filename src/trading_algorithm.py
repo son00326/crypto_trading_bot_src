@@ -1057,9 +1057,9 @@ class TradingAlgorithm:
                                             # DB에 SL/TP 주문 정보 저장
                                             try:
                                                 # 현재 포지션 ID 가져오기
-                                                open_positions = self.db_manager.get_open_positions(self.symbol)
-                                                if open_positions:
-                                                    position_id = open_positions[-1]['id']  # 가장 최근 포지션
+                                                positions = self.db_manager.get_positions(status='open', symbol=self.symbol)
+                                                if positions:
+                                                    position_id = positions[-1]['id']  # 가장 최근 포지션
                                                     
                                                     # SL/TP 주문 정보 DB에 저장
                                                     for order in sl_tp_result.get('orders', []):
@@ -1155,6 +1155,9 @@ class TradingAlgorithm:
         """
         현재 오픈된 포지션 목록을 가져옵니다.
         
+        .. deprecated:: 2.0
+            `get_open_positions()` 대신 `get_positions(status='open')`을 사용하세요.
+        
         Args:
             symbol (str): 포지션을 조회할 심볼 (None일 경우 모든 포지션)
             
@@ -1169,15 +1172,60 @@ class TradingAlgorithm:
             positions = self.exchange_api.get_positions(symbol)
             
             # 열린 포지션만 필터링
-            open_positions = []
+            filtered_positions = []
             for pos in positions:
                 if pos.get('contracts', 0) != 0 or pos.get('size', 0) != 0:
-                    open_positions.append(pos)
+                    filtered_positions.append(pos)
                     
-            return open_positions
+            return filtered_positions
             
         except Exception as e:
             self.logger.error(f"포지션 조회 중 오류 발생: {e}")
+            return []
+    
+    def get_positions(self, status='open', symbol=None):
+        """
+        포지션 목록을 가져옵니다. (통일된 메서드)
+        
+        Args:
+            status (str): 포지션 상태 ('open', 'closed'). 기본값은 'open'
+            symbol (str): 포지션을 조회할 심볼 (None일 경우 모든 포지션)
+            
+        Returns:
+            list: 포지션 목록
+        """
+        try:
+            if symbol is None:
+                symbol = self.symbol
+            
+            # 닫힌 포지션은 DB에서 가져오기
+            if status == 'closed' and self.db:
+                return self.db.get_positions(status='closed', symbol=symbol)
+            
+            # 열린 포지션
+            elif status == 'open':
+                # db 사용
+                if self.db:
+                    return self.db.get_positions(status='open', symbol=symbol)
+                # db가 없으면 exchange_api 직접 사용
+                else:
+                    positions = self.exchange_api.get_positions(symbol)
+                    # 열린 포지션만 필터링
+                    filtered_positions = []
+                    for pos in positions:
+                        if pos.get('contracts', 0) != 0 or pos.get('size', 0) != 0:
+                            filtered_positions.append(pos)
+                    return filtered_positions
+            
+            # 모든 포지션 (상태 무관)
+            elif status is None and self.db_manager:
+                return self.db_manager.get_positions(symbol=symbol)
+            
+            else:
+                return []
+                
+        except Exception as e:
+            self.logger.error(f"포지션 조회 중 오류 발생 (status={status}): {e}")
             return []
     
     def get_open_positions_as_objects(self, symbol=None):

@@ -522,7 +522,7 @@ class BackupRestoreManager:
             snapshot = {
                 'timestamp': datetime.now().isoformat(),
                 'balances': {},
-                'open_positions': [],
+                'positions': [],  # 'open_positions'에서 'positions'로 변경
                 'bot_state': {}
             }
             
@@ -539,7 +539,7 @@ class BackupRestoreManager:
                 
                 # 현재 포지션 정보 가져오기 시도
                 try:
-                    snapshot['open_positions'] = db.get_open_positions()
+                    snapshot['positions'] = db.get_positions(status='open')  # 통일된 메서드 사용
                 except Exception as e:
                     self.logger.warning(f"포지션 정보 가져오기 실패: {e}")
                 
@@ -594,7 +594,11 @@ class BackupRestoreManager:
                     db.save_balance(currency, balance['amount'])
             
             # 포지션 복원
-            if 'open_positions' in snapshot:
+            if 'positions' in snapshot:  # 'open_positions'에서 'positions'로 변경
+                for position in snapshot['positions']:
+                    db.save_position(position)
+            # 이전 버전 호환성을 위한 처리
+            elif 'open_positions' in snapshot:
                 for position in snapshot['open_positions']:
                     db.save_position(position)
             

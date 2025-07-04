@@ -219,7 +219,7 @@ class AutoPositionManager:
         """포지션 확인 및 관리"""
         try:
             # 현재 포지션 가져오기 - API 호출 실패 가능
-            positions = self.trading_algorithm.get_open_positions()
+            positions = self.trading_algorithm.get_positions(status='open')
             if not positions:
                 logger.debug("열린 포지션이 없습니다.")
                 return False
@@ -584,7 +584,7 @@ class AutoPositionManager:
                 return
             
             # 현재 포지션 가져오기
-            positions = self.trading_algorithm.get_open_positions()
+            positions = self.trading_algorithm.get_positions(status='open')
             
             # 마진 안전성 검사
             risk_manager = self.trading_algorithm.exchange_api.risk_manager

@@ -280,7 +280,7 @@ class PortfolioManager:
                     self.db.update_position(pos_id, update_data)
                 else:
                     # 데이터베이스에서 포지션 찾기
-                    open_positions = self.db.get_open_positions(self.symbol)
+                    open_positions = self.db.get_positions(status='open', symbol=self.symbol)
                     for op in open_positions:
                         if op['status'] == 'open' and op['side'] == 'long':
                             self.db.update_position(op['id'], update_data)
@@ -407,10 +407,10 @@ class PortfolioManager:
                 except Exception as e:
                     logger.error(f"선물 포지션 조회 오류: {e}")
                     # 실패 시 데이터베이스에서 가져오기
-                    return self.db.get_open_positions(symbol)
+                    return self.db.get_positions(status='open', symbol=symbol)
             else:
                 # 현물 거래는 데이터베이스에서만 포지션 관리
-                return self.db.get_open_positions(symbol)
+                return self.db.get_positions(status='open', symbol=symbol)
         except Exception as e:
             logger.error(f"포지션 조회 과정에서 예상치 못한 오류: {e}")
             return []

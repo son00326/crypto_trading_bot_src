@@ -11,7 +11,72 @@ import uuid
 
 @dataclass
 class Position:
-    """포지션 모델 클래스"""
+    """
+    포지션 모델 클래스 - 암호화폐 거래 포지션을 나타냅니다.
+    
+    이 클래스는 현물(spot) 및 선물(futures) 거래 모두에서 사용되는 포지션 데이터를 관리합니다.
+    포지션은 특정 암호화폐에 대한 매수(long) 또는 매도(short) 포지션을 나타내며,
+    진입 가격, 수량, 손익, 청산 정보 등을 포함합니다.
+    
+    Attributes:
+        symbol (str): 거래 쌍 심볼 (예: 'BTC/USDT', 'ETH/USDT')
+        side (str): 포지션 방향 - 'long' (매수) 또는 'short' (매도)
+            - long: 가격 상승 시 이익
+            - short: 가격 하락 시 이익 (선물에서만 사용)
+        amount (float): 포지션 크기 (베이스 통화 단위)
+            - 현물: 실제 암호화폐 수량 (예: 0.1 BTC)
+            - 선물: 계약 수량
+        entry_price (float): 평균 진입 가격
+        opened_at (datetime): 포지션 개설 시간
+        status (str): 포지션 상태 - 'open' (활성) 또는 'closed' (종료)
+        leverage (float): 레버리지 배수 (기본값: 1.0)
+            - 현물: 항상 1.0
+            - 선물: 1.0 ~ 125.0 (거래소 및 자산에 따라 다름)
+        id (str): 고유 포지션 식별자 (UUID)
+        
+        exit_price (Optional[float]): 평균 청산 가격 (포지션 종료 시)
+        closed_at (Optional[datetime]): 포지션 종료 시간
+        pnl (float): 실현 손익 (포지션 종료 시 계산)
+        liquidation_price (Optional[float]): 청산 가격 (선물 전용)
+            - long: 이 가격 이하로 하락 시 강제 청산
+            - short: 이 가격 이상으로 상승 시 강제 청산
+        margin (Optional[float]): 필요 증거금 (선물 전용)
+        stop_loss (Optional[float]): 손절 가격
+        take_profit (Optional[float]): 익절 가격
+        auto_sl_tp (bool): 자동 손절/익절 활성화 여부
+        trailing_stop (bool): 트레일링 스탑 활성화 여부
+        trailing_stop_distance (Optional[float]): 트레일링 스탑 거리
+        trailing_stop_price (Optional[float]): 현재 트레일링 스탑 가격
+        contract_size (float): 계약 크기 (선물 전용, 기본값: 1.0)
+        partial_exits (List[Dict[str, Any]]): 부분 청산 내역
+        additional_info (Dict[str, Any]): 추가 메타데이터
+    
+    Examples:
+        현물 매수 포지션 생성:
+        >>> position = Position(
+        ...     symbol='BTC/USDT',
+        ...     side='long',
+        ...     amount=0.1,
+        ...     entry_price=50000.0
+        ... )
+        
+        선물 매도 포지션 생성:
+        >>> futures_position = Position(
+        ...     symbol='BTC/USDT',
+        ...     side='short',
+        ...     amount=10,  # 10 contracts
+        ...     entry_price=51000.0,
+        ...     leverage=10.0,
+        ...     liquidation_price=56100.0,
+        ...     margin=510.0
+        ... )
+    
+    Note:
+        - 포지션 방향은 항상 'long' 또는 'short'를 사용합니다.
+        - 주문 방향('buy'/'sell')과 구분하여 사용하세요.
+        - 선물 거래에서는 leverage, liquidation_price, margin 등이 중요합니다.
+        - 현물 거래에서는 leverage가 항상 1.0이며 청산 가격이 없습니다.
+    """
     
     symbol: str
     side: str  # 'long' 또는 'short'
