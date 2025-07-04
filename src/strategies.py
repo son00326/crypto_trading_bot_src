@@ -208,7 +208,7 @@ class Strategy:
 class MovingAverageCrossover(Strategy):
     """이동평균 교차 전략"""
     
-    def __init__(self, short_period=9, long_period=26, ma_type='sma', stop_loss_pct=4.0, take_profit_pct=8.0, max_position_size=0.2):
+    def __init__(self, short_period=20, long_period=50, ma_type='ema', stop_loss_pct=1.5, take_profit_pct=3.0, max_position_size=0.2):
         """
         이동평균 교차 전략 초기화
         
@@ -355,7 +355,7 @@ class MovingAverageCrossover(Strategy):
     
     def generate_signals(self, df):
         """
-        이동평균 교차 기반 거래 신호 생성
+        이동평균 교차 기반 거래 신호 생성 (RSI와 볼륨 필터 추가)
         
         Args:
             df (DataFrame): OHLCV 데이터
@@ -377,9 +377,18 @@ class MovingAverageCrossover(Strategy):
             else:
                 raise ValueError(f"지원하지 않는 이동평균 유형입니다: {self.ma_type}")
             
+            # RSI 계산 (과매수/과매도 필터링용)
+            df['rsi'] = relative_strength_index(df, period=14)
+            
+            # 볼륨 이동평균 계산 (볼륨 필터링용)
+            df['volume_ma'] = df['volume'].rolling(window=20).mean()
+            
             # NumPy 배열로 변환하여 신호 생성 (다차원 인덱싱 방지)
             short_ma_values = df['short_ma'].values
             long_ma_values = df['long_ma'].values
+            rsi_values = df['rsi'].values
+            volume_values = df['volume'].values
+            volume_ma_values = df['volume_ma'].values
             
             # 변동성 계산 (표준편차 기반)
             returns = df['close'].pct_change()
@@ -403,25 +412,35 @@ class MovingAverageCrossover(Strategy):
                     # 교차 발생 검사
                     if prev_diff <= 0 and curr_diff > 0:
                         # 상향 교차 (롱 포지션 진입 신호)
-                        signals[i] = 1
-                        
-                        # 신호 강도 (교차 지점에서의 차이)
-                        signal_strength = abs(curr_diff / long_ma_values[i]) if long_ma_values[i] != 0 else 0
-                        confidence = min(signal_strength * 10, 1.0)  # 0~1 범위로 정규화
-                        
-                        # 현재 변동성
-                        volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
-                        
-                        # 포지션 크기 제안
-                        suggested_size = self.suggest_position_size(
-                            confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
-                        )
-                        suggested_sizes[i] = suggested_size
+                        # RSI가 과매도 상태가 아니고, 볼륨이 평균 이상일 때만 신호 발생
+                        if i > 0 and rsi_values[i] < 70 and volume_values[i] > volume_ma_values[i] * 0.8:
+                            signals[i] = 1
+                            
+                            # 신호 강도 (교차 지점에서의 차이)
+                            signal_strength = abs(curr_diff / long_ma_values[i]) if long_ma_values[i] != 0 else 0
+                            confidence = min(signal_strength * 10, 1.0)  # 0~1 범위로 정규화
+                            
+                            # 현재 변동성
+                            volatility = rolling_volatility.iloc[i] if not pd.isna(rolling_volatility.iloc[i]) else returns.std()
+                            
+                            # 포지션 크기 제안
+                            suggested_size = self.suggest_position_size(
+                                confidence, volatility, self.stop_loss_pct, self.max_position_size / 10
+                            )
+                            suggested_sizes[i] = suggested_size
+                        else:
+                            signals[i] = signals[i-1]
+                            suggested_sizes[i] = suggested_sizes[i-1]
                         
                     elif prev_diff >= 0 and curr_diff < 0:
                         # 하향 교차 (숏 포지션 진입 신호)
-                        signals[i] = -1
-                        suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
+                        # RSI가 과매수 상태가 아니고, 볼륨이 평균 이상일 때만 신호 발생
+                        if i > 0 and rsi_values[i] > 30 and volume_values[i] > volume_ma_values[i] * 0.8:
+                            signals[i] = -1
+                            suggested_sizes[i] = 0  # 포지션 청산 시에는 모두 청산
+                        else:
+                            signals[i] = signals[i-1]
+                            suggested_sizes[i] = suggested_sizes[i-1]
                     else:
                         # 교차 없음 (현상태 유지)
                         signals[i] = signals[i-1]
@@ -1124,8 +1143,8 @@ class BollingerBandFuturesStrategy(Strategy):
     볼린저 밴드 + RSI + MACD + 헤이킨 아시 기반 선물 전략 (복합 신호)
     """
     def __init__(self, bb_period=20, bb_std=2.0, rsi_period=14, rsi_overbought=70, rsi_oversold=30,
-                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=4.0, take_profit_pct=8.0,
-                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=3, timeframe='4h', max_position_size=0.2):
+                 macd_fast=12, macd_slow=26, macd_signal=9, stop_loss_pct=2.0, take_profit_pct=3.0,
+                 trailing_stop_pct=1.5, risk_per_trade=1.5, leverage=2, timeframe='4h', max_position_size=0.2):
         super().__init__(name=f"BollingerBandFutures_{bb_period}_{bb_std}_{rsi_period}_{macd_fast}_{macd_slow}_{macd_signal}")
         self.bb_period = bb_period
         self.bb_std = bb_std
@@ -1196,9 +1215,9 @@ class BollingerBandFuturesStrategy(Strategy):
             data.loc[short_cond2, 'short_score'] += 0.3  # MACD 교차
             data.loc[short_cond3, 'short_score'] += 0.3  # 헤이킨 아시 + 가격 하락
             
-            # 최소 0.6 이상의 점수가 필요하고, 반대 신호가 없어야 함
-            strong_long = (data['long_score'] >= 0.6) & (data['short_score'] == 0)
-            strong_short = (data['short_score'] >= 0.6) & (data['long_score'] == 0)
+            # 최소 0.4 이상의 점수가 필요하고, 반대 신호가 없어야 함 (0.6 -> 0.4로 완화)
+            strong_long = (data['long_score'] >= 0.4) & (data['short_score'] == 0)
+            strong_short = (data['short_score'] >= 0.4) & (data['long_score'] == 0)
             
             data.loc[strong_long, 'signal'] = 1
             data.loc[strong_short, 'signal'] = -1

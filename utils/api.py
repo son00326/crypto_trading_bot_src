@@ -632,15 +632,18 @@ def get_positions(api_key: str, api_secret: str, symbol: Optional[str] = None) -
         포지션 목록 (표준화된 형식)
     """
     try:
-        # 선물 거래 클라이언트 생성
-        client = create_binance_client(api_key, api_secret, is_future=True)
+        # ExchangeAPI 객체 생성 (선물 모드)
+        from src.exchange_api import ExchangeAPI
+        exchange_api = ExchangeAPI(
+            exchange_id='binance',
+            api_key=api_key,
+            api_secret=api_secret,
+            market_type='futures',
+            test_mode=False
+        )
         
-        # 포지션 조회 - 바이낸스는 심볼 파라미터 없이 호출
-        positions = client.fetch_positions()
-        
-        # 특정 심볼로 필터링
-        if symbol:
-            positions = [pos for pos in positions if pos.get('symbol') == symbol]
+        # exchange_api를 통해 포지션 조회 (심볼 필터링은 exchange_api에서 처리)
+        positions = exchange_api.get_positions(symbol)
         
         # 실제 열린 포지션만 필터링 (포지션 크기가 0이 아닌 것들)
         active_positions = []
